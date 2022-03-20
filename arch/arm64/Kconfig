@@ -1745,6 +1745,12 @@ config EFI
 	  allow the kernel to be booted as an EFI application. This
 	  is only useful on systems that have UEFI firmware.
 
+config FINAL_RELEASE
+	bool "enables final_release macro"
+	default n
+	help
+	  This enables final_release macro
+
 config DMI
 	bool "Enable support for SMBIOS (DMI) tables"
 	depends on EFI
@@ -1835,3 +1841,18 @@ source "arch/arm64/kvm/Kconfig"
 if CRYPTO
 source "arch/arm64/crypto/Kconfig"
 endif
+
+config HUAWEI_KERNEL
+	bool "Use huawei code"
+	default n
+	help
+	 use huawei code.
+
+config HUAWEI_KERNEL_DEBUG
+        bool "Use Huawei kernel debug mode"
+        depends on HUAWEI_KERNEL
+        default n
+        help
+         Enable sysrq, dump mode and some debug masks by default.
+source "kernel/rainbow/Kconfig"
+source "kernel/hwbootfail/Kconfig"

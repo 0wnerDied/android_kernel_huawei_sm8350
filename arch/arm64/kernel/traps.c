@@ -43,6 +43,10 @@
 #include <asm/system_misc.h>
 #include <asm/sysreg.h>
 
+#ifdef CONFIG_RAINBOW_REASON
+#include <linux/rainbow_reason.h>
+#endif
+
 static const char *handler[]= {
 	"Synchronous Abort",
 	"IRQ",
@@ -402,6 +406,9 @@ asmlinkage void __exception do_undefinstr(struct pt_regs *regs)
 	if (call_undef_hook(regs) == 0)
 		return;
 
+#ifdef CONFIG_RAINBOW_REASON
+	rb_sreason_set("undefine_cmd");
+#endif
 	BUG_ON(!user_mode(regs));
 	force_signal_inject(SIGILL, ILL_ILLOPC, regs->pc);
 }
@@ -793,6 +800,9 @@ asmlinkage void bad_mode(struct pt_regs *regs, int reason, unsigned int esr)
 	pr_crit("Bad mode in %s handler detected on CPU%d, code 0x%08x -- %s\n",
 		handler[reason], smp_processor_id(), esr,
 		esr_get_class_string(esr));
+#ifdef CONFIG_RAINBOW_REASON
+	rb_sreason_set("bad_mode");
+#endif
 
 	local_daif_mask();
 	panic("bad mode");

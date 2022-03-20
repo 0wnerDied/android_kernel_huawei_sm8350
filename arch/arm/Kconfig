@@ -2044,6 +2044,12 @@ config EFI
 	  is only useful for kernels that may run on systems that have
 	  UEFI firmware.
 
+config FINAL_RELEASE
+	bool "enables final_release macro"
+	default n
+	help
+	  This enables final_release macro
+
 config DMI
 	bool "Enable support for SMBIOS (DMI) tables"
 	depends on EFI

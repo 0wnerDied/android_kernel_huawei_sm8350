@@ -253,6 +253,21 @@ static inline void __flush_tlb_kernel_pgtable(unsigned long kaddr)
 	dsb(ish);
 	isb();
 }
+
+#ifdef CONFIG_FCMA
+static inline void arch_tlbbatch_add_mm(struct arch_tlbflush_unmap_batch *batch,
+                                        struct mm_struct *mm)
+{
+
+}
+
+static inline void arch_tlbbatch_flush(struct arch_tlbflush_unmap_batch *batch)
+{
+	        flush_tlb_all();
+
+}
+#endif
+
 #endif
 
 #endif

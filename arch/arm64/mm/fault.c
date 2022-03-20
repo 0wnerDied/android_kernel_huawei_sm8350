@@ -38,6 +38,9 @@
 #include <asm/pgtable.h>
 #include <asm/tlbflush.h>
 #include <asm/traps.h>
+#ifdef CONFIG_RAINBOW_REASON
+#include <linux/rainbow_reason.h>
+#endif
 
 struct fault_info {
 	int	(*fn)(unsigned long addr, unsigned int esr,
@@ -288,6 +291,9 @@ static void die_kernel_fault(const char *msg, unsigned long addr,
 {
 	bust_spinlocks(1);
 
+#ifdef CONFIG_RAINBOW_REASON
+	rb_sreason_set("unknown_addr");
+#endif
 	pr_alert("Unable to handle kernel %s at virtual address %016lx\n", msg,
 		 addr);
 
@@ -316,16 +322,28 @@ static void __do_kernel_fault(unsigned long addr, unsigned int esr,
 		return;
 
 	if (is_el1_permission_fault(addr, esr, regs)) {
-		if (esr & ESR_ELx_WNR)
+		if (esr & ESR_ELx_WNR) {
+#ifdef CONFIG_RAINBOW_REASON
+			rb_sreason_set("rw_only");
+#endif
 			msg = "write to read-only memory";
-		else
+		} else {
+#ifdef CONFIG_RAINBOW_REASON
+			rb_sreason_set("read_unreadable");
+#endif
 			msg = "read from unreadable memory";
+		}
 	} else if (addr < PAGE_SIZE) {
 		msg = "NULL pointer dereference";
+#ifdef CONFIG_RAINBOW_REASON
+		rb_sreason_set("null_pointer");
+#endif
 	} else {
+#ifdef CONFIG_RAINBOW_REASON
+		rb_sreason_set("page_request");
+#endif
 		msg = "paging request";
 	}
-
 	die_kernel_fault(msg, addr, esr, regs);
 }
 
@@ -673,12 +691,15 @@ static int do_sea(unsigned long addr, unsigned int esr, struct pt_regs *regs)
 	void __user *siaddr;
 
 	inf = esr_to_fault_info(esr);
+#ifdef CONFIG_RAINBOW_REASON
+	rb_sreason_set("SEA");
+#endif
 
 	if (user_mode(regs) && apei_claim_sea(regs) == 0) {
-		/*
+	/*
 		 * APEI claimed this as a firmware-first notification.
 		 * Some processing deferred to task_work before ret_to_user().
-		 */
+	 */
 		return 0;
 	}
 
@@ -772,6 +793,10 @@ asmlinkage void __exception do_mem_abort(unsigned long addr, unsigned int esr,
 		show_pte(addr);
 	}
 
+#ifdef CONFIG_RAINBOW_REASON
+	rb_sreason_set("unhandle_fault");
+	rb_attach_info_set("Unhandled_fault_%s", inf->name);
+#endif
 	arm64_notify_die(inf->name, regs,
 			 inf->sig, inf->code, (void __user *)addr, esr);
 }
@@ -809,6 +834,9 @@ asmlinkage void __exception do_sp_pc_abort(unsigned long addr,
 		local_daif_restore(DAIF_PROCCTX);
 	}
 
+#ifdef CONFIG_RAINBOW_REASON
+	rb_sreason_set("SP_PC_AE");
+#endif
 	arm64_notify_die("SP/PC alignment exception", regs,
 			 SIGBUS, BUS_ADRALN, (void __user *)addr, esr);
 }

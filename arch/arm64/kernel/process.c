@@ -57,6 +57,10 @@
 #include <asm/stacktrace.h>
 #include <trace/hooks/minidump.h>
 
+#ifdef CONFIG_RAINBOW_REASON
+#include <linux/rainbow_reason.h>
+#endif
+
 #if defined(CONFIG_STACKPROTECTOR) && !defined(CONFIG_STACKPROTECTOR_PER_TASK)
 #include <linux/stackprotector.h>
 unsigned long __stack_chk_guard __read_mostly;
@@ -267,6 +271,9 @@ void __show_regs(struct pt_regs *regs)
 
 	trace_android_vh_show_regs(regs);
 	show_regs_print_info(KERN_DEFAULT);
+#ifdef CONFIG_RAINBOW_REASON
+	rb_kallsyms_set("PC %s", instruction_pointer(regs));
+#endif
 	print_pstate(regs);
 
 	if (!user_mode(regs)) {

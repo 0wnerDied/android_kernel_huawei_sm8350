@@ -24,6 +24,7 @@
 #include <linux/sched.h>
 #include <linux/smp.h>
 #include <linux/delay.h>
+#include <linux/of_fdt.h>
 
 /*
  * In case the boot CPU is hotpluggable, we record its initial state and
@@ -32,6 +33,7 @@
  */
 DEFINE_PER_CPU(struct cpuinfo_arm64, cpu_data);
 static struct cpuinfo_arm64 boot_cpu_data;
+static const char *machine_name = "Qualcomm";
 
 static const char *icache_policy_str[] = {
 	[0 ... ICACHE_POLICY_PIPT]	= "RESERVED/UNKNOWN",
@@ -124,6 +126,17 @@ static const char *const compat_hwcap2_str[] = {
 };
 #endif /* CONFIG_COMPAT */
 
+const char * __init of_flat_dt_get_hardware_name(void)
+{
+	const char *name = NULL;
+	unsigned long dt_root = of_get_flat_dt_root();
+
+	name = of_get_flat_dt_prop(dt_root, "Hardware", NULL);
+	if (name == NULL)
+		name = "Qualcomm";
+	return name;
+}
+
 static int c_show(struct seq_file *m, void *v)
 {
 	int i, j;
@@ -178,7 +191,7 @@ static int c_show(struct seq_file *m, void *v)
 		seq_printf(m, "CPU part\t: 0x%03x\n", MIDR_PARTNUM(midr));
 		seq_printf(m, "CPU revision\t: %d\n\n", MIDR_REVISION(midr));
 	}
-
+	seq_printf(m, "Hardware\t: %s\n", machine_name);
 	return 0;
 }
 
@@ -393,6 +406,7 @@ void __init cpuinfo_store_boot_cpu(void)
 
 	boot_cpu_data = *info;
 	init_cpu_features(&boot_cpu_data);
+	machine_name = of_flat_dt_get_hardware_name();
 }
 
 device_initcall(cpuinfo_regs_init);
