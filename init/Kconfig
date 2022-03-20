@@ -464,6 +464,11 @@ config SCHED_WALT
 	used to guide task placement as well as task frequency requirements
 	for cpufreq governors.
 
+config QCOM_WALT_RTG
+	bool "QCOM Related Thread Group"
+	depends on SCHED_WALT && !HW_RTG
+	default y
+
 config BSD_PROCESS_ACCT
 	bool "BSD Process Accounting"
 	depends on MULTIUSER
@@ -832,6 +837,13 @@ config NUMA_BALANCING_DEFAULT_ENABLED
 	  If set, automatic NUMA balancing will be enabled if running on a NUMA
 	  machine.
 
+config BOOST_KILL
+	bool "boost kill"
+	default n
+	help
+	  if set, the process to be killed will be move to fast cpu and its nice
+	  value will also set to -20.
+
 menuconfig CGROUPS
 	bool "Control Group support"
 	select KERNFS
@@ -847,6 +859,7 @@ menuconfig CGROUPS
 	  Say N if unsure.
 
 if CGROUPS
+source "kernel/cgroup_workingset/Kconfig"
 
 config PAGE_COUNTER
        bool
@@ -1007,6 +1020,15 @@ config CGROUP_FREEZER
 
 	  If you're using cgroup2, say N.
 
+config MEMCG_PROTECT_LRU
+	bool "Memory Resource Controller Protect LRU file pages"
+	depends on MEMCG && !TRANSPARENT_HUGEPAGE && !HUGETLB_PAGE && (ARM64 || X86_64)
+	default n
+	depends on !TASK_PROTECT_LRU && MEMCG
+	help
+	  Protect LRU support. It's between normal lru and mlock,
+	  that means we will reclaim protect lru file pages as late as possible.
+
 config CGROUP_HUGETLB
 	bool "HugeTLB controller"
 	depends on HUGETLB_PAGE
@@ -1038,6 +1060,14 @@ config PROC_PID_CPUSET
 	bool "Include legacy /proc/<pid>/cpuset file"
 	depends on CPUSETS
 	default y
+
+config CGROUP_IOLIMIT
+	bool "IO bandwidth limit cgroup subsystem"
+	depends on BLK_CGROUP_IOSMART
+	default n
+	help
+	  Provides a cgroup implementing for io bandwidth while a process
+	  in the cgroup read or write.
 
 config CGROUP_DEVICE
 	bool "Device controller"
@@ -1443,6 +1473,16 @@ config PRINTK
 	  very difficult to diagnose system problems, saying N here is
 	  strongly discouraged.
 
+config PRINTK_PREFIX
+	bool "Prefix cpu_id/pid/process_name to each kernel log"
+	default y
+	depends on PRINTK
+	help
+	  PRINTK_PREFIX which is used to control whether to show
+	  process information about this log.
+	  the information about which cpu about this
+	  process in, and whether in isr.
+
 config PRINTK_NMI
 	def_bool y
 	depends on PRINTK
@@ -1496,6 +1536,13 @@ config FUTEX_PI
 	bool
 	depends on FUTEX && RT_MUTEXES
 	default y
+
+config HW_FUTEX_PI
+	bool "extend futex pi"
+	depends on FUTEX_PI && (HW_QOS_THREAD || HW_RTG_SCHED)
+	default n
+	help
+	  Customize futex pi and support qos and vip_prio inheritance.
 
 config HAVE_FUTEX_CMPXCHG
 	bool
@@ -1908,6 +1955,21 @@ config SLAB_FREELIST_HARDENED
 	  sacrifices to harden the kernel slab allocator against common
 	  freelist exploit methods.
 
+config HW_SLUB_DF
+	bool "HUAWEI SLUB canaries"
+	default n
+	help
+	  Place canaries at first 8bit magic word of user data when free memory,
+	  check this magic when free to avoid double free.
+	  place canary_malloc before return to user.
+
+config HW_SLUB_DF_BUGON
+	bool "When canary status is wrong, throw out a bugon."
+	default n
+	depends on HW_SLUB_DF
+	help
+	  When canary status is wrong, throw out a bugon
+
 config SHUFFLE_PAGE_ALLOCATOR
 	bool "Page allocator randomization"
 	default SLAB_FREELIST_RANDOM && ACPI_NUMA
@@ -1931,6 +1993,21 @@ config SHUFFLE_PAGE_ALLOCATOR
 	  'page_alloc.shuffle' kernel command line parameter.
 
 	  Say Y if unsure.
+
+config HW_SLUB_DF
+	bool "HUAWEI SLUB canaries"
+	default n
+	help
+	  Place canaries at first 8bit magic word of user data when free memory,
+	  check this magic when free to avoid double free.
+	  place canary_malloc before return to user.
+
+config HW_SLUB_DF_BUGON
+	bool "When canary status is wrong, throw out a bugon."
+	default n
+	depends on HW_SLUB_DF
+	help
+	  When canary status is wrong, throw out a bugon
 
 config SLUB_CPU_PARTIAL
 	default y
@@ -2328,4 +2405,35 @@ config ARCH_HAS_SYNC_CORE_BEFORE_USERMODE
 config ARCH_HAS_SYSCALL_WRAPPER
 	def_bool n
 
+config HAVE_QCOM_SCHED_WALT
+	bool "Q WALT features"
+	depends on SCHED_WALT
+	default y
+	help
+	  This option used to identify platform difference
+
+config HW_TASK_RAVG_SUM
+	bool "Huawei task normalized running time sum"
+	depends on SCHED_WALT
+	default n
+	help
+	  Sum all normalized running time for each task.
+
+config HAVE_QCOM_TOP_TASK
+	bool "Q TOP TASK features"
+	depends on SCHED_WALT
+	default y
+	help
+	  This option used to identify platform difference
+
 source "init/Kconfig.gki"
+
+source "kernel/hwcfs/Kconfig"
+source "kernel/cpu_netlink/Kconfig"
+source "kernel/hwqos/Kconfig"
+source "net/netqos_sched/Kconfig"
+source "kernel/sched/hw_rtg/Kconfig"
+source "kernel/sched/hw_rt/Kconfig"
+source "kernel/sched/hw_walt/Kconfig"
+source "kernel/sched/hw_task/Kconfig"
+source "kernel/sched/Kconfig"

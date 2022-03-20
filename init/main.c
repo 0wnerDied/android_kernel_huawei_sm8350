@@ -101,6 +101,13 @@
 #include <asm/sections.h>
 #include <asm/cacheflush.h>
 
+#ifdef CONFIG_HUAWEI_BOOT_TIME
+#include <linux/hw_boottime.h>
+#endif
+
+#ifdef CONFIG_HW_RECLAIM_ACCT
+#include <chipset_common/reclaim_acct/reclaim_acct.h>
+#endif
 #define CREATE_TRACE_POINTS
 #include <trace/events/initcall.h>
 
@@ -582,6 +589,31 @@ void __init __weak arch_call_rest_init(void)
 	rest_init();
 }
 
+#ifdef CMDLINE_INFO_FILTER
+static void __init print_filtered_cmdline(char *cmdline)
+{
+	static char tmp_cmdline[COMMAND_LINE_SIZE] __initdata;
+	char *cmd_prefix = NULL;
+	char *cmd_suffix = NULL;
+	int len = 0;
+
+	if (cmdline == NULL)
+		return;
+
+	strlcpy(tmp_cmdline, cmdline, COMMAND_LINE_SIZE);
+	cmd_prefix = strstr(tmp_cmdline, "androidboot.serialno");
+	if (cmd_prefix == NULL) {
+		pr_notice("Kernel command line: %s\n", tmp_cmdline);
+		return;
+	}
+	cmd_suffix = strstr(cmd_prefix, " ");
+	len = (cmd_suffix != NULL) ? (cmd_suffix - cmd_prefix)
+		: (cmdline + strlen(cmdline) - cmd_prefix);
+	memset(cmd_prefix, '*', len);
+	pr_notice("Kernel command line: %s\n", tmp_cmdline);
+}
+#endif
+
 asmlinkage __visible void __init start_kernel(void)
 {
 	char *command_line;
@@ -614,7 +646,9 @@ asmlinkage __visible void __init start_kernel(void)
 	build_all_zonelists(NULL);
 	page_alloc_init();
 
-	pr_notice("Kernel command line: %s\n", boot_command_line);
+#ifdef CMDLINE_INFO_FILTER
+	print_filtered_cmdline(boot_command_line);
+#endif
 	/* parameters may set static keys */
 	jump_label_init();
 	parse_early_param();
@@ -781,7 +815,9 @@ asmlinkage __visible void __init start_kernel(void)
 	cgroup_init();
 	taskstats_init_early();
 	delayacct_init();
-
+#ifdef CONFIG_HW_RECLAIM_ACCT
+	reclaimacct_init();
+#endif
 	poking_init();
 	check_bugs();
 
@@ -946,7 +982,11 @@ int __init_or_module do_one_initcall(initcall_t fn)
 		return -EPERM;
 
 	do_trace_initcall_start(fn);
+#ifdef CONFIG_HUAWEI_BOOT_TIME
+	ret = do_boottime_initcall(fn);
+#else
 	ret = fn();
+#endif
 	do_trace_initcall_finish(fn, ret);
 
 	msgbuf[0] = 0;
@@ -1140,6 +1180,9 @@ static int __ref kernel_init(void *unused)
 	place_marker("M - DRIVER Kernel Boot Done");
 #endif
 
+#ifdef CONFIG_HUAWEI_BOOT_TIME
+	log_boot("[INFOR] Kernel_init_done");
+#endif
 	if (ramdisk_execute_command) {
 		ret = run_init_process(ramdisk_execute_command);
 		if (!ret)

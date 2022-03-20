@@ -14,7 +14,9 @@ endif
 obj-$(CONFIG_GENERIC_CALIBRATE_DELAY) += calibrate.o
 
 obj-y                          += init_task.o
-
+ifeq ($(TARGET_BUILD_VARIANT),eng)
+ccflags-y += -DCMDLINE_INFO_FILTER
+endif
 mounts-y			:= do_mounts.o
 mounts-$(CONFIG_BLK_DEV_RAM)	+= do_mounts_rd.o
 mounts-$(CONFIG_BLK_DEV_INITRD)	+= do_mounts_initrd.o
