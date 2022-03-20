@@ -41,6 +41,7 @@
 #include <dsp/q6audio-v2.h>
 #include <dsp/q6common.h>
 #include <dsp/q6core.h>
+#include <soc/qcom/subsystem_restart.h>
 #include "adsp_err.h"
 
 #define TIMEOUT_MS  1000
@@ -1839,9 +1840,9 @@ static int32_t q6asm_srvc_callback(struct apr_client_data *data, void *priv)
 				buf_node = list_entry(ptr,
 						struct asm_buffer_node,
 						list);
-				list_del(&buf_node->list);
-				kfree(buf_node);
-			}
+					list_del(&buf_node->list);
+					kfree(buf_node);
+				}
 			pr_debug("%s: Clearing custom topology\n", __func__);
 		}
 
@@ -2140,9 +2141,9 @@ static int32_t q6asm_callback(struct apr_client_data *data, void *priv)
 		case ASM_STREAM_CMD_SET_PP_PARAMS_V3:
 			//cmd_state_pp : wait=-1 , non wait=0
 			if (atomic_read(&ac->cmd_state_pp) != -1) {
-				if (rtac_make_asm_callback(ac->session, payload,
+			if (rtac_make_asm_callback(ac->session, payload,
 					data->payload_size))
-					break;
+				break;
 			}
 		case ASM_SESSION_CMD_PAUSE:
 		case ASM_SESSION_CMD_SUSPEND:
@@ -8849,6 +8850,7 @@ static int q6asm_memory_map_regions(struct audio_client *ac, int dir,
 			msecs_to_jiffies(TIMEOUT_MS));
 	if (!rc) {
 		pr_err("%s: timeout. waited for memory_map\n", __func__);
+		subsystem_restart("adsp");
 		rc = -ETIMEDOUT;
 		kfree(buffer_node);
 		buffer_node = NULL;
@@ -11351,10 +11353,10 @@ static int q6asm_get_asm_topology_apptype(struct q6asm_cal_info *cal_info, struc
 		if (cal_block == NULL) {
 			pr_debug("%s: Couldn't find cal_block with buf_number, re-routing "
 				"search using CAL type only\n", __func__);
-			cal_block = cal_utils_get_only_cal_block(cal_data[ASM_TOPOLOGY_CAL]);
+	cal_block = cal_utils_get_only_cal_block(cal_data[ASM_TOPOLOGY_CAL]);
 		}
 		if (cal_block == NULL || cal_utils_is_cal_stale(cal_block))
-			goto unlock;
+		goto unlock;
 	}
 	cal_info->topology_id = ((struct audio_cal_info_asm_top *)
 		cal_block->cal_info)->topology;
@@ -11418,11 +11420,11 @@ int q6asm_send_cal(struct audio_client *ac)
 		pr_debug("%s: Couldn't find cal_block with buf_number, re-routing "
 			"search using app_type only\n", __func__);
 		cal_block = q6asm_find_cal_by_app_type(ASM_AUDSTRM_CAL, ac->app_type);
-		if (cal_block == NULL) {
-			pr_err("%s: cal_block is NULL\n",
-				__func__);
-			goto unlock;
-		}
+	if (cal_block == NULL) {
+		pr_err("%s: cal_block is NULL\n",
+			__func__);
+		goto unlock;
+	}
 	}
 	if (cal_utils_is_cal_stale(cal_block)) {
 		rc = 0; /* not error case */

@@ -619,6 +619,8 @@ struct wcd_mbhc {
 	bool force_linein;
 	struct device_node *fsa_np;
 	struct notifier_block fsa_nb;
+	int typec_uart_switch;
+	int micbias2_ao;
 };
 
 void wcd_mbhc_find_plug_and_report(struct wcd_mbhc *mbhc,

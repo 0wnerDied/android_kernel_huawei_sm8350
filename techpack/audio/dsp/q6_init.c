@@ -6,6 +6,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include "q6_init.h"
+#include "sound/hw_audio/hw_audio_interface.h"
 
 static int __init audio_q6_init(void)
 {
@@ -25,11 +26,13 @@ static int __init audio_q6_init(void)
 	msm_mdf_init();
 	voice_mhi_init();
 	digital_cdc_rsc_mgr_init();
+	hw_adsp_apr_interface_init();
 	return 0;
 }
 
 static void __exit audio_q6_exit(void)
 {
+	hw_adsp_apr_interface_exit();
 	digital_cdc_rsc_mgr_exit();
 	msm_mdf_exit();
 	avtimer_exit();

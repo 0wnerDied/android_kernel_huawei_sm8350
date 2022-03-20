@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright (c) 2017-2020, The Linux Foundation. All rights reserved.
  */
+#define DEBUG
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/slab.h>
@@ -19,6 +20,7 @@
 #include <linux/completion.h>
 #include <sound/soc.h>
 #include <sound/jack.h>
+#include <linux/ana_hs.h>
 #include "wcd-mbhc-adc.h"
 #include <asoc/wcd-mbhc-v2.h>
 #include <asoc/pdata.h>
@@ -688,6 +690,9 @@ static void wcd_correct_swch_plug(struct work_struct *work)
 
 	if (cross_conn > 0) {
 		plug_type = MBHC_PLUG_TYPE_GND_MIC_SWAP;
+#ifdef CONFIG_ANA_HS
+		ana_hs_mic_gnd_swap();
+#endif
 		pr_debug("%s: cross connection found, Plug type %d\n",
 			 __func__, plug_type);
 		goto correct_plug_type;
@@ -723,6 +728,7 @@ correct_plug_type:
 	/*
 	 * Callback to disable BCS slow insertion detection
 	 */
+
 	if (plug_type == MBHC_PLUG_TYPE_HEADSET ||
 	    plug_type == MBHC_PLUG_TYPE_HEADPHONE)
 		if (mbhc->mbhc_cb->bcs_enable)
@@ -781,9 +787,9 @@ correct_plug_type:
 		    (!is_pa_on)) {
 			/* Check for cross connection*/
 			ret = wcd_check_cross_conn(mbhc);
-			if (ret < 0)
+			if (ret < 0) {
 				continue;
-			else if (ret > 0) {
+			} else if (ret > 0) {
 				pt_gnd_mic_swap_cnt++;
 				no_gnd_mic_swap_cnt = 0;
 				if (pt_gnd_mic_swap_cnt <
@@ -836,11 +842,9 @@ correct_plug_type:
 			plug_type = MBHC_PLUG_TYPE_HIGH_HPH;
 			wrk_complete = true;
 		} else {
-			pr_debug("%s: cable might be headset: %d\n", __func__,
-				 plug_type);
+			pr_debug("%s: cable might be headset: %d\n", __func__, plug_type);
 			if (plug_type != MBHC_PLUG_TYPE_GND_MIC_SWAP) {
-				plug_type = wcd_mbhc_get_plug_from_adc(
-						mbhc, output_mv);
+				plug_type = wcd_mbhc_get_plug_from_adc(mbhc, output_mv);
 				if (!spl_hs_reported &&
 				    spl_hs_count == WCD_MBHC_SPL_HS_CNT) {
 					spl_hs_reported = true;
@@ -849,8 +853,9 @@ correct_plug_type:
 								    plug_type);
 					WCD_MBHC_RSC_UNLOCK(mbhc);
 					continue;
-				} else if (spl_hs_reported)
+				} else if (spl_hs_reported) {
 					continue;
+				}
 				/*
 				 * Report headset only if not already reported
 				 * and if there is not button press without
@@ -872,6 +877,7 @@ correct_plug_type:
 			wrk_complete = false;
 		}
 	}
+
 	if ((plug_type == MBHC_PLUG_TYPE_HEADSET ||
 	    plug_type == MBHC_PLUG_TYPE_HEADPHONE))
 		if (mbhc->mbhc_cb->bcs_enable)
@@ -962,6 +968,15 @@ exit:
 		mbhc->micbias_enable = false;
 	}
 
+	if (plug_type == MBHC_PLUG_TYPE_HEADPHONE &&
+	    mbhc->micbias2_ao) {
+		pr_debug("headphone found disable micbias2 ao\n");
+		if (mbhc->mbhc_cb->mbhc_micbias_control)
+			mbhc->mbhc_cb->mbhc_micbias_control(
+					component, MIC_BIAS_2,
+					MICB_DISABLE);
+	}
+
 	if (mbhc->mbhc_cfg->detect_extn_cable &&
 	    ((plug_type == MBHC_PLUG_TYPE_HEADPHONE) ||
 	     (plug_type == MBHC_PLUG_TYPE_HEADSET)) &&
@@ -987,6 +1002,12 @@ exit:
 		mbhc->mbhc_cb->hph_pull_down_ctrl(component, true);
 
 	mbhc->mbhc_cb->lock_sleep(mbhc, false);
+
+	if (mbhc->micbias2_ao) {
+		WCD_MBHC_REG_UPDATE_BITS(WCD_MBHC_L_DET_EN, 1);
+		mbhc->micbias2_ao = 0;
+	}
+
 	pr_debug("%s: leave\n", __func__);
 }
 

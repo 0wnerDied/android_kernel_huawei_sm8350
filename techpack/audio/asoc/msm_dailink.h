@@ -171,8 +171,23 @@ SND_SOC_DAILINK_DEFS(tx3_cdcdma_hostless,
 	DAILINK_COMP_ARRAY(COMP_CODEC("snd-soc-dummy", "snd-soc-dummy-dai")),
 	DAILINK_COMP_ARRAY(COMP_PLATFORM("msm-pcm-hostless")));
 
+SND_SOC_DAILINK_DEFS(pri_mi2s_tx_hostless,
+	DAILINK_COMP_ARRAY(COMP_CPU("PRI_MI2S_TX_HOSTLESS")),
+	DAILINK_COMP_ARRAY(COMP_CODEC("snd-soc-dummy", "snd-soc-dummy-dai")),
+	DAILINK_COMP_ARRAY(COMP_PLATFORM("msm-pcm-hostless")));
+
 SND_SOC_DAILINK_DEFS(tert_mi2s_tx_hostless,
 	DAILINK_COMP_ARRAY(COMP_CPU("TERT_MI2S_TX_HOSTLESS")),
+	DAILINK_COMP_ARRAY(COMP_CODEC("snd-soc-dummy", "snd-soc-dummy-dai")),
+	DAILINK_COMP_ARRAY(COMP_PLATFORM("msm-pcm-hostless")));
+
+SND_SOC_DAILINK_DEFS(quin_mi2s_tx_hostless,
+	DAILINK_COMP_ARRAY(COMP_CPU("QUIN_MI2S_TX_HOSTLESS")),
+	DAILINK_COMP_ARRAY(COMP_CODEC("snd-soc-dummy", "snd-soc-dummy-dai")),
+	DAILINK_COMP_ARRAY(COMP_PLATFORM("msm-pcm-hostless")));
+
+SND_SOC_DAILINK_DEFS(quin_mi2s_rx_hostless,
+	DAILINK_COMP_ARRAY(COMP_CPU("QUIN_MI2S_RX_HOSTLESS")),
 	DAILINK_COMP_ARRAY(COMP_CODEC("snd-soc-dummy", "snd-soc-dummy-dai")),
 	DAILINK_COMP_ARRAY(COMP_PLATFORM("msm-pcm-hostless")));
 
@@ -285,6 +300,11 @@ SND_SOC_DAILINK_DEFS(quat_tdm_tx_0_hostless,
 
 SND_SOC_DAILINK_DEFS(quat_mi2s_rx_hostless,
 	DAILINK_COMP_ARRAY(COMP_CPU("QUAT_MI2S_RX_HOSTLESS")),
+	DAILINK_COMP_ARRAY(COMP_CODEC("snd-soc-dummy", "snd-soc-dummy-dai")),
+	DAILINK_COMP_ARRAY(COMP_PLATFORM("msm-pcm-hostless")));
+
+SND_SOC_DAILINK_DEFS(pri_mi2s_rx_hostless,
+	DAILINK_COMP_ARRAY(COMP_CPU("PRI_MI2S_RX_HOSTLESS")),
 	DAILINK_COMP_ARRAY(COMP_CODEC("snd-soc-dummy", "snd-soc-dummy-dai")),
 	DAILINK_COMP_ARRAY(COMP_PLATFORM("msm-pcm-hostless")));
 
@@ -1304,3 +1324,8 @@ SND_SOC_DAILINK_DEFS(ext_display_port,
 	DAILINK_COMP_ARRAY(COMP_CODEC("msm-ext-disp-audio-codec-rx",
 			"msm_dp_audio_codec_rx_dai")),
 	DAILINK_COMP_ARRAY(COMP_PLATFORM("msm-pcm-routing")));
+
+SND_SOC_DAILINK_DEFS(tx4_cdcdma_hostless,
+	DAILINK_COMP_ARRAY(COMP_CPU("TX4_CDC_DMA_HOSTLESS")),
+	DAILINK_COMP_ARRAY(COMP_CODEC("snd-soc-dummy", "snd-soc-dummy-dai")),
+	DAILINK_COMP_ARRAY(COMP_PLATFORM("msm-pcm-hostless")));

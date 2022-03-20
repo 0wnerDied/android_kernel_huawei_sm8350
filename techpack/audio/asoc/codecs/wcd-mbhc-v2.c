@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  */
+#define DEBUG
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/slab.h>
@@ -26,6 +27,14 @@
 #include "wcd-mbhc-legacy.h"
 #include "wcd-mbhc-adc.h"
 #include <asoc/wcd-mbhc-v2-api.h>
+#ifdef CONFIG_ANA_HS
+#include <linux/ana_hs.h>
+#define unused_parameter(x) (void)(x)
+int g_anahs_state;
+
+struct wcd_mbhc *g_mbhc;
+static void wcd_anahs_register(struct snd_soc_card *card, struct wcd_mbhc *mbhc);
+#endif /* end of #ifdef CONFIG_ANA_HS */
 
 struct mutex hphl_pa_lock;
 struct mutex hphr_pa_lock;
@@ -33,9 +42,38 @@ struct mutex hphr_pa_lock;
 void wcd_mbhc_jack_report(struct wcd_mbhc *mbhc,
 			  struct snd_soc_jack *jack, int status, int mask)
 {
+	pr_info("%s mask: %d, status: %d\n", __func__, mask, status);
+	status &= ~SND_JACK_LINEOUT;
 	snd_soc_jack_report(jack, status, mask);
 }
 EXPORT_SYMBOL(wcd_mbhc_jack_report);
+
+#ifdef CONFIG_ANA_HS
+static inline bool is_headset_pluged_in()
+{
+	if (ana_hs_support_usb_sw()) {
+		if (ana_hs_pluged_state() == ANA_HS_PLUG_IN) {
+			pr_info("%s: ananlog hs is plug in\n", __func__);
+			return true;
+		}
+	}
+
+	pr_info("%s: ananlog hs is plug out\n", __func__);
+	return false;
+}
+#endif
+
+static void mbhc_first_detect(void)
+{
+#ifdef CONFIG_ANA_HS
+	if (is_headset_pluged_in()) {
+		if (ana_hs_support_usb_sw()) {
+			pr_info("%s: ana_hs plug in handle\n", __func__);
+			ana_hs_plug_handle(ANA_HS_PLUG_IN);
+		}
+	}
+#endif
+}
 
 #if IS_ENABLED(CONFIG_AUDIO_QGKI)
 static void __hphocp_off_report(struct wcd_mbhc *mbhc, u32 jack_status,
@@ -408,6 +446,12 @@ EXPORT_SYMBOL(wcd_cancel_btn_work);
 bool wcd_swch_level_remove(struct wcd_mbhc *mbhc)
 {
 	u16 result2 = 0;
+
+#ifdef CONFIG_ANA_HS
+	if (g_anahs_state) {
+		return false;
+	}
+#endif
 
 	WCD_MBHC_REG_READ(WCD_MBHC_SWCH_LEVEL_REMOVE, result2);
 	return (result2) ? true : false;
@@ -927,6 +971,16 @@ static bool wcd_mbhc_moisture_detect(struct wcd_mbhc *mbhc, bool detection_type)
 	return ret;
 }
 
+static void set_typec_uart_switch(struct wcd_mbhc *mbhc, int value)
+{
+	if (gpio_is_valid(mbhc->typec_uart_switch) && (mbhc->typec_uart_switch != -1)) {
+		gpio_set_value(mbhc->typec_uart_switch, value);
+		pr_debug("%s: set typec_uart_switch:%d to %d\n",
+			__func__, mbhc->typec_uart_switch, value);
+	}
+}
+
+
 static void wcd_mbhc_swch_irq_handler(struct wcd_mbhc *mbhc)
 {
 	bool detection_type = 0;
@@ -964,8 +1018,10 @@ static void wcd_mbhc_swch_irq_handler(struct wcd_mbhc *mbhc)
 		micbias1 = mbhc->mbhc_cb->micbias_enable_status(mbhc,
 						MIC_BIAS_1);
 
-	if ((mbhc->current_plug == MBHC_PLUG_TYPE_NONE) &&
+	if (((mbhc->current_plug == MBHC_PLUG_TYPE_NONE) ||
+	     (mbhc->current_plug == MBHC_PLUG_TYPE_HIGH_HPH)) &&
 	    detection_type) {
+		set_typec_uart_switch(mbhc, 1);
 
 		/* If moisture is present, then enable polling, disable
 		 * moisture detection and wait for interrupt
@@ -1002,6 +1058,12 @@ static void wcd_mbhc_swch_irq_handler(struct wcd_mbhc *mbhc)
 			mbhc->mbhc_fn->wcd_mbhc_detect_plug_type(mbhc);
 	} else if ((mbhc->current_plug != MBHC_PLUG_TYPE_NONE)
 			&& !detection_type) {
+		set_typec_uart_switch(mbhc, 0);
+
+		/* disable MIC_BIAS_2 for avoid pop when plug out */
+		if (mbhc->mbhc_cb->mbhc_micbias_control)
+			mbhc->mbhc_cb->mbhc_micbias_control(component,
+				MIC_BIAS_2, MICB_DISABLE);
 		/* Disable external voltage source to micbias if present */
 		if (mbhc->mbhc_cb->enable_mb_source)
 			mbhc->mbhc_cb->enable_mb_source(mbhc, false);
@@ -1076,6 +1138,8 @@ static void wcd_mbhc_swch_irq_handler(struct wcd_mbhc *mbhc)
 		}
 
 	} else if (!detection_type) {
+		set_typec_uart_switch(mbhc, 0);
+
 		/* Disable external voltage source to micbias if present */
 		if (mbhc->mbhc_cb->enable_mb_source)
 			mbhc->mbhc_cb->enable_mb_source(mbhc, false);
@@ -1097,6 +1161,14 @@ static irqreturn_t wcd_mbhc_mech_plug_detect_irq(int irq, void *data)
 	struct wcd_mbhc *mbhc = data;
 
 	pr_debug("%s: enter\n", __func__);
+
+#ifdef CONFIG_ANA_HS
+	if (g_mbhc) {
+		pr_debug("%s: bypass 4480 irq %d\n", __func__, irq);
+		return IRQ_NONE;
+	}
+#endif
+
 	if (mbhc == NULL) {
 		pr_err("%s: NULL irq data\n", __func__);
 		return IRQ_NONE;
@@ -1687,10 +1759,8 @@ int wcd_mbhc_start(struct wcd_mbhc *mbhc, struct wcd_mbhc_config *mbhc_cfg)
 		mbhc->fsa_np = of_parse_phandle(card->dev->of_node,
 				"fsa4480-i2c-handle", 0);
 		if (!mbhc->fsa_np) {
-			dev_err(card->dev, "%s: fsa4480 i2c node not found\n",
+			dev_err(card->dev, "%s: No use fsa4480\n",
 				__func__);
-			rc = -EINVAL;
-			goto err;
 		}
 	}
 
@@ -1717,10 +1787,17 @@ int wcd_mbhc_start(struct wcd_mbhc *mbhc, struct wcd_mbhc_config *mbhc_cfg)
 	}
 
 	if (mbhc_cfg->enable_usbc_analog) {
-		mbhc->fsa_nb.notifier_call = wcd_mbhc_usbc_ana_event_handler;
-		mbhc->fsa_nb.priority = 0;
-		rc = fsa4480_reg_notifier(&mbhc->fsa_nb, mbhc->fsa_np);
+		if (mbhc->fsa_np) {
+			mbhc->fsa_nb.notifier_call = wcd_mbhc_usbc_ana_event_handler;
+			mbhc->fsa_nb.priority = 0;
+			rc = fsa4480_reg_notifier(&mbhc->fsa_nb, mbhc->fsa_np);
+		}
 	}
+
+	wcd_anahs_register(card, mbhc);
+
+	/* check jack at first time */
+	mbhc_first_detect();
 
 	return rc;
 err:
@@ -1755,12 +1832,104 @@ void wcd_mbhc_stop(struct wcd_mbhc *mbhc)
 		mbhc->mbhc_cal = NULL;
 	}
 
-	if (mbhc->mbhc_cfg->enable_usbc_analog)
-		fsa4480_unreg_notifier(&mbhc->fsa_nb, mbhc->fsa_np);
+	if (mbhc->mbhc_cfg->enable_usbc_analog) {
+		if (mbhc->fsa_np)
+			fsa4480_unreg_notifier(&mbhc->fsa_nb, mbhc->fsa_np);
+	}
 
 	pr_debug("%s: leave\n", __func__);
 }
 EXPORT_SYMBOL(wcd_mbhc_stop);
+
+
+#ifdef CONFIG_ANA_HS
+static inline void ana_hs_plug_handler(void)
+{
+	struct wcd_mbhc *mbhc = g_mbhc;
+	if (!g_mbhc) {
+		pr_info("%s() gmbhc is null, return!\n", __func__);
+		return ;
+	}
+	if (mbhc->mbhc_cb->clk_setup)
+		mbhc->mbhc_cb->clk_setup(mbhc->component, true);
+	/* insertion detected, enable L_DET_EN */
+	WCD_MBHC_REG_UPDATE_BITS(WCD_MBHC_L_DET_EN, 0);
+
+	mbhc->mbhc_cb->lock_sleep(mbhc, true);
+	wcd_mbhc_swch_irq_handler(g_mbhc);
+	mbhc->mbhc_cb->lock_sleep(mbhc, false);
+}
+
+static void ana_hs_plug_in_detect(void *priv)
+{
+	struct wcd_mbhc *mbhc = g_mbhc;
+	unused_parameter(priv);
+	pr_info("%s() enter\n", __func__);
+
+	g_anahs_state = 1;
+	if (mbhc->mbhc_cb->mbhc_micbias_control) {
+		pr_err("%s() micbias2 AO enable\n", __func__);
+		mbhc->mbhc_cb->mbhc_micbias_control(mbhc->component, MIC_BIAS_2, MICB_ENABLE);
+		mbhc->micbias2_ao = 1;
+	} else {
+		pr_err("%s() bad mbhc mic ctrl\n", __func__);
+	}
+
+	ana_hs_plug_handler();
+}
+
+static void ana_hs_plug_out_detect(void *priv)
+{
+	struct wcd_mbhc *mbhc = g_mbhc;
+	unused_parameter(priv);
+	pr_info("%s() enter\n", __func__);
+
+	if (mbhc->mbhc_cb->mbhc_micbias_control) {
+		pr_err("%s() micbias2 AO disable\n", __func__);
+		mbhc->mbhc_cb->mbhc_micbias_control(mbhc->component, MIC_BIAS_2, MICB_DISABLE);
+	} else {
+		pr_err("%s() bad mbhc mic ctrl\n", __func__);
+	}
+
+	g_anahs_state = 0;
+	ana_hs_plug_handler();
+}
+
+static void ana_hs_high_resistence_enable(void *priv, bool enable)
+{
+	unused_parameter(priv);
+	unused_parameter(enable);
+}
+
+static struct ana_hs_codec_dev ana_hs_dev = {
+	.name = "ana_hs_dev",
+	.ops = {
+		.plug_in_detect = ana_hs_plug_in_detect,
+		.plug_out_detect = ana_hs_plug_out_detect,
+		.hs_high_resistence_enable = ana_hs_high_resistence_enable,
+	},
+};
+#endif
+
+static void wcd_anahs_register(struct snd_soc_card *card, struct wcd_mbhc *mbhc)
+{
+#ifdef CONFIG_ANA_HS
+	int ret;
+	const char *hs_cmos = "qcom,msm-mbhc-anahs-cmos";
+	int hs_scheme = 0;
+
+	ret = of_property_read_u32(card->dev->of_node, hs_cmos, &hs_scheme);
+	if (ret || hs_scheme == 0) {
+		pr_info("%s: In 4480 scheme\n", __func__);
+	} else {
+		pr_info("%s: In GPIO scheme\n", __func__);
+		ret = ana_hs_codec_dev_register(&ana_hs_dev, card->dev);
+		if (ret)
+			pr_err("ana_hs_codec_dev_register fail! ret %d\n", ret);
+		g_mbhc = mbhc;
+	}
+#endif
+}
 
 /*
  * wcd_mbhc_init : initialize MBHC internal structures.
@@ -1826,6 +1995,20 @@ int wcd_mbhc_init(struct wcd_mbhc *mbhc, struct snd_soc_component *component,
 		mbhc->moist_rref = hph_moist_config[2];
 	}
 
+	mbhc->typec_uart_switch = of_get_named_gpio(card->dev->of_node,
+		"typec_uart_switch", 0);
+	if (gpio_is_valid(mbhc->typec_uart_switch)) {
+		ret = devm_gpio_request(card->dev, mbhc->typec_uart_switch,
+			"typec_uart_switch");
+		if (ret) {
+			mbhc->typec_uart_switch = -1;
+			pr_debug("%s typec_uart_switch: %d request err %d\n",
+				__func__, mbhc->typec_uart_switch, ret);
+		}
+		pr_debug("%s: get typec_uart_switch %d\n", __func__,
+			mbhc->typec_uart_switch);
+	}
+
 	mbhc->in_swch_irq_handler = false;
 	mbhc->current_plug = MBHC_PLUG_TYPE_NONE;
 	mbhc->is_btn_press = false;
@@ -1845,6 +2028,7 @@ int wcd_mbhc_init(struct wcd_mbhc *mbhc, struct snd_soc_component *component,
 	mbhc->swap_thr = GND_MIC_SWAP_THRESHOLD;
 	mbhc->hphl_cross_conn_thr = HPHL_CROSS_CONN_THRESHOLD;
 	mbhc->hphr_cross_conn_thr = HPHR_CROSS_CONN_THRESHOLD;
+	mbhc->micbias2_ao = 0;
 
 	if (mbhc->intr_ids == NULL) {
 		pr_err("%s: Interrupt mapping not provided\n", __func__);
@@ -1936,6 +2120,7 @@ int wcd_mbhc_init(struct wcd_mbhc *mbhc, struct snd_soc_component *component,
 		pr_err("%s: mbhc function pointer is NULL\n", __func__);
 		goto err_mbhc_sw_irq;
 	}
+
 	ret = mbhc->mbhc_cb->request_irq(component,
 				mbhc->intr_ids->mbhc_sw_intr,
 				wcd_mbhc_mech_plug_detect_irq,

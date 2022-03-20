@@ -13,6 +13,7 @@
 #include <linux/module.h>
 #include <linux/input.h>
 #include <linux/of_device.h>
+#include <linux/audio_interface.h>
 #include <linux/soc/qcom/fsa4480-i2c.h>
 #include <sound/core.h>
 #include <sound/soc.h>
@@ -40,6 +41,9 @@
 #include "codecs/bolero/wsa-macro.h"
 #include "lahaina-port-config.h"
 #include "msm_dailink.h"
+#ifdef CONFIG_HUAWEI_DSM_AUDIO
+#include <dsm_audio/dsm_audio.h>
+#endif
 
 #define DRV_NAME "lahaina-asoc-snd"
 #define __CHIPSET__ "LAHAINA "
@@ -202,6 +206,10 @@ struct msm_asoc_mach_data {
 	int wcd_disabled;
 	int (*get_wsa_dev_num)(struct snd_soc_component*);
 	struct afe_cps_hw_intf_cfg cps_config;
+	int hs_lp_switch_gpio;
+	bool rewrite_btn_threshold;
+	u16 *btn_high;
+	u16 btn_count;
 };
 
 struct tdm_port {
@@ -492,7 +500,7 @@ static struct dev_config mi2s_tx_cfg[] = {
 
 static struct tdm_dev_config pri_tdm_dev_config[MAX_PATH][TDM_PORT_MAX] = {
 	{ /* PRI TDM */
-		{ {0,   4, 0xFFFF} }, /* RX_0 */
+		{ {0,   4,   8,   12, 0xFFFF} }, /* RX_0 */
 		{ {8,  12, 0xFFFF} }, /* RX_1 */
 		{ {16, 20, 0xFFFF} }, /* RX_2 */
 		{ {24, 28, 0xFFFF} }, /* RX_3 */
@@ -726,7 +734,7 @@ static char const *bt_sample_rate_rx_text[] = {"KHZ_8", "KHZ_16",
 static char const *bt_sample_rate_tx_text[] = {"KHZ_8", "KHZ_16",
 					"KHZ_44P1", "KHZ_48",
 					"KHZ_88P2", "KHZ_96"};
-static const char *const afe_loopback_tx_ch_text[] = {"One", "Two"};
+static const char *const afe_loopback_tx_ch_text[] = {"One", "Two", "Three", "Four"};
 
 static SOC_ENUM_SINGLE_EXT_DECL(usb_rx_sample_rate, usb_sample_rate_text);
 static SOC_ENUM_SINGLE_EXT_DECL(usb_tx_sample_rate, usb_sample_rate_text);
@@ -921,7 +929,7 @@ static int dmic_0_1_gpio_cnt;
 static int dmic_2_3_gpio_cnt;
 static int dmic_4_5_gpio_cnt;
 
-static void *def_wcd_mbhc_cal(void);
+static void *def_wcd_mbhc_cal(struct snd_soc_card *card);
 
 static int msm_rx_tx_codec_init(struct snd_soc_pcm_runtime*);
 static int msm_int_wsa_init(struct snd_soc_pcm_runtime*);
@@ -950,7 +958,7 @@ static struct wcd_mbhc_config wcd_mbhc_cfg = {
 	.mbhc_micbias = MIC_BIAS_2,
 	.anc_micbias = MIC_BIAS_2,
 	.enable_anc_mic_detect = false,
-	.moisture_duty_cycle_en = true,
+	.moisture_duty_cycle_en = false,
 };
 
 /* set audio task affinity to core 1 & 2 */
@@ -2905,7 +2913,7 @@ static int cdc_dma_get_port_idx(struct snd_kcontrol *kcontrol)
 		sizeof("WSA_CDC_DMA_RX_0")))
 		idx = WSA_CDC_DMA_RX_0;
 	else if (strnstr(kcontrol->id.name, "WSA_CDC_DMA_RX_1",
-		sizeof("WSA_CDC_DMA_RX_0")))
+		sizeof("WSA_CDC_DMA_RX_1")))
 		idx = WSA_CDC_DMA_RX_1;
 	else if (strnstr(kcontrol->id.name, "RX_CDC_DMA_RX_0",
 		sizeof("RX_CDC_DMA_RX_0")))
@@ -5752,12 +5760,23 @@ static struct snd_info_entry *msm_snd_info_create_subdir(struct module *mod,
 	return entry;
 }
 
-static void *def_wcd_mbhc_cal(void)
+static void remove_mbhc_btn_high(
+	struct msm_asoc_mach_data *pdata)
+{
+	if(pdata->btn_high != NULL) {
+		kfree(pdata->btn_high);
+		pdata->btn_high = NULL;
+	}
+}
+
+static void *def_wcd_mbhc_cal(struct snd_soc_card *card)
 {
 	void *wcd_mbhc_cal;
 	struct wcd_mbhc_btn_detect_cfg *btn_cfg;
 	u16 *btn_high;
+	int i;
 
+	struct msm_asoc_mach_data *pdata = snd_soc_card_get_drvdata(card);
 	wcd_mbhc_cal = kzalloc(WCD_MBHC_CAL_SIZE(WCD_MBHC_DEF_BUTTONS,
 				WCD9XXX_MBHC_DEF_RLOADS), GFP_KERNEL);
 	if (!wcd_mbhc_cal)
@@ -5777,6 +5796,14 @@ static void *def_wcd_mbhc_cal(void)
 	btn_high[5] = 500;
 	btn_high[6] = 500;
 	btn_high[7] = 500;
+
+	if ((pdata->rewrite_btn_threshold) && (pdata->btn_high != NULL)) {
+		for (i = 0; i < pdata->btn_count; i++) {
+			btn_high[i] = pdata->btn_high[i];
+			pr_info("%s: btn_high[%d] = %d\n", __func__, i, btn_high[i]);
+		}
+		remove_mbhc_btn_high(pdata);
+	}
 
 	return wcd_mbhc_cal;
 }
@@ -6212,8 +6239,8 @@ static struct snd_soc_dai_link msm_common_dai_links[] = {
 		SND_SOC_DAILINK_REG(tx3_cdcdma_hostless),
 	},
 	{/* hw:x,32 */
-		.name = "Tertiary MI2S TX_Hostless",
-		.stream_name = "Tertiary MI2S_TX Hostless Capture",
+		.name = "Primary MI2S TX_Hostless",
+		.stream_name = "Primary MI2S_TX Hostless Capture",
 		.dynamic = 1,
 		.dpcm_capture = 1,
 		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
@@ -6221,7 +6248,7 @@ static struct snd_soc_dai_link msm_common_dai_links[] = {
 		.no_host_mode = SND_SOC_DAI_LINK_NO_HOST,
 		.ignore_suspend = 1,
 		.ignore_pmdown_time = 1,
-		SND_SOC_DAILINK_REG(tert_mi2s_tx_hostless),
+		SND_SOC_DAILINK_REG(pri_mi2s_tx_hostless),
 	},
 };
 
@@ -6240,6 +6267,18 @@ static struct snd_soc_dai_link msm_bolero_fe_dai_links[] = {
 
 static struct snd_soc_dai_link msm_bolero_fe_stub_dai_links[] = {
 	{/* hw:x,33 */
+#ifdef CONFIG_HUAWEI_SMARTPAKIT_AUDIO
+		.name = "Quinary MI2S TX_Hostless",
+		.stream_name = "Quinary MI2S_TX Hostless Capture",
+		.dynamic = 1,
+		.dpcm_capture = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+				SND_SOC_DPCM_TRIGGER_POST},
+		.no_host_mode = SND_SOC_DAI_LINK_NO_HOST,
+		.ignore_suspend = 1,
+		.ignore_pmdown_time = 1,
+		SND_SOC_DAILINK_REG(quin_mi2s_tx_hostless),
+#else
 		.name = LPASS_BE_WSA_CDC_DMA_TX_0,
 		.stream_name = "WSA CDC DMA0 Capture",
 		.id = MSM_BACKEND_DAI_WSA_CDC_DMA_TX_0,
@@ -6248,6 +6287,7 @@ static struct snd_soc_dai_link msm_bolero_fe_stub_dai_links[] = {
 		.no_host_mode = SND_SOC_DAI_LINK_NO_HOST,
 		.ops = &msm_cdc_dma_be_ops,
 		SND_SOC_DAILINK_REG(wsa_cdcdma0_capture_stub),
+#endif
 	},
 };
 
@@ -6403,6 +6443,65 @@ static struct snd_soc_dai_link msm_common_misc_fe_dai_links[] = {
 		.ignore_suspend = 1,
 		.ignore_pmdown_time = 1,
 		SND_SOC_DAILINK_REG(display_port_hostless),
+	},
+	{/* hw:x,46 */
+		.name = MSM_DAILINK_NAME(TX4_CDC_DMA Hostless),
+		.stream_name = "TX4_CDC_DMA Hostless",
+		.dynamic = 1,
+		.dpcm_capture = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+			    SND_SOC_DPCM_TRIGGER_POST},
+		.no_host_mode = SND_SOC_DAI_LINK_NO_HOST,
+		.ignore_suspend = 1,
+		SND_SOC_DAILINK_REG(tx4_cdcdma_hostless),
+	},
+	{/* hw:x,47 */
+		.name = "Quinary MI2S RX_Hostless",
+		.stream_name = "Quinary MI2S_RX Hostless Playback",
+		.dynamic = 1,
+		.dpcm_playback = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+				SND_SOC_DPCM_TRIGGER_POST},
+		.no_host_mode = SND_SOC_DAI_LINK_NO_HOST,
+		.ignore_suspend = 1,
+		.ignore_pmdown_time = 1,
+		SND_SOC_DAILINK_REG(quin_mi2s_rx_hostless),
+	},
+	{/* hw:x,48 */
+		.name = "Primary MI2S RX_Hostless",
+		.stream_name = "Primary MI2S_RX Hostless Playback",
+		.dynamic = 1,
+		.dpcm_playback = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+				SND_SOC_DPCM_TRIGGER_POST},
+		.no_host_mode = SND_SOC_DAI_LINK_NO_HOST,
+		.ignore_suspend = 1,
+		.ignore_pmdown_time = 1,
+		SND_SOC_DAILINK_REG(pri_mi2s_rx_hostless),
+	},
+	{/* hw:x,49 */
+		.name = "Primary TDM TX_Hostless",
+		.stream_name = "Primary TDM0 Hostless Capture",
+		.dynamic = 1,
+		.dpcm_capture = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+				SND_SOC_DPCM_TRIGGER_POST},
+		.no_host_mode = SND_SOC_DAI_LINK_NO_HOST,
+		.ignore_suspend = 1,
+		.ignore_pmdown_time = 1,
+		SND_SOC_DAILINK_REG(pri_tdm_tx_0_hostless),
+	},
+	{/* hw:x,50 */
+		.name = "Primary TDM RX_Hostless",
+		.stream_name = "Primary TDM0 Hostless Playback",
+		.dynamic = 1,
+		.dpcm_playback = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+				SND_SOC_DPCM_TRIGGER_POST},
+		.no_host_mode = SND_SOC_DAI_LINK_NO_HOST,
+		.ignore_suspend = 1,
+		.ignore_pmdown_time = 1,
+		SND_SOC_DAILINK_REG(pri_tdm_rx_0_hostless),
 	},
 };
 
@@ -7557,7 +7656,7 @@ static int msm_snd_card_late_probe(struct snd_soc_card *card)
 		}
 	}
 
-	mbhc_calibration = def_wcd_mbhc_cal();
+	mbhc_calibration = def_wcd_mbhc_cal(card);
 	if (!mbhc_calibration)
 		return -ENOMEM;
 	wcd_mbhc_cfg.calibration = mbhc_calibration;
@@ -8212,6 +8311,126 @@ static void parse_cps_configuration(struct platform_device *pdev,
 	}
 }
 
+static int usb_headphone_vbus_gpio_switch(int en)
+{
+	struct snd_soc_card *card = &snd_soc_card_lahaina_msm;
+	struct msm_asoc_mach_data *pdata = snd_soc_card_get_drvdata(card);
+
+	if (unlikely(!pdata)) {
+		card = &snd_soc_card_stub_msm;
+		pdata = snd_soc_card_get_drvdata(card);
+		if (!pdata)
+			return -EINVAL;
+	}
+
+	gpio_direction_output(pdata->hs_lp_switch_gpio, !!en);
+	return 0;
+}
+
+static struct usb_headphone_ops lahaina_vbus_gpio_ops = {
+	.otg_need_gpio_switch = usb_headphone_vbus_gpio_switch,
+};
+
+static void register_headset_lowpower(struct platform_device *pdev)
+{
+	struct snd_soc_card *card = &snd_soc_card_lahaina_msm;
+	struct msm_asoc_mach_data *pdata = snd_soc_card_get_drvdata(card);
+	int use_gpio;
+	int support;
+	int ret;
+
+	if (!pdata) {
+		dev_err(&pdev->dev, "audio card not register\n");
+		return;
+	}
+
+	ret = of_property_read_u32(pdev->dev.of_node,
+				"qcom,headphone_low_power_supported",
+				&support);
+        if (ret) {
+                dev_info(&pdev->dev, "Not support lowpower headset\n");
+                support = 0;
+        }
+
+	usb_low_power_enable(support);
+
+	if (!support)
+		return;
+
+	ret = of_property_read_u32(pdev->dev.of_node,
+				"qcom,headphone_low_power_gpio_switch",
+				&use_gpio);
+        if (ret) {
+                dev_info(&pdev->dev, "Not use gpio switch vbus\n");
+                use_gpio = 0;
+        }
+
+	if (!use_gpio)
+		return;
+
+	pdata->hs_lp_switch_gpio = of_get_named_gpio(pdev->dev.of_node,
+		"qcom,headphone_low_power_gpio_num", 0);
+	if (!gpio_is_valid(pdata->hs_lp_switch_gpio)) {
+		dev_info(&pdev->dev, "use gpio but not config\n");
+		return;
+	}
+
+	ret = gpio_request(pdata->hs_lp_switch_gpio, "hs_lp_switch_gpio");
+	if (ret) {
+		dev_info(&pdev->dev, "gpio %d request fail\n", pdata->hs_lp_switch_gpio);
+		return;
+	}
+
+	register_usb_low_power_otg(&lahaina_vbus_gpio_ops);
+}
+
+static void remove_audio_vbus_gpio_switch(struct snd_soc_card *card)
+{
+	struct msm_asoc_mach_data *pdata = snd_soc_card_get_drvdata(card);
+
+	if (pdata && gpio_is_valid(pdata->hs_lp_switch_gpio))
+		gpio_free(pdata->hs_lp_switch_gpio);
+}
+
+static int msm_parse_mbhc_btn_threshold(struct device *dev,
+	const char *propname, struct msm_asoc_mach_data *pdata)
+{
+	int ret;
+	u16 count = 0;
+
+	if ((dev == NULL) || (propname == NULL) || (pdata == NULL)) {
+		pr_err("%s: invalid argument\n", __func__);
+		return -EINVAL;
+	}
+
+	if (of_property_read_bool(dev->of_node, propname))
+		count = of_property_count_elems_of_size(dev->of_node,
+			propname, (int)sizeof(u16));
+
+	if (count == 0 || count > WCD_MBHC_DEF_BUTTONS) {
+		pr_info("%s: %s not existed or outrange, skip\n", __func__, propname);
+		return -EINVAL;
+	}
+
+	pdata->btn_high = kzalloc(sizeof(u16) * count, GFP_KERNEL);
+	if (pdata->btn_high == NULL)
+		return -ENOMEM;
+
+	ret = of_property_read_u16_array(dev->of_node, propname, pdata->btn_high,
+		count);
+	if (ret < 0) {
+		pr_err("%s: get %s btn_high failed\n", __func__, propname);
+		ret = -EFAULT;
+		goto err_out;
+	}
+	pdata->btn_count = count;
+
+	return 0;
+err_out:
+	remove_mbhc_btn_high(pdata);
+	return ret;
+}
+
 static int msm_asoc_machine_probe(struct platform_device *pdev)
 {
 	struct snd_soc_card *card = NULL;
@@ -8238,6 +8457,22 @@ static int msm_asoc_machine_probe(struct platform_device *pdev)
 	of_property_read_u32(pdev->dev.of_node,
 				"qcom,wcd-disabled",
 				&pdata->wcd_disabled);
+
+	if (of_property_read_bool(pdev->dev.of_node,
+		"qcom,msm-mbhc-btn-threshold")) {
+		pdata->rewrite_btn_threshold = true;
+		ret = msm_parse_mbhc_btn_threshold(&pdev->dev,
+			"qcom,msm-mbhc-btn-threshold", pdata);
+		if (ret < 0) {
+			pdata->rewrite_btn_threshold = false;
+			dev_err(&pdev->dev, "%s: parse msm-mbhc-btn-threshold failed\n",
+				__func__);
+		}
+	} else {
+		pdata->rewrite_btn_threshold = false;
+		dev_info(&pdev->dev, "%s: btn_threshold not existed, use default\n",
+			__func__);
+	}
 
 	card = populate_snd_card_dailinks(&pdev->dev);
 	if (!card) {
@@ -8288,6 +8523,11 @@ static int msm_asoc_machine_probe(struct platform_device *pdev)
 	} else if (ret) {
 		dev_err(&pdev->dev, "%s: snd_soc_register_card failed (%d)\n",
 			__func__, ret);
+#ifdef CONFIG_HUAWEI_DSM_AUDIO
+        audio_dsm_report_info(AUDIO_CODEC,
+            DSM_AUDIO_CARD_LOAD_FAIL_ERROR_NO,
+            "dsm audio mesg: snd_soc_register_card failed");
+#endif
 		goto err;
 	}
 	dev_info(&pdev->dev, "%s: Sound card %s registered\n",
@@ -8426,6 +8666,8 @@ static int msm_asoc_machine_probe(struct platform_device *pdev)
 	/* Add QoS request for audio tasks */
 	msm_audio_add_qos_request();
 
+	register_headset_lowpower(pdev);
+
 	return 0;
 err:
 	devm_kfree(&pdev->dev, pdata);
@@ -8436,6 +8678,7 @@ static int msm_asoc_machine_remove(struct platform_device *pdev)
 {
 	struct snd_soc_card *card = platform_get_drvdata(pdev);
 
+	remove_audio_vbus_gpio_switch(card);
 	snd_event_master_deregister(&pdev->dev);
 	snd_soc_unregister_card(card);
 	msm_i2s_auxpcm_deinit();

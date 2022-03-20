@@ -58,6 +58,19 @@ static inline void avtimer_exit(void)
 	return;
 }
 #endif
+
+#ifdef CONFIG_HUAWEI_QCOM_ADSP_MISC
+int hw_adsp_apr_interface_init(void);
+void hw_adsp_apr_interface_exit(void);
+#else
+static inline int hw_adsp_apr_interface_init(void)
+{
+	return 0;
+}
+static inline void hw_adsp_apr_interface_exit(void)
+{
+}
+#endif
 void msm_audio_ion_exit(void);
 void rtac_exit(void);
 void core_exit(void);

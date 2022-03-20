@@ -1090,7 +1090,7 @@ int __init cal_utils_init(void)
 }
 /**
  * cal_utils_is_cal_stale
- *
+ *unmap_memory
  * @cal_block: pointer to cal block
  *
  * Returns true if cal block is stale, false otherwise
@@ -1104,9 +1104,8 @@ bool cal_utils_is_cal_stale(struct cal_block_data *cal_block)
 		pr_err("%s: cal_block is Null", __func__);
 		goto unlock;
 	}
-
 	if (cal_block->cal_stale)
-	    ret = true;
+		ret = true;
 
 unlock:
 	mutex_unlock(&cal_lock);

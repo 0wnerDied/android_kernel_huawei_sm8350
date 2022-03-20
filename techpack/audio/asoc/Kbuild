@@ -233,6 +233,12 @@ LINUX_INC +=	-Iinclude/linux
 INCS +=		$(COMMON_INC) \
 		$(UAPI_INC)
 
+ifdef CONFIG_HUAWEI_DSM_AUDIO
+KDIR := $(TOP)/kernel/msm-5.4
+AUDIOKIT := -I$(srctree)/drivers/devkit/audiokit/
+INCS += $(AUDIOKIT)
+endif
+
 EXTRA_CFLAGS += $(INCS)
 
 CDEFINES +=	-DANI_LITTLE_BYTE_ENDIAN \

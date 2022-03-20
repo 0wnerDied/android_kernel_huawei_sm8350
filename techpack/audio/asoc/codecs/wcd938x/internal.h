@@ -110,6 +110,7 @@ struct wcd938x_priv {
 	/* wcd to swr dmic notification */
 	bool notify_swr_dmic;
 	struct blocking_notifier_head notifier;
+	bool is_voip_ec_enable;
 };
 
 struct wcd938x_micbias_setting {

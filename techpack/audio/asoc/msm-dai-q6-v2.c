@@ -20,6 +20,7 @@
 #include <dsp/q6core.h>
 #include "msm-dai-q6-v2.h"
 #include <asoc/core.h>
+#include <dsp/hw_adsp_apr_interface.h>
 
 #define MSM_DAI_PRI_AUXPCM_DT_DEV_ID 1
 #define MSM_DAI_SEC_AUXPCM_DT_DEV_ID 2
@@ -6404,6 +6405,18 @@ static void msm_dai_q6_mi2s_shutdown(struct snd_pcm_substream *substream,
 		clear_bit(STATUS_PORT_STARTED, dai_data->hwfree_status);
 }
 
+static int msm_dai_q6_mi2s_mute(struct snd_soc_dai *dai, int mute)
+{
+	u16 port_id = 0;
+	msm_mi2s_get_port_id(dai->id,
+				SNDRV_PCM_STREAM_PLAYBACK,
+				&port_id);
+
+	if (!mute)
+		refresh_smartpa_algo_status(port_id);
+	return 0;
+}
+
 static struct snd_soc_dai_ops msm_dai_q6_mi2s_ops = {
 	.startup	= msm_dai_q6_mi2s_startup,
 	.prepare	= msm_dai_q6_mi2s_prepare,
@@ -6411,6 +6424,7 @@ static struct snd_soc_dai_ops msm_dai_q6_mi2s_ops = {
 	.hw_free	= msm_dai_q6_mi2s_hw_free,
 	.set_fmt	= msm_dai_q6_mi2s_set_fmt,
 	.shutdown	= msm_dai_q6_mi2s_shutdown,
+	.digital_mute  = msm_dai_q6_mi2s_mute,
 };
 
 /* Channel min and max are initialized base on platform data */
