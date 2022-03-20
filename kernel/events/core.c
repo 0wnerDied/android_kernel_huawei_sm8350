@@ -1134,8 +1134,9 @@ static void __perf_mux_hrtimer_init(struct perf_cpu_context *cpuctx, int cpu)
 	timer->function = perf_mux_hrtimer_handler;
 }
 
-static int perf_mux_hrtimer_restart(struct perf_cpu_context *cpuctx)
+static int perf_mux_hrtimer_restart(void *cpu_ctx)
 {
+	struct perf_cpu_context *cpuctx = cpu_ctx;
 	struct hrtimer *timer = &cpuctx->hrtimer;
 	struct pmu *pmu = cpuctx->ctx.pmu;
 	unsigned long flags;
@@ -2434,7 +2435,7 @@ group_sched_in(struct perf_event *group_event,
 
 	if (event_sched_in(group_event, cpuctx, ctx)) {
 		pmu->cancel_txn(pmu);
-		perf_mux_hrtimer_restart(cpuctx);
+		perf_mux_hrtimer_restart((void *)cpuctx);
 		return -EAGAIN;
 	}
 
@@ -2467,7 +2468,7 @@ group_error:
 
 	pmu->cancel_txn(pmu);
 
-	perf_mux_hrtimer_restart(cpuctx);
+	perf_mux_hrtimer_restart((void *)cpuctx);
 
 	return -EAGAIN;
 }
@@ -10070,7 +10071,7 @@ perf_event_mux_interval_ms_store(struct device *dev,
 		cpuctx->hrtimer_interval = ns_to_ktime(NSEC_PER_MSEC * timer);
 
 		cpu_function_call(cpu,
-			(remote_function_f)perf_mux_hrtimer_restart, cpuctx);
+			perf_mux_hrtimer_restart, cpuctx);
 	}
 	cpus_read_unlock();
 	mutex_unlock(&mux_interval_mutex);
@@ -11261,7 +11262,11 @@ SYSCALL_DEFINE5(perf_event_open,
 		 * perf_event_exit_task() that could imply).
 		 */
 		err = -EACCES;
+#ifdef CONFIG_HUAWEI_PMU_SHARE
+		if (!ptrace_may_access(task, PTRACE_MODE_READ_REALCREDS | PTRACE_MODE_PERF_EVENT))
+#else
 		if (!ptrace_may_access(task, PTRACE_MODE_READ_REALCREDS))
+#endif
 			goto err_cred;
 	}
 

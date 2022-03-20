@@ -23,6 +23,9 @@
 #include <linux/sizes.h>
 #include <linux/dma-contiguous.h>
 #include <linux/cma.h>
+#ifdef CONFIG_FCMA
+#include <linux/fcma.h>
+#endif
 
 #ifdef CONFIG_CMA_SIZE_MBYTES
 #define CMA_SIZE_MBYTES CONFIG_CMA_SIZE_MBYTES
@@ -313,7 +316,14 @@ static int __init rmem_cma_setup(struct reserved_mem *rmem)
 		return -EINVAL;
 	}
 
+#ifdef CONFIG_FCMA
+	if (of_get_flat_dt_prop(node, "fcma", NULL))
+		err = fcma_init_reserved_mem(rmem->base, rmem->size, 0, rmem->name, &cma);
+	else
+		err = cma_init_reserved_mem(rmem->base, rmem->size, 0, rmem->name, &cma);
+#else
 	err = cma_init_reserved_mem(rmem->base, rmem->size, 0, rmem->name, &cma);
+#endif
 	if (err) {
 		pr_err("Reserved memory: unable to setup CMA region\n");
 		return err;

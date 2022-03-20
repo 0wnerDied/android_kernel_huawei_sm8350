@@ -47,7 +47,8 @@
 #include <linux/cgroup.h>
 #include <linux/audit.h>
 #include <linux/oom.h>
-
+#include <linux/xreclaimer.h>
+#include <linux/version.h>
 #define CREATE_TRACE_POINTS
 #include <trace/events/signal.h>
 
@@ -56,6 +57,21 @@
 #include <asm/unistd.h>
 #include <asm/siginfo.h>
 #include <asm/cacheflush.h>
+#ifdef CONFIG_BOOST_KILL
+#include <asm/topology.h>
+
+#define FAST_CPU_MASK_NUM 4  //define the big core id
+/* Add apportunity to config enable/disable boost
+ * killing action
+ */
+unsigned int sysctl_boost_killing;
+#endif
+#ifdef CONFIG_HUAWEI_KSTATE
+#include <huawei_platform/power/hw_kcollect.h>
+#endif
+#ifdef CONFIG_HW_DIE_CATCH
+#include <chipset_common/hwzrhung/hung_wp_screen.h>
+#endif
 
 /*
  * SLAB caches for signal bits.
@@ -393,10 +409,10 @@ static bool task_participate_group_stop(struct task_struct *task)
 void task_join_group_stop(struct task_struct *task)
 {
 	unsigned long mask = current->jobctl & JOBCTL_STOP_SIGMASK;
-	struct signal_struct *sig = current->signal;
+		struct signal_struct *sig = current->signal;
 
 	if (sig->group_stop_count) {
-		sig->group_stop_count++;
+			sig->group_stop_count++;
 		mask |= JOBCTL_STOP_CONSUME;
 	} else if (!(sig->flags & SIGNAL_STOP_STOPPED))
 		return;
@@ -993,6 +1009,10 @@ static void complete_signal(int sig, struct task_struct *p, enum pid_type type)
 	struct signal_struct *signal = p->signal;
 	struct task_struct *t;
 
+#ifdef CONFIG_BOOST_KILL
+	struct cpumask *new_mask = &CPU_MASK_ALL;
+#endif
+
 	/*
 	 * Now find a thread we can wake up to take the signal off the queue.
 	 *
@@ -1048,6 +1068,17 @@ static void complete_signal(int sig, struct task_struct *p, enum pid_type type)
 			signal->group_stop_count = 0;
 			t = p;
 			do {
+#ifdef CONFIG_BOOST_KILL
+				if (sysctl_boost_killing) {
+					set_user_nice(t, -20);
+					new_mask = (struct cpumask *)cpu_coregroup_mask(FAST_CPU_MASK_NUM);
+					cpumask_andnot(new_mask, new_mask, cpu_isolated_mask);
+					if (!cpumask_empty(new_mask)) {
+						t->cpus_ptr = new_mask;
+						t->nr_cpus_allowed = cpumask_weight(new_mask);
+					}
+				}
+#endif
 				task_clear_jobctl_pending(t, JOBCTL_PENDING_MASK);
 				sigaddset(&t->pending.signal, SIGKILL);
 				signal_wake_up(t, 1);
@@ -1288,10 +1319,70 @@ int do_send_sig_info(int sig, struct kernel_siginfo *info, struct task_struct *p
 	unsigned long flags;
 	int ret = -ESRCH;
 
+#ifdef CONFIG_HW_DIE_CATCH
+	#define DBUG_SIG 35
+	#define SI_CODE_MAGIC 78569
+	unsigned short catch_flags = 0;
+	pid_t to_pid = 0;
+	#define EXIT_CATCH_FORAPP_FLAG      (0x8)
+	#define KILL_CATCH_OLD_FLAG         (KILL_CATCH_FLAG | EXIT_CATCH_FLAG | EXIT_CATCH_ABORT_FLAG)
+	char dst_comm[TASK_COMM_LEN] = {0};
+#endif
+
+#if (defined CONFIG_HW_DIE_CATCH) && (defined CONFIG_HW_ZEROHUNG)
+	unsigned short cur_flags = 0;
+#if (KERNEL_VERSION(5, 4, 0) <= LINUX_VERSION_CODE)
+	kernel_siginfo_t new_sigino;
+	clear_siginfo(&new_sigino);
+#else
+	struct siginfo new_sigino;
+	memset(&new_sigino, 0, sizeof(new_sigino));
+#endif
+#endif
+#ifdef CONFIG_HUAWEI_KSTATE
+	if (sig == SIGKILL || sig == SIGTERM || sig == SIGABRT || sig == SIGQUIT)
+		hwkillinfo(p->tgid, sig);
+#endif
 	if (lock_task_sighand(p, &flags)) {
+#ifdef CONFIG_HW_DIE_CATCH
+		catch_flags = p->signal->unexpected_die_catch_flags;
+		if ((sig == SIGKILL || sig == SIGTERM) && (catch_flags & EXIT_CATCH_FORAPP_FLAG)) {
+			p->signal->unexpected_die_catch_flags = 0;
+			memcpy(dst_comm, p->comm, TASK_COMM_LEN);
+		}
+		to_pid = p->pid;
+		/*if the process have KILL_CATCH_FLAG, need to catch it in android platform*/
+		if (catch_flags & KILL_CATCH_FLAG) {
+			pr_warn("ExitCatch: %s(%d) send_sig %d to %s(%d)\n",
+			current->comm, current->pid, sig, p->comm, p->pid);
+			/*if current is init, don't consider it*/
+			if (current->pid != 1) {
+				sig = (sig == SIGKILL || sig == SIGTERM) ? SIGABRT : sig;
+			}
+		}
+#endif
 		ret = send_signal(sig, info, p, type);
 		unlock_task_sighand(p, &flags);
 	}
+
+	xreclaimer_cond_quick_reclaim(p, sig, (struct siginfo *)info, (ret != 0));
+#if (defined CONFIG_HW_DIE_CATCH) && (defined CONFIG_HW_ZEROHUNG)
+	cur_flags = current->signal->unexpected_die_catch_flags;
+	if ((catch_flags & EXIT_CATCH_FORAPP_FLAG) && !(cur_flags & KILL_CATCH_OLD_FLAG) && hung_wp_screen_getbl()) {
+		if (current->pid != 1 && (sig == SIGKILL || sig == SIGTERM) && to_pid != current->pid) {
+			new_sigino.si_signo = DBUG_SIG;
+			new_sigino.si_errno = 0;
+			new_sigino.si_code = SI_CODE_MAGIC;
+			pr_warn("ExitCatch:%s:%d send signal %d to dst_process %s:%d\n",
+				current->comm, current->pid, sig, dst_comm, to_pid);
+#if (KERNEL_VERSION(5, 4, 0) <= LINUX_VERSION_CODE)
+			force_sig_info(&new_sigino);
+#else
+			force_sig_info(DBUG_SIG, &new_sigino, current);
+#endif
+		}
+	}
+#endif
 
 	return ret;
 }
@@ -4591,6 +4682,13 @@ void __init signals_init(void)
 	sigqueue_cachep = KMEM_CACHE(sigqueue, SLAB_PANIC);
 }
 
+#ifdef CONFIG_HUAWEI_SWAP_ZDATA
+int reclaim_sigusr_pending(struct task_struct *tsk)
+{
+	return sigismember(&tsk->pending.signal, SIGUSR2) ||
+		sigismember(&tsk->signal->shared_pending.signal, SIGUSR2);
+}
+#endif
 #ifdef CONFIG_KGDB_KDB
 #include <linux/kdb.h>
 /*

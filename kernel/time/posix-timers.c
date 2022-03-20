@@ -1352,6 +1352,7 @@ static const struct k_clock * const posix_clocks[] = {
 	[CLOCK_REALTIME_ALARM]		= &alarm_clock,
 	[CLOCK_BOOTTIME_ALARM]		= &alarm_clock,
 	[CLOCK_TAI]			= &clock_tai,
+	[CLOCK_POWEROFF_ALARM]		= &alarm_clock,
 };
 
 static const struct k_clock *clockid_to_kclock(const clockid_t id)

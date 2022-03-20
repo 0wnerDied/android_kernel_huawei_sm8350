@@ -378,6 +378,8 @@ struct printk_log {
 #ifdef CONFIG_PRINTK_CALLER
 	u32 caller_id;            /* thread id or processor id */
 #endif
+	pid_t pid;		                /* task pid */
+	char comm[TASK_COMM_LEN];		/* task name */
 }
 #ifdef CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS
 __packed __aligned(4)
@@ -655,6 +657,10 @@ out:
 }
 #endif
 
+#ifdef CONFIG_PRINTK_PREFIX
+#define PRINTK_TIME_STR_MAX 100
+#endif
+
 /* insert record into the buffer, discard old ones, update heads */
 static int log_store(u32 caller_id, int facility, int level,
 		     enum log_flags flags, u64 ts_nsec,
@@ -664,6 +670,50 @@ static int log_store(u32 caller_id, int facility, int level,
 	struct printk_log *msg;
 	u32 size, pad_len;
 	u16 trunc_msg_len = 0;
+	/* test time */
+#ifdef CONFIG_PRINTK_PREFIX
+	struct tm tm_rtc;
+	unsigned long cur_secs;
+	static char tmp_buf[PRINTK_TIME_STR_MAX];
+	static int tmp_len;
+	static unsigned long prev_jffy;
+	static unsigned long prejf_init_flag;
+	int this_cpu = smp_processor_id();
+	int tlen = 0;
+
+	if (prejf_init_flag == 0) {
+		prejf_init_flag = 1;
+		prev_jffy = jiffies;
+	}
+	cur_secs = get_seconds();
+	cur_secs -= sys_tz.tz_minuteswest * 60;
+	time_to_tm(cur_secs, 0, &tm_rtc);
+	if (time_after(jiffies, prev_jffy + 1 * HZ)) {
+		prev_jffy = jiffies;
+		tmp_len = 0;
+		tmp_len += snprintf(tmp_buf, sizeof(tmp_buf),
+		"[%lu:%.2d:%.2d %.2d:%.2d:%.2d]",
+		1900 + tm_rtc.tm_year, tm_rtc.tm_mon + 1,
+		tm_rtc.tm_mday, tm_rtc.tm_hour, tm_rtc.tm_min, tm_rtc.tm_sec);
+	}
+	text_len += tmp_len;
+
+	if (!(flags & LOG_CONT)) {
+		if (console_suspended == 0)
+			tlen = snprintf(tmp_buf + tmp_len,
+				sizeof(tmp_buf) - tmp_len,
+				"(%x)[%d:%s]",
+				this_cpu,
+				current->pid,
+				current->comm);
+		else
+			tlen = snprintf(tmp_buf + tmp_len,
+				sizeof(tmp_buf) - tmp_len,
+				"(%x)",
+				this_cpu);
+	}
+	text_len += tlen;
+#endif
 
 	/* number of '\0' padding bytes to next message */
 	size = msg_used_size(text_len, dict_len, &pad_len);
@@ -689,7 +739,12 @@ static int log_store(u32 caller_id, int facility, int level,
 
 	/* fill message */
 	msg = (struct printk_log *)(log_buf + log_next_idx);
+#ifdef CONFIG_PRINTK_PREFIX
+	memcpy(log_text(msg), tmp_buf, tmp_len + tlen);
+	memcpy(log_text(msg) + tmp_len + tlen, text, text_len - tmp_len - tlen);
+#else
 	memcpy(log_text(msg), text, text_len);
+#endif
 	msg->text_len = text_len;
 	if (trunc_msg_len) {
 		memcpy(log_text(msg) + text_len, trunc_msg, trunc_msg_len);
@@ -700,6 +755,9 @@ static int log_store(u32 caller_id, int facility, int level,
 	msg->facility = facility;
 	msg->level = level & 7;
 	msg->flags = flags & 0x1f;
+	msg->pid = current->pid;
+	memset(msg->comm, 0, TASK_COMM_LEN);
+	memcpy(msg->comm, current->comm, TASK_COMM_LEN - 1);
 	if (ts_nsec > 0)
 		msg->ts_nsec = ts_nsec;
 	else
@@ -878,10 +936,10 @@ static ssize_t devkmsg_write(struct kiocb *iocb, struct iov_iter *from)
 		return len;
 
 	/* Ratelimit when not explicitly enabled. */
-	if (!(devkmsg_log & DEVKMSG_LOG_MASK_ON)) {
-		if (!___ratelimit(&user->rs, current->comm))
-			return ret;
-	}
+//	if (!(devkmsg_log & DEVKMSG_LOG_MASK_ON)) {
+//		if (!___ratelimit(&user->rs, current->comm))
+//			return ret;
+//	}
 
 	buf = kmalloc(len+1, GFP_KERNEL);
 	if (buf == NULL)

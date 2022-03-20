@@ -52,6 +52,9 @@
 #include <linux/nmi.h>
 #include <linux/bug.h>
 #include <linux/delay.h>
+#ifdef CONFIG_HUAWEI_DUBAI
+#include <chipset_common/dubai/dubai.h>
+#endif
 
 #include "workqueue_internal.h"
 
@@ -1951,6 +1954,11 @@ static struct worker *create_worker(struct worker_pool *pool)
 		goto fail;
 
 	set_user_nice(worker->task, pool->attrs->nice);
+#if defined (CONFIG_HW_VIP_THREAD) && defined (CONFIG_HW_VIP_KWORKER)
+	/* the number of cpu cores should be greater than 2 */
+	if (pool->attrs->nice == HIGHPRI_NICE_LEVEL && worker->task->nr_cpus_allowed > 2)
+		worker->task->static_vip = 1;
+#endif
 	kthread_bind_mask(worker->task, pool->attrs->cpumask);
 
 	/* successful, attach the worker to the pool */
@@ -2187,6 +2195,9 @@ __acquires(&pool->lock)
 	bool cpu_intensive = pwq->wq->flags & WQ_CPU_INTENSIVE;
 	int work_color;
 	struct worker *collision;
+#ifdef CONFIG_HUAWEI_DUBAI
+    u64 uptime;
+#endif
 #ifdef CONFIG_LOCKDEP
 	/*
 	 * It is permissible to free the struct work_struct from
@@ -2285,7 +2296,13 @@ __acquires(&pool->lock)
 	 */
 	lockdep_invariant_state(true);
 	trace_workqueue_execute_start(work);
+#ifdef CONFIG_HUAWEI_DUBAI
+    uptime = ktime_get_ns();
+#endif
 	worker->current_func(work);
+#ifdef CONFIG_HUAWEI_DUBAI
+    dubai_log_kworker((unsigned long)(worker->current_func), uptime);
+#endif
 	/*
 	 * While we must be careful to not use "work" after this, the trace
 	 * point will only record its address.

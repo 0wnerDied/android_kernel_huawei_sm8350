@@ -15,6 +15,10 @@
 #include <linux/bug.h>
 #include <soc/qcom/watchdog.h>
 
+#ifdef CONFIG_RAINBOW_REASON
+#include <linux/rainbow_reason.h>
+#endif
+
 void __raw_spin_lock_init(raw_spinlock_t *lock, const char *name,
 			  struct lock_class_key *key)
 {
@@ -66,7 +70,10 @@ static void spin_dump(raw_spinlock_t *lock, const char *msg)
 		owner ? owner->comm : "<none>",
 		owner ? task_pid_nr(owner) : -1,
 		READ_ONCE(lock->owner_cpu));
-
+#ifdef CONFIG_RAINBOW_REASON
+	rb_sreason_set("spinlock_debug");
+	rb_attach_info_set("Spinlock_bug,%s_%d", current->comm, task_pid_nr(current));
+#endif
 #ifdef CONFIG_DEBUG_SPINLOCK_BITE_ON_BUG
 	qcom_wdt_trigger_bite();
 #elif defined(CONFIG_DEBUG_SPINLOCK_PANIC_ON_BUG)

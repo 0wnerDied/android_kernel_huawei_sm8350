@@ -19,6 +19,10 @@
 
 #include "internals.h"
 
+#ifdef CONFIG_RAINBOW_TRACE
+#include "../rainbow/rainbow_trace.h"
+#endif
+
 /*
  * lockdep: we want to handle all irq_desc locks as a single lock-class:
  */
@@ -663,6 +667,10 @@ int __handle_domain_irq(struct irq_domain *domain, unsigned int hwirq,
 	unsigned int irq = hwirq;
 	int ret = 0;
 
+#ifdef CONFIG_RAINBOW_TRACE
+	rb_trace_irq_write(RB_TRACE_IRQ_ENTER, hwirq);
+#endif
+
 	irq_enter();
 
 #ifdef CONFIG_IRQ_DOMAIN
@@ -682,6 +690,9 @@ int __handle_domain_irq(struct irq_domain *domain, unsigned int hwirq,
 	}
 
 	irq_exit();
+#ifdef CONFIG_RAINBOW_TRACE
+	rb_trace_irq_write(RB_TRACE_IRQ_EXIT, hwirq);
+#endif
 	set_irq_regs(old_regs);
 	return ret;
 }

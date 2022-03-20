@@ -36,6 +36,13 @@
 # include "mutex.h"
 #endif
 
+#ifdef CONFIG_HW_QOS_THREAD
+#include <chipset_common/hwqos/hwqos_common.h>
+#endif
+
+#ifdef CONFIG_HW_VIP_THREAD
+#include <chipset_common/hwcfs/hwcfs_mutex.h>
+#endif
 #include <trace/hooks/dtask.h>
 
 void
@@ -46,6 +53,10 @@ __mutex_init(struct mutex *lock, const char *name, struct lock_class_key *key)
 	INIT_LIST_HEAD(&lock->wait_list);
 #ifdef CONFIG_MUTEX_SPIN_ON_OWNER
 	osq_lock_init(&lock->osq);
+#endif
+
+#ifdef CONFIG_HW_VIP_THREAD
+	lock->vip_dep_task = NULL;
 #endif
 
 	debug_mutex_init(lock, name, key);
@@ -212,7 +223,12 @@ __mutex_add_waiter(struct mutex *lock, struct mutex_waiter *waiter,
 {
 	debug_mutex_add_waiter(lock, waiter, current);
 
+#ifdef CONFIG_HW_VIP_THREAD
+	mutex_list_add(current, &waiter->list, list, lock);
+#else
 	list_add_tail(&waiter->list, list);
+#endif
+
 	if (__mutex_waiter_is_first(lock, waiter))
 		__mutex_set_flag(lock, MUTEX_FLAG_WAITERS);
 }
@@ -1032,6 +1048,15 @@ __mutex_lock_common(struct mutex *lock, long state, unsigned int subclass,
 				goto err;
 		}
 
+#ifdef CONFIG_HW_VIP_THREAD
+		mutex_dynamic_vip_enqueue(lock, current);
+#endif
+
+#ifdef CONFIG_HW_QOS_THREAD
+		dynamic_qos_enqueue(__mutex_owner(lock),
+			current, DYNAMIC_QOS_MUTEX);
+#endif
+
 		spin_unlock(&lock->wait_lock);
 		schedule_preempt_disabled();
 
@@ -1265,6 +1290,14 @@ static noinline void __sched __mutex_unlock_slowpath(struct mutex *lock, unsigne
 
 	spin_lock(&lock->wait_lock);
 	debug_mutex_unlock(lock);
+
+#ifdef CONFIG_HW_VIP_THREAD
+	mutex_dynamic_vip_dequeue(lock, current);
+#endif
+#ifdef CONFIG_HW_QOS_THREAD
+	dynamic_qos_dequeue(current, DYNAMIC_QOS_MUTEX);
+#endif
+
 	if (!list_empty(&lock->wait_list)) {
 		/* get the first entry from the wait-list: */
 		struct mutex_waiter *waiter =

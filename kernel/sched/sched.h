@@ -75,6 +75,18 @@
 #include "cpupri.h"
 #include "cpudeadline.h"
 
+#ifdef CONFIG_HW_CPU_FREQ_GOV_SCHEDUTIL_COMMON
+#include "hw_schedutil/sched_common_hw.h"
+#endif
+
+#if defined(CONFIG_HW_CPU_FREQ_GOV_SCHEDUTIL) || defined(CONFIG_HW_CPU_FREQ_GOV_SCHEDUTIL_COMMON)
+#include "hw_schedutil/sched_hw.h"
+#endif
+
+#ifdef CONFIG_HUAWEI_SCHED_VIP
+#include "vip.h"
+#endif
+
 #ifdef CONFIG_SCHED_DEBUG
 # define SCHED_WARN_ON(x)	WARN_ONCE(x, #x)
 #else
@@ -94,6 +106,21 @@ struct walt_cpu_load {
 	bool rtgb_active;
 	u64 ws;
 };
+
+#if (defined(CONFIG_HUAWEI_SCHED_VIP) || defined(CONFIG_HW_RTG))
+extern unsigned long uclamp_task_util(struct task_struct *p);
+#define boosted_task_util uclamp_task_util
+#endif
+
+#ifdef CONFIG_HW_RTG_NORMALIZED_UTIL
+extern void hw_setscheduler_uclamp(struct task_struct *p,
+				  const struct sched_attr *attr);
+extern unsigned int hw_freq_to_util(unsigned int cluster_cpu, unsigned int freq);
+#endif
+
+#ifdef CONFIG_HW_RT_ACTIVE_LB
+extern void check_for_rt_migration(struct rq *rq, struct task_struct *p);
+#endif
 
 #ifdef CONFIG_SCHED_WALT
 #define DECLARE_BITMAP_ARRAY(name, nr, bits) \
@@ -178,6 +205,11 @@ struct walt_rq {
 			NUM_TRACKED_WINDOWS, NUM_LOAD_INDICES);
 	u8			*top_tasks[NUM_TRACKED_WINDOWS];
 	u8			curr_table;
+#ifdef CONFIG_HW_TOP_TASK
+	unsigned int		top_task_hist_size;
+	unsigned int		top_task_stats_policy;
+	bool			top_task_stats_empty_window;
+#endif
 	int			prev_top;
 	int			curr_top;
 	bool			notif_pending;
@@ -216,6 +248,10 @@ extern long calc_load_fold_active(struct rq *this_rq, long adjust);
 
 #ifdef CONFIG_SMP
 extern void init_sched_groups_capacity(int cpu, struct sched_domain *sd);
+#endif
+
+#ifdef CONFIG_HW_CPU_FREQ_GOV_SCHEDUTIL
+extern unsigned long get_cpu_util(int cpu);
 #endif
 
 /*
@@ -1150,6 +1186,27 @@ struct rq {
 #ifdef CONFIG_SCHED_WALT
 	int			idle_state_idx;
 #endif
+#endif
+
+#ifdef CONFIG_HW_VIP_THREAD
+	/*task list for vip thread*/
+	struct list_head vip_thread_list;
+	int active_vip_balance;
+	struct cpu_stop_work vip_balance_work;
+#endif
+#ifdef CONFIG_HUAWEI_SCHED_VIP
+	struct list_head vip_prio_thread_list;
+	unsigned int highest_vip_prio;
+	enum vip_preempt_type vip_preempt_type;
+	bool sync_waiting;
+#endif
+#ifdef CONFIG_HW_RTG
+	u64			group_load;
+#endif
+#ifdef CONFIG_HW_RT_ACTIVE_LB
+	int			rt_active_balance;
+	struct			task_struct *rt_push_task;
+	struct			cpu_stop_work rt_active_balance_work;
 #endif
 };
 
@@ -2233,9 +2290,18 @@ static inline unsigned long capacity_orig_of(int cpu)
 	return cpu_rq(cpu)->cpu_capacity_orig;
 }
 
+#ifdef CONFIG_HW_SCHED_WALT
+extern bool walt_disabled;
+extern unsigned int sysctl_sched_use_walt_cpu_util;
+extern unsigned int sysctl_sched_use_walt_task_util;
+#endif
+
 static inline unsigned long task_util(struct task_struct *p)
 {
 #ifdef CONFIG_SCHED_WALT
+#ifdef CONFIG_HW_SCHED_WALT
+	if (likely(!walt_disabled && sysctl_sched_use_walt_task_util))
+#endif
 	return p->wts.demand_scaled;
 #endif
 	return READ_ONCE(p->se.avg.util_avg);
@@ -2285,10 +2351,16 @@ static inline unsigned long cpu_util(int cpu)
 	unsigned int util;
 
 #ifdef CONFIG_SCHED_WALT
+#ifdef CONFIG_HW_SCHED_WALT
+	if (likely(!walt_disabled && sysctl_sched_use_walt_cpu_util)) {
+#endif
 	u64 walt_cpu_util =
 		cpu_rq(cpu)->wrq.walt_stats.cumulative_runnable_avg_scaled;
 
 	return min_t(unsigned long, walt_cpu_util, capacity_orig_of(cpu));
+#ifdef CONFIG_HW_SCHED_WALT
+	}
+#endif
 #endif
 
 	cfs_rq = &cpu_rq(cpu)->cfs;
@@ -2650,8 +2722,13 @@ static inline void cpufreq_update_util(struct rq *rq, unsigned int flags)
 	u64 clock;
 
 #ifdef CONFIG_SCHED_WALT
+#ifdef CONFIG_HW_CPU_FREQ_GOV_SCHEDUTIL_COMMON
+	if (!(flags & (SCHED_CPUFREQ_WALT | SCHED_CPUFREQ_HW)))
+#else
 	if (!(flags & SCHED_CPUFREQ_WALT))
+#endif
 		return;
+
 	clock = sched_ktime_clock();
 #else
 	clock = rq_clock(rq);
@@ -2927,6 +3004,7 @@ static inline int cluster_first_cpu(struct walt_sched_cluster *cluster)
 	return cpumask_first(&cluster->cpus);
 }
 
+#ifdef CONFIG_QCOM_WALT_RTG
 struct walt_related_thread_group {
 	int id;
 	raw_spinlock_t lock;
@@ -2939,6 +3017,43 @@ struct walt_related_thread_group {
 	u64 start_ts;
 };
 
+extern int alloc_related_thread_groups(void);
+
+extern void add_new_task_to_grp(struct task_struct *new);
+
+static inline
+struct walt_related_thread_group *task_related_thread_group(struct task_struct *p)
+{
+	return rcu_dereference(p->wts.grp);
+}
+
+extern int preferred_cluster(struct walt_sched_cluster *cluster,
+						struct task_struct *p);
+
+extern void set_preferred_cluster(struct walt_related_thread_group *grp);
+#elif !defined(CONFIG_HW_RTG)
+struct walt_related_thread_group;
+
+static inline int alloc_related_thread_groups(void)
+{
+	return 0;
+}
+
+static inline void add_new_task_to_grp(struct task_struct *new) {}
+
+static inline
+struct walt_related_thread_group *task_related_thread_group(struct task_struct *p)
+{
+	return NULL;
+}
+
+static inline int
+preferred_cluster(struct walt_sched_cluster *cluster, struct task_struct *p)
+{
+	return -1;
+}
+#endif
+
 extern struct walt_sched_cluster *sched_cluster[NR_CPUS];
 
 extern unsigned int max_possible_capacity;
@@ -2946,10 +3061,13 @@ extern unsigned int min_max_possible_capacity;
 extern unsigned int __read_mostly sched_init_task_load_windows;
 extern unsigned int  __read_mostly sched_load_granule;
 
+#ifdef CONFIG_HW_RTG
+extern int update_preferred_cluster(struct related_thread_group *grp,
+			struct task_struct *p, u32 old_load, bool from_tick);
+#else
 extern int update_preferred_cluster(struct walt_related_thread_group *grp,
 			struct task_struct *p, u32 old_load, bool from_tick);
-extern void set_preferred_cluster(struct walt_related_thread_group *grp);
-extern void add_new_task_to_grp(struct task_struct *new);
+#endif
 
 #define NO_BOOST 0
 #define FULL_THROTTLE_BOOST 1
@@ -3033,19 +3151,17 @@ static inline unsigned int task_pl(struct task_struct *p)
 
 static inline bool task_in_related_thread_group(struct task_struct *p)
 {
+#ifdef CONFIG_HW_RTG
+	return (rcu_access_pointer(p->grp) != NULL);
+#else
 	return (rcu_access_pointer(p->wts.grp) != NULL);
+#endif
 }
 
 static inline bool task_rtg_high_prio(struct task_struct *p)
 {
 	return task_in_related_thread_group(p) &&
 		(p->prio <= sysctl_walt_rtg_cfs_boost_prio);
-}
-
-static inline struct walt_related_thread_group
-*task_related_thread_group(struct task_struct *p)
-{
-	return rcu_dereference(p->wts.grp);
 }
 
 /* applying the task threshold for all types of low latency tasks. */
@@ -3106,8 +3222,6 @@ static inline bool is_full_throttle_boost(void)
 	return sched_boost() == FULL_THROTTLE_BOOST;
 }
 
-extern int preferred_cluster(struct walt_sched_cluster *cluster,
-						struct task_struct *p);
 extern struct walt_sched_cluster *rq_cluster(struct rq *rq);
 
 #ifdef CONFIG_UCLAMP_TASK_GROUP
@@ -3144,8 +3258,6 @@ static inline bool task_sched_boost(struct task_struct *p)
 }
 
 #endif
-
-extern int alloc_related_thread_groups(void);
 
 extern void check_for_migration(struct rq *rq, struct task_struct *p);
 

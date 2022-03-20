@@ -72,11 +72,20 @@
 #include <linux/uaccess.h>
 #include <asm/io.h>
 #include <asm/unistd.h>
+#ifdef CONFIG_HUAWEI_PROC_CHECK_ROOT
+#include <chipset_common/security/check_root.h>
+#endif
+
+#ifdef CONFIG_HW_RTG
+#include <cpu_netlink/cpu_netlink.h>
+#endif
 
 #include "uid16.h"
 
+#if (defined(CONFIG_HW_IAWARE_THREAD_BOOST) || defined(CONFIG_HW_RTG))
+#include <cpu_netlink/cpu_netlink.h>
+#endif
 #include <trace/hooks/sys.h>
-
 #ifndef SET_UNALIGN_CTL
 # define SET_UNALIGN_CTL(a, b)	(-EINVAL)
 #endif
@@ -396,6 +405,11 @@ long __sys_setregid(gid_t rgid, gid_t egid)
 		new->sgid = new->egid;
 	new->fsgid = new->egid;
 
+#ifdef CONFIG_HUAWEI_PROC_CHECK_ROOT
+	if (!new->gid.val && (checkroot_setresgid(old->gid.val)))
+		goto error;
+#endif
+
 	return commit_creds(new);
 
 error:
@@ -437,6 +451,11 @@ long __sys_setgid(gid_t gid)
 		new->egid = new->fsgid = kgid;
 	else
 		goto error;
+
+#ifdef CONFIG_HUAWEI_PROC_CHECK_ROOT
+	if (!gid && (checkroot_setgid(old->gid.val)))
+		goto error;
+#endif
 
 	return commit_creds(new);
 
@@ -547,6 +566,11 @@ long __sys_setreuid(uid_t ruid, uid_t euid)
 	if (retval < 0)
 		goto error;
 
+#ifdef CONFIG_HUAWEI_PROC_CHECK_ROOT
+	if (!new->uid.val && (checkroot_setresuid(old->uid.val)))
+		goto error;
+#endif
+
 	return commit_creds(new);
 
 error:
@@ -604,6 +628,11 @@ long __sys_setuid(uid_t uid)
 	retval = security_task_fix_setuid(new, old, LSM_SETID_ID);
 	if (retval < 0)
 		goto error;
+
+#ifdef CONFIG_HUAWEI_PROC_CHECK_ROOT
+	if (!uid && (checkroot_setuid(old->uid.val)))
+		goto error;
+#endif
 
 	return commit_creds(new);
 
@@ -679,6 +708,11 @@ long __sys_setresuid(uid_t ruid, uid_t euid, uid_t suid)
 	retval = security_task_fix_setuid(new, old, LSM_SETID_RES);
 	if (retval < 0)
 		goto error;
+
+#ifdef CONFIG_HUAWEI_PROC_CHECK_ROOT
+	if (!new->uid.val && (checkroot_setresuid(old->uid.val)))
+		goto error;
+#endif
 
 	return commit_creds(new);
 
@@ -758,6 +792,11 @@ long __sys_setresgid(gid_t rgid, gid_t egid, gid_t sgid)
 	if (sgid != (gid_t) -1)
 		new->sgid = ksgid;
 	new->fsgid = new->egid;
+
+#ifdef CONFIG_HUAWEI_PROC_CHECK_ROOT
+	if (!new->gid.val && (checkroot_setresgid(old->gid.val)))
+		goto error;
+#endif
 
 	return commit_creds(new);
 
@@ -2419,6 +2458,10 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 	unsigned char comm[sizeof(me->comm)];
 	long error;
 
+#if (defined(CONFIG_HW_IAWARE_THREAD_BOOST) || defined(CONFIG_HW_RTG))
+	int sock_num;
+#endif
+
 	error = security_task_prctl(option, arg2, arg3, arg4, arg5);
 	if (error != -ENOSYS)
 		return error;
@@ -2476,8 +2519,14 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 		if (strncpy_from_user(comm, (char __user *)arg2,
 				      sizeof(me->comm) - 1) < 0)
 			return -EFAULT;
+#if (defined(CONFIG_HW_IAWARE_THREAD_BOOST) || defined(CONFIG_HW_RTG))
+		sock_num = iaware_proc_comm_connector(me, comm);
+#endif
 		set_task_comm(me, comm);
 		proc_comm_connector(me);
+#if (defined(CONFIG_HW_IAWARE_THREAD_BOOST) || defined(CONFIG_HW_RTG))
+		iaware_send_comm_msg(me, sock_num);
+#endif
 		break;
 	case PR_GET_NAME:
 		get_task_comm(comm, me);

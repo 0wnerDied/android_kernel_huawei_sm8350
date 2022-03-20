@@ -29,22 +29,23 @@
 extern int num_sched_clusters;
 
 extern unsigned int walt_big_tasks(int cpu);
+static inline u64 scale_exec_time(u64 delta, struct rq *rq)
+{
+	return (delta * rq->wrq.task_exec_scale) >> 10;
+}
 extern void reset_task_stats(struct task_struct *p);
 extern void walt_rotate_work_init(void);
 extern void walt_rotation_checkpoint(int nr_big);
 extern void walt_fill_ta_data(struct core_ctl_notif_data *data);
+#ifdef CONFIG_QCOM_WALT_RTG
 extern int sched_set_group_id(struct task_struct *p, unsigned int group_id);
 extern unsigned int sched_get_group_id(struct task_struct *p);
+#endif
 extern int sched_set_init_task_load(struct task_struct *p, int init_load_pct);
 extern u32 sched_get_init_task_load(struct task_struct *p);
 extern void core_ctl_check(u64 wallclock);
 extern int sched_set_boost(int enable);
 extern int sched_isolate_count(const cpumask_t *mask, bool include_offline);
-
-extern struct list_head cluster_head;
-#define for_each_sched_cluster(cluster) \
-	list_for_each_entry_rcu(cluster, &cluster_head, list)
-
 static inline u32 cpu_cycles_to_freq(u64 cycles, u64 period)
 {
 	return div64_u64(cycles, period);

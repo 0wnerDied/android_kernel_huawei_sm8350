@@ -34,6 +34,10 @@ struct rt_mutex_waiter {
 	struct pid		*deadlock_task_pid;
 	struct rt_mutex		*deadlock_lock;
 #endif
+#ifdef CONFIG_HW_FUTEX_PI
+	unsigned int major_prio;
+	int major_only;
+#endif
 	int prio;
 	u64 deadline;
 };

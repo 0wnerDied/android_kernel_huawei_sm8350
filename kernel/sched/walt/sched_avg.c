@@ -207,7 +207,6 @@ void sched_update_nr_prod(int cpu, long delta, bool inc)
 	nr_running = per_cpu(nr, cpu);
 	curr_time = sched_clock();
 	diff = curr_time - per_cpu(last_time, cpu);
-	BUG_ON((s64)diff < 0);
 	per_cpu(last_time, cpu) = curr_time;
 	per_cpu(nr, cpu) = nr_running + (inc ? delta : -delta);
 
@@ -217,9 +216,10 @@ void sched_update_nr_prod(int cpu, long delta, bool inc)
 		per_cpu(nr_max, cpu) = per_cpu(nr, cpu);
 
 	update_busy_hyst_end_time(cpu, !inc, nr_running, curr_time);
-
-	per_cpu(nr_prod_sum, cpu) += nr_running * diff;
-	per_cpu(nr_big_prod_sum, cpu) += walt_big_tasks(cpu) * diff;
+	if ((s64)diff > 0) {
+		per_cpu(nr_prod_sum, cpu) += nr_running * diff;
+		per_cpu(nr_big_prod_sum, cpu) += walt_big_tasks(cpu) * diff;
+	}
 	spin_unlock_irqrestore(&per_cpu(nr_lock, cpu), flags);
 }
 EXPORT_SYMBOL(sched_update_nr_prod);

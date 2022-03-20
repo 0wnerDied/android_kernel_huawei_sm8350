@@ -63,8 +63,11 @@
 #include <linux/random.h>
 #include <linux/rcuwait.h>
 #include <linux/compat.h>
+#include <linux/xreclaimer.h>
+#include <linux/perf_ctrl.h>
 
 #include <linux/uaccess.h>
+#include <linux/version.h>
 #include <asm/unistd.h>
 #include <asm/pgtable.h>
 #include <asm/mmu_context.h>
@@ -457,7 +460,7 @@ static void exit_mm(void)
 
 		self.task = current;
 		if (self.task->flags & PF_SIGNALED)
-			self.next = xchg(&core_state->dumper.next, &self);
+		self.next = xchg(&core_state->dumper.next, &self);
 		else
 			self.task = NULL;
 		/*
@@ -484,6 +487,7 @@ static void exit_mm(void)
 	up_read(&mm->mmap_sem);
 	enter_lazy_tlb(mm, current);
 	task_unlock(current);
+	xreclaimer_dec_mm_tasks(mm);
 	mm_update_next_owner(mm);
 	mmput(mm);
 	if (test_thread_flag(TIF_MEMDIE))
@@ -766,6 +770,10 @@ void __noreturn do_exit(long code)
 
 	exit_signals(tsk);  /* sets PF_EXITING */
 
+#ifdef CONFIG_RENDER_RT
+	remove_render_rthread(tsk);
+#endif
+
 	/* sync mm's RSS info before statistics gathering */
 	if (tsk->mm)
 		sync_mm_rss(tsk->mm);
@@ -860,6 +868,10 @@ void __noreturn do_exit(long code)
 	exit_tasks_rcu_finish();
 
 	lockdep_free_task(tsk);
+
+#ifdef CONFIG_HUAWEI_SWAP_ZDATA
+	exit_proc_reclaim(tsk);
+#endif
 	do_task_dead();
 }
 EXPORT_SYMBOL_GPL(do_exit);
@@ -906,9 +918,56 @@ do_group_exit(int exit_code)
 		spin_unlock_irq(&sighand->siglock);
 	}
 
+	xreclaimer_cond_self_reclaim(exit_code);
 	do_exit(exit_code);
 	/* NOTREACHED */
 }
+
+#ifdef CONFIG_HW_DIE_CATCH
+/*
+ * catch_unexpected_exit,
+ * difficult :if the signal handler, call exit,
+ * it maybe will have some nested handler
+ */
+int catch_unexpected_exit(int exit_code)
+{
+	struct signal_struct *sig = current->signal;
+	unsigned short die_catch_flags = sig->unexpected_die_catch_flags;
+#if (KERNEL_VERSION(5, 4, 0) <= LINUX_VERSION_CODE)
+	kernel_siginfo_t info;
+	clear_siginfo(&info);
+#else
+	siginfo_t info;
+	memset(&info, 0, sizeof(info));
+#endif
+	/* reset the unexpected_die_catch_flags
+	 * to avoid recursive in signal handler
+	 */
+	sig->unexpected_die_catch_flags = 0;
+
+	/* print critical process exit info */
+	if (die_catch_flags & EXIT_CATCH_FLAG)
+		pr_warn("ExitCatch: %s %d exited with exit_code %d\n",
+				current->comm, task_pid_nr(current), exit_code);
+
+	if (die_catch_flags & EXIT_CATCH_ABORT_FLAG) {
+		/*
+		 * Send a SIGABRT, regardless of whether we were in kernel
+		 * or user mode.
+		 */
+		info.si_signo = SIGABRT;
+		info.si_errno = 0;
+		info.si_code = 0;
+#if (KERNEL_VERSION(5, 4, 0) <= LINUX_VERSION_CODE)
+		force_sig_info(&info);
+#else
+		force_sig_info(SIGABRT, &info, current);
+#endif
+		return 1;
+	}
+	return 0;
+}
+#endif
 
 /*
  * this kills every thread in the thread group. Note that any externally
@@ -917,7 +976,12 @@ do_group_exit(int exit_code)
  */
 SYSCALL_DEFINE1(exit_group, int, error_code)
 {
+#ifdef CONFIG_HW_DIE_CATCH
+	if (!catch_unexpected_exit(error_code))
+		do_group_exit((error_code & 0xff) << 8);
+#else
 	do_group_exit((error_code & 0xff) << 8);
+#endif
 	/* NOTREACHED */
 	return 0;
 }

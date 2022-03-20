@@ -25,7 +25,9 @@
 #include <linux/filter.h>
 #include <linux/ftrace.h>
 #include <linux/compiler.h>
-
+#ifdef CONFIG_HUAWEI_HIDESYMS
+#include <chipset_common/kernel_harden/litehide_symbols.h>
+#endif
 /*
  * These will be re-linked against their real values
  * during the second link stage.
@@ -197,6 +199,7 @@ unsigned long kallsyms_lookup_name(const char *name)
 	}
 	return module_kallsyms_lookup_name(name);
 }
+EXPORT_SYMBOL(kallsyms_lookup_name);
 
 int kallsyms_on_each_symbol(int (*fn)(void *, const char *, struct module *,
 				      unsigned long),
@@ -642,6 +645,12 @@ static int s_show(struct seq_file *m, void *p)
 	/* Some debugging symbols have no name.  Ignore them. */
 	if (!iter->name[0])
 		return 0;
+
+#ifdef CONFIG_HUAWEI_HIDESYMS
+	/* need to check if it's a hidden symbol. */
+	if (is_hide_symbols(iter->name) == true)
+		return 0;
+#endif
 
 	value = iter->show_value ? (void *)iter->value : NULL;
 

@@ -5,6 +5,7 @@
 #define pr_fmt(fmt)	"core_ctl: " fmt
 
 #include <linux/init.h>
+#include <linux/notifier.h>
 #include <linux/cpu.h>
 #include <linux/cpumask.h>
 #include <linux/cpufreq.h>
@@ -76,6 +77,7 @@ static void wake_up_core_ctl_thread(struct cluster_data *state);
 static bool initialized;
 
 ATOMIC_NOTIFIER_HEAD(core_ctl_notifier);
+ATOMIC_NOTIFIER_HEAD(isolate_unisolate_notifier);
 static unsigned int last_nr_big;
 
 static unsigned int get_active_cpu_count(const struct cluster_data *cluster);
@@ -91,7 +93,7 @@ static ssize_t store_min_cpus(struct cluster_data *state,
 		return -EINVAL;
 
 	state->min_cpus = min(val, state->num_cpus);
-	wake_up_core_ctl_thread(state);
+	apply_need(state);
 
 	return count;
 }
@@ -110,7 +112,7 @@ static ssize_t store_max_cpus(struct cluster_data *state,
 		return -EINVAL;
 
 	state->max_cpus = min(val, state->num_cpus);
-	wake_up_core_ctl_thread(state);
+	apply_need(state);
 
 	return count;
 }
@@ -867,6 +869,30 @@ static void apply_need(struct cluster_data *cluster)
 		wake_up_core_ctl_thread(cluster);
 }
 
+static void core_ctl_update_busy(int cpu, unsigned int load, bool check_load)
+{
+	struct cpu_data *cpud = &per_cpu(cpu_state, cpu);
+	struct cluster_data *cluster = cpud->cluster;
+	bool old_is_busy = cpud->is_busy;
+	unsigned int old_busy;
+
+	if (unlikely(!cluster || !cluster->inited))
+		return;
+
+	old_busy = cpud->busy;
+	cpud->busy = load;
+
+	if (!check_load && cpumask_next(cpu, &cluster->cpu_mask) < nr_cpu_ids)
+		return;
+
+	if (check_load && old_busy == load)
+		return;
+
+	apply_need(cluster);
+
+	trace_core_ctl_update_busy(cpu, load, old_is_busy, cpud->is_busy);
+}
+
 /* ========================= core count enforcement ==================== */
 
 static void wake_up_core_ctl_thread(struct cluster_data *cluster)
@@ -933,6 +959,18 @@ void core_ctl_notifier_unregister(struct notifier_block *n)
 	atomic_notifier_chain_unregister(&core_ctl_notifier, n);
 }
 
+void isolate_unisolate_notifier_register(struct notifier_block *n)
+{
+	atomic_notifier_chain_register(&isolate_unisolate_notifier, n);
+}
+EXPORT_SYMBOL(isolate_unisolate_notifier_register);
+
+void isolate_unisolate_notifier_unregister(struct notifier_block *n)
+{
+	atomic_notifier_chain_unregister(&isolate_unisolate_notifier, n);
+}
+EXPORT_SYMBOL(isolate_unisolate_notifier_unregister);
+
 static void core_ctl_call_notifier(void)
 {
 	struct core_ctl_notif_data ndata = {0};
@@ -955,6 +993,45 @@ static void core_ctl_call_notifier(void)
 			ndata.ta_util_pct, ndata.cur_cap_pct);
 
 	atomic_notifier_call_chain(&core_ctl_notifier, 0, &ndata);
+}
+
+static void isolate_unisolate_call_notifier(unsigned int flag)
+{
+	struct notifier_block *nb = NULL;
+
+	rcu_read_lock();
+	nb = rcu_dereference_raw(isolate_unisolate_notifier.head);
+	rcu_read_unlock();
+
+	if (!nb)
+		return;
+
+	trace_iso_uniso_notif(flag);
+
+	atomic_notifier_call_chain(&isolate_unisolate_notifier, flag, NULL);
+}
+
+void __core_ctl_check(u64 window_start)
+{
+	struct cluster_data *cluster = NULL;
+	unsigned int index = 0;
+
+	if (unlikely(!initialized))
+		return;
+
+	if (window_start == core_ctl_check_timestamp)
+		return;
+
+	core_ctl_check_timestamp = window_start;
+
+	update_running_avg();
+
+	for_each_cluster(cluster, index) {
+		if (eval_need(cluster))
+			wake_up_core_ctl_thread(cluster);
+	}
+
+	core_ctl_call_notifier();
 }
 
 void core_ctl_check(u64 window_start)
@@ -1051,6 +1128,9 @@ static void try_to_isolate(struct cluster_data *cluster, unsigned int need)
 
 		pr_debug("Trying to isolate CPU%u\n", c->cpu);
 		if (!sched_isolate_cpu(c->cpu)) {
+			if (c->cpu == BIG_CPU )
+				isolate_unisolate_call_notifier(BIG_CLUSTER_ISOLATE);
+
 			c->isolated_by_us = true;
 			move_cpu_lru(c);
 			nr_isolated++;
@@ -1090,6 +1170,9 @@ again:
 
 		pr_debug("Trying to isolate CPU%u\n", c->cpu);
 		if (!sched_isolate_cpu(c->cpu)) {
+			if (c->cpu == BIG_CPU )
+				isolate_unisolate_call_notifier(BIG_CLUSTER_ISOLATE);
+
 			c->isolated_by_us = true;
 			move_cpu_lru(c);
 			nr_isolated++;
@@ -1137,6 +1220,9 @@ static void __try_to_unisolate(struct cluster_data *cluster,
 
 		pr_debug("Trying to unisolate CPU%u\n", c->cpu);
 		if (!sched_unisolate_cpu(c->cpu)) {
+			if (c->cpu == BIG_CPU )
+				isolate_unisolate_call_notifier(BIG_CLUSTER_UNISOLATE);
+
 			c->isolated_by_us = false;
 			move_cpu_lru(c);
 			nr_unisolated++;
@@ -1233,6 +1319,8 @@ static int isolation_cpuhp_state(unsigned int cpu,  bool online)
 		 */
 		if (state->isolated_by_us) {
 			sched_unisolate_cpu_unlocked(cpu);
+			if (state->cpu == BIG_CPU )
+				isolate_unisolate_call_notifier(BIG_CLUSTER_UNISOLATE);
 			state->isolated_by_us = false;
 			unisolated = true;
 		}
@@ -1350,6 +1438,25 @@ static int cluster_init(const struct cpumask *mask)
 	return kobject_add(&cluster->kobj, &dev->kobj, "core_ctl");
 }
 
+static int cpufreq_gov_cb(struct notifier_block *nb, unsigned long val,
+					void *data)
+{
+	struct cpufreq_govinfo *info = data;
+
+	switch (val) {
+	case CPUFREQ_LOAD_CHANGE:
+		core_ctl_update_busy(info->cpu, info->load,
+				info->sampling_rate_us != 0);
+		break;
+	}
+
+	return NOTIFY_OK;
+}
+
+static struct notifier_block cpufreq_gov_nb = {
+	.notifier_call = cpufreq_gov_cb,
+};
+
 int core_ctl_init(void)
 {
 	struct walt_sched_cluster *cluster;
@@ -1362,6 +1469,7 @@ int core_ctl_init(void)
 	cpuhp_setup_state_nocalls(CPUHP_CORE_CTL_ISOLATION_DEAD,
 			"core_ctl/isolation:dead",
 			NULL, core_ctl_isolation_dead_cpu);
+	cpufreq_register_notifier(&cpufreq_gov_nb, CPUFREQ_GOVINFO_NOTIFIER);
 
 	for_each_sched_cluster(cluster) {
 		ret = cluster_init(&cluster->cpus);

@@ -8,6 +8,10 @@
 
 #include "qc_vas.h"
 
+#ifdef CONFIG_HW_RTG
+#include "../hw_rtg/include/rtg_sched.h"
+#endif
+
 #ifdef CONFIG_SCHED_WALT
 /* 1ms default for 20ms window size scaled to 1024 */
 unsigned int sysctl_sched_min_task_util_for_boost = 51;
@@ -168,6 +172,16 @@ void check_for_migration(struct rq *rq, struct task_struct *p)
 	int prev_cpu = task_cpu(p);
 	int ret;
 
+#ifdef CONFIG_HW_RTG_NORMALIZED_UTIL
+	bool need_down_migrate = false;
+	struct cpumask *rtg_target = find_rtg_target(p);
+
+	if (rtg_target &&
+	    (capacity_orig_of(prev_cpu) >
+	     capacity_orig_of(cpumask_first(rtg_target))))
+		need_down_migrate = true;
+#endif
+
 	if (rq->misfit_task_load) {
 		if (rq->curr->state != TASK_RUNNING ||
 		    rq->curr->nr_cpus_allowed == 1)
@@ -181,11 +195,48 @@ void check_for_migration(struct rq *rq, struct task_struct *p)
 		}
 
 		raw_spin_lock(&migration_lock);
+#ifdef CONFIG_HW_RTG_NORMALIZED_UTIL
+		if (rtg_target && need_down_migrate) {
+			new_cpu = find_rtg_cpu(p, rtg_target);
+			if (new_cpu != -1 &&
+			    cpumask_test_cpu(new_cpu, rtg_target) &&
+			    idle_cpu(new_cpu))
+				goto do_active_balance;
+
+			goto out_unlock;
+		}
+#endif
+
+#ifdef CONFIG_HUAWEI_SCHED_VIP
+		if (p->vip_prio) {
+			if (check_for_migration_vip_thread(p, prev_cpu, &new_cpu))
+				goto force_active_balance;
+
+			goto out_unlock;
+		}
+#endif
+
+#ifdef CONFIG_HW_RTG_NORMALIZED_UTIL
+		if (rtg_target) {
+			new_cpu = find_rtg_cpu(p, rtg_target);
+			if (new_cpu != -1 &&
+			    capacity_orig_of(new_cpu) > capacity_orig_of(prev_cpu))
+				goto do_active_balance;
+
+			goto out_unlock;
+		}
+#endif
 		rcu_read_lock();
 		new_cpu = find_energy_efficient_cpu(p, prev_cpu, 0, 1);
 		rcu_read_unlock();
+#ifdef CONFIG_HW_RTG_NORMALIZED_UTIL
+do_active_balance:
+#endif
 		if ((new_cpu >= 0) && (new_cpu != prev_cpu) &&
 		    (capacity_orig_of(new_cpu) > capacity_orig_of(prev_cpu))) {
+#ifdef CONFIG_HUAWEI_SCHED_VIP
+force_active_balance:
+#endif
 			active_balance = kick_active_balance(rq, p, new_cpu);
 			if (active_balance) {
 				mark_reserved(new_cpu);
@@ -200,6 +251,9 @@ void check_for_migration(struct rq *rq, struct task_struct *p)
 				return;
 			}
 		}
+#ifdef CONFIG_HW_RTG_NORMALIZED_UTIL
+out_unlock:
+#endif
 		raw_spin_unlock(&migration_lock);
 	}
 }
@@ -258,6 +312,7 @@ int sched_init_task_load_open(struct inode *inode, struct file *filp)
 	return single_open(filp, sched_init_task_load_show, inode);
 }
 
+#if defined(CONFIG_QCOM_WALT_RTG) || defined(CONFIG_HW_RTG_DEBUG)
 int sched_group_id_show(struct seq_file *m, void *v)
 {
 	struct inode *inode = m->private;
@@ -299,8 +354,11 @@ sched_group_id_write(struct file *file, const char __user *buf,
 	if (!p)
 		return -ESRCH;
 
+#ifdef CONFIG_HW_RTG_DEBUG
+	err = _sched_set_group_id(p, group_id);
+#elif defined(CONFIG_QCOM_WALT_RTG)
 	err = sched_set_group_id(p, group_id);
-
+#endif
 	put_task_struct(p);
 
 out:
@@ -311,6 +369,7 @@ int sched_group_id_open(struct inode *inode, struct file *filp)
 {
 	return single_open(filp, sched_group_id_show, inode);
 }
+#endif
 
 #ifdef CONFIG_SMP
 /*

@@ -55,6 +55,9 @@
 #include <linux/audit.h>
 #include <uapi/linux/module.h>
 #include "module-internal.h"
+#ifdef CONFIG_MODULE_SIG
+#include <chipset_common/security/saudit.h>
+#endif
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/module.h>
@@ -1335,7 +1338,7 @@ static int check_version(const struct load_info *info,
 	}
 
 	/* Broken toolchain. Warn once, then let it go.. */
-	pr_warn_once("%s: no symbol version for %s\n", info->name, symname);
+	pr_warn_once("%s:  no symbol version for %s\n", info->name, symname);
 	return 1;
 
 bad_version:
@@ -2936,6 +2939,8 @@ static int module_sig_check(struct load_info *info, int flags)
 	case -ENOKEY:
 		reason = "Loading of module with unavailable key";
 	decide:
+		saudit_log(MOD_SIGN, STP_RISK, 0, "result=%d,", err);
+
 		if (is_module_sig_enforced()) {
 			pr_notice("%s is rejected\n", reason);
 			return -EKEYREJECTED;

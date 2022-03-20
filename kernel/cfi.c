@@ -14,6 +14,7 @@
 #include <linux/rcupdate.h>
 #include <asm/cacheflush.h>
 #include <asm/set_memory.h>
+#include <chipset_common/security/saudit.h>
 
 /* Compiler-defined handler names */
 #ifdef CONFIG_CFI_PERMISSIVE
@@ -26,6 +27,7 @@
 
 static inline void handle_cfi_failure(void *ptr)
 {
+	saudit_log(CFI, STP_RISK, 0, "target:<%px> %pF,", ptr, ptr);
 	if (IS_ENABLED(CONFIG_CFI_PERMISSIVE))
 		WARN_RATELIMIT(1, "CFI failure (target: %pS):\n", ptr);
 	else

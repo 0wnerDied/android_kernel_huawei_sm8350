@@ -1104,7 +1104,10 @@ static int __hrtimer_start_range_ns(struct hrtimer *timer, ktime_t tim,
 
 	/* Switch the timer base, if necessary: */
 	new_base = switch_hrtimer_base(timer, base, mode & HRTIMER_MODE_PINNED);
-
+#ifdef CONFIG_HUAWEI_DUBAI
+    memcpy(timer->comm, current->comm, TASK_COMM_LEN);
+    timer->pid = current->pid;
+#endif
 	/* Update pinned state */
 	timer->state &= ~HRTIMER_STATE_PINNED;
 	timer->state |= (!!(mode & HRTIMER_MODE_PINNED)) << HRTIMER_PINNED_SHIFT;

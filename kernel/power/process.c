@@ -22,6 +22,9 @@
 #include <linux/kmod.h>
 #include <trace/events/power.h>
 #include <linux/cpuset.h>
+#ifdef CONFIG_HUAWEI_DUBAI
+#include <chipset_common/dubai/dubai.h>
+#endif
 
 /*
  * Timeout for stopping processes
@@ -99,15 +102,21 @@ static int try_to_freeze_tasks(bool user_only)
 		if (wq_busy)
 			show_workqueue_state();
 
-		if (pm_debug_messages_on) {
-			read_lock(&tasklist_lock);
-			for_each_process_thread(g, p) {
-				if (p != current && !freezer_should_skip(p)
-				    && freezing(p) && !frozen(p))
-					sched_show_task(p);
+#ifdef CONFIG_HUAWEI_DUBAI
+    dubai_update_suspend_abort_reason("Freezing failed tasks:");
+#endif
+
+		read_lock(&tasklist_lock);
+		for_each_process_thread(g, p) {
+			if (p != current && !freezer_should_skip(p)
+				&& freezing(p) && !frozen(p)) {
+				sched_show_task(p);
+#ifdef CONFIG_HUAWEI_DUBAI
+				dubai_update_suspend_abort_reason(p->comm);
+#endif
 			}
-			read_unlock(&tasklist_lock);
 		}
+		read_unlock(&tasklist_lock);
 	} else {
 		pr_cont("(elapsed %d.%03d seconds) ", elapsed_msecs / 1000,
 			elapsed_msecs % 1000);

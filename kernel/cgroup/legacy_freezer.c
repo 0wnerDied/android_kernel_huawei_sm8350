@@ -73,6 +73,16 @@ bool cgroup_freezing(struct task_struct *task)
 	return ret;
 }
 
+unsigned int cgroup_state(struct task_struct *task)
+{
+	unsigned int state;
+
+	rcu_read_lock();
+	state = task_freezer(task)->state;
+	rcu_read_unlock();
+	return state;
+}
+
 static const char *freezer_state_strs(unsigned int state)
 {
 	if (state & CGROUP_FROZEN)

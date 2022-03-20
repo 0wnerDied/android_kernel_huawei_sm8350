@@ -1996,14 +1996,21 @@ static inline int rt_energy_aware_wake_cpu(struct task_struct *task)
 }
 #endif
 
+#ifdef CONFIG_HW_RT_CAS
+#include "./hw_rt/rt_cas.c"
+#endif
+
 static int find_lowest_rq(struct task_struct *task)
 {
-	struct sched_domain *sd;
+	struct sched_domain *sd = NULL;
 	struct cpumask *lowest_mask = this_cpu_cpumask_var_ptr(local_cpu_mask);
 	int this_cpu = smp_processor_id();
 	int cpu = -1;
 	int ret;
 	int lowest_cpu = -1;
+#ifdef CONFIG_HW_RT_CAS
+	int cas_cpu;
+#endif
 
 	trace_android_rvh_find_lowest_rq(task, lowest_mask, &lowest_cpu);
 	if (lowest_cpu >= 0)
@@ -2033,6 +2040,12 @@ static int find_lowest_rq(struct task_struct *task)
 
 	if (!ret)
 		return -1; /* No targets found */
+
+#ifdef CONFIG_HW_RT_CAS
+	cas_cpu = find_cas_cpu(sd, task, lowest_mask);
+	if (cas_cpu != -1)
+		return cas_cpu;
+#endif
 
 	if (sched_energy_enabled())
 		cpu = rt_energy_aware_wake_cpu(task);
@@ -2743,6 +2756,10 @@ static void task_tick_rt(struct rq *rq, struct task_struct *p, int queued)
 		}
 	}
 }
+
+#ifdef CONFIG_HW_RT_CAS
+#include "./hw_rt/rt_misfit.c"
+#endif
 
 static unsigned int get_rr_interval_rt(struct rq *rq, struct task_struct *task)
 {

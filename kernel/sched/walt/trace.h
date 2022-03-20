@@ -291,6 +291,7 @@ TRACE_EVENT(sched_update_task_ravg_mini,
 struct migration_sum_data;
 extern const char *migrate_type_names[];
 
+#ifdef CONFIG_QCOM_WALT_RTG
 TRACE_EVENT(sched_set_preferred_cluster,
 
 	TP_PROTO(struct walt_related_thread_group *grp, u64 total_demand),
@@ -313,6 +314,7 @@ TRACE_EVENT(sched_set_preferred_cluster,
 			__entry->id, __entry->total_demand,
 			__entry->skip_min)
 );
+#endif
 
 TRACE_EVENT(sched_migration_update_sum,
 
@@ -642,6 +644,50 @@ TRACE_EVENT(sched_ravg_window_change,
 		__entry->change_time)
 );
 
+TRACE_EVENT(iso_uniso_notif,
+
+	TP_PROTO(unsigned int flag),
+
+	TP_ARGS(flag),
+
+	TP_STRUCT__entry(
+		__field(unsigned int, flag)
+	),
+
+	TP_fast_assign(
+		__entry->flag = flag;
+	),
+
+	TP_printk("Big core is isolate/unisolate, flag=%u", __entry->flag)
+);
+
+TRACE_EVENT(core_ctl_update_busy,
+
+	TP_PROTO(unsigned int cpu, unsigned int load,
+		unsigned int old_is_busy, unsigned int is_busy),
+
+	TP_ARGS(cpu, load, old_is_busy, is_busy),
+
+	TP_STRUCT__entry(
+		__field(u32, cpu)
+		__field(u32, load)
+		__field(u32, old_is_busy)
+		__field(u32, is_busy)
+	),
+
+	TP_fast_assign(
+		__entry->cpu = cpu;
+		__entry->load = load;
+		__entry->old_is_busy = old_is_busy;
+		__entry->is_busy = is_busy;
+	),
+
+	TP_printk("cpu=%u, load=%u, old_is_busy=%u, new_is_busy=%u",
+		__entry->cpu, __entry->load, __entry->old_is_busy,
+		__entry->is_busy)
+);
+
+#if !defined(CONFIG_HW_CPU_FREQ_GOV_SCHEDUTIL_COMMON)
 TRACE_EVENT(walt_window_rollover,
 
 	TP_PROTO(u64 window_start),
@@ -658,6 +704,7 @@ TRACE_EVENT(walt_window_rollover,
 
 	TP_printk("window_start=%llu", __entry->window_start)
 );
+#endif
 
 #endif /* CONFIG_SCHED_WALT */
 #endif /* _TRACE_WALT_H */

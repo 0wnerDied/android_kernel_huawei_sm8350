@@ -345,6 +345,9 @@ void __init_rwsem(struct rw_semaphore *sem, const char *name,
 	osq_lock_init(&sem->osq);
 #endif
 	trace_android_vh_rwsem_init(sem);
+#ifdef CONFIG_HW_VIP_THREAD
+	sem->vip_dep_task = NULL;
+#endif
 }
 EXPORT_SYMBOL(__init_rwsem);
 
@@ -1003,6 +1006,10 @@ rwsem_down_read_slowpath(struct rw_semaphore *sem, int state)
 	DEFINE_WAKE_Q(wake_q);
 	bool wake = false;
 	bool already_on_list = false;
+#if defined(CONFIG_HW_VIP_THREAD) || defined(CONFIG_HW_QOS_THREAD)
+	unsigned long task_flags;
+	struct task_struct *sem_owner = NULL;
+#endif
 
 	/*
 	 * Save the current read-owner of rwsem, if available, and the
@@ -1068,7 +1075,11 @@ queue:
 					&waiter,
 					sem, &already_on_list);
 	if (!already_on_list)
+#ifdef CONFIG_HW_VIP_THREAD
+		rwsem_list_add(current, &waiter.list, &sem->wait_list);
+#else
 		list_add_tail(&waiter.list, &sem->wait_list);
+#endif
 
 	/* we're now waiting on the lock, but no longer actively locking */
 	if (adjustment)
@@ -1089,6 +1100,18 @@ queue:
 	if (wake || (!(count & RWSEM_WRITER_MASK) &&
 		    (adjustment & RWSEM_FLAG_WAITERS)))
 		rwsem_mark_wake(sem, RWSEM_WAKE_ANY, &wake_q);
+
+#if defined(CONFIG_HW_VIP_THREAD) || defined(CONFIG_HW_QOS_THREAD)
+	sem_owner = rwsem_owner_flags(sem, &task_flags);
+	if (sem_owner && !task_flags && !need_resched()) {
+#ifdef CONFIG_HW_VIP_THREAD
+		rwsem_dynamic_vip_enqueue(current, waiter.task, sem_owner, sem);
+#endif // CONFIG_HW_VIP_THREAD
+#ifdef CONFIG_HW_QOS_THREAD
+		rwsem_dynamic_qos_enqueue(sem_owner, waiter.task);
+#endif // CONFIG_HW_QOS_THREAD
+	}
+#endif // defined(CONFIG_HW_VIP_THREAD) || defined(CONFIG_HW_QOS_THREAD)
 
 	trace_android_vh_rwsem_wake(sem);
 	raw_spin_unlock_irq(&sem->wait_lock);
@@ -1151,6 +1174,11 @@ static inline void rwsem_disable_reader_optspin(struct rw_semaphore *sem,
 static struct rw_semaphore *
 rwsem_down_write_slowpath(struct rw_semaphore *sem, int state)
 {
+#if defined(CONFIG_HW_VIP_THREAD) || defined(CONFIG_HW_QOS_THREAD)
+	unsigned long task_flags;
+	struct task_struct *sem_owner = NULL;
+#endif
+
 	long count;
 	bool disable_rspin;
 	enum writer_wait_state wstate;
@@ -1190,7 +1218,11 @@ rwsem_down_write_slowpath(struct rw_semaphore *sem, int state)
 					&waiter,
 					sem, &already_on_list);
 	if (!already_on_list)
+#ifdef CONFIG_HW_VIP_THREAD
+		rwsem_list_add(current, &waiter.list, &sem->wait_list);
+#else
 		list_add_tail(&waiter.list, &sem->wait_list);
+#endif
 
 	/* we're now waiting on the lock */
 	if (wstate == WRITER_NOT_FIRST) {
@@ -1224,6 +1256,17 @@ rwsem_down_write_slowpath(struct rw_semaphore *sem, int state)
 	} else {
 		atomic_long_or(RWSEM_FLAG_WAITERS, &sem->count);
 	}
+#if defined(CONFIG_HW_VIP_THREAD) || defined(CONFIG_HW_QOS_THREAD)
+	sem_owner = rwsem_owner_flags(sem, &task_flags);
+	if (sem_owner && !task_flags && !need_resched()) {
+#ifdef CONFIG_HW_VIP_THREAD
+		rwsem_dynamic_vip_enqueue(waiter.task, current, sem_owner, sem);
+#endif // CONFIG_HW_VIP_THREAD
+#ifdef CONFIG_HW_QOS_THREAD
+		rwsem_dynamic_qos_enqueue(sem_owner, waiter.task);
+#endif // CONFIG_HW_QOS_THREAD
+	}
+#endif // defined(CONFIG_HW_VIP_THREAD) || defined(CONFIG_HW_QOS_THREAD)
 
 wait:
 	trace_android_vh_rwsem_wake(sem);
@@ -1329,6 +1372,14 @@ static struct rw_semaphore *rwsem_wake(struct rw_semaphore *sem, long count)
 
 	if (!list_empty(&sem->wait_list))
 		rwsem_mark_wake(sem, RWSEM_WAKE_ANY, &wake_q);
+
+#ifdef CONFIG_HW_VIP_THREAD
+	rwsem_dynamic_vip_dequeue(sem, current);
+#endif
+
+#ifdef CONFIG_HW_QOS_THREAD
+	rwsem_dynamic_qos_dequeue(current);
+#endif
 
 	raw_spin_unlock_irqrestore(&sem->wait_lock, flags);
 	wake_up_q(&wake_q);

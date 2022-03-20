@@ -163,6 +163,10 @@ static int __replace_page(struct vm_area_struct *vma, unsigned long addr,
 	int err;
 	struct mmu_notifier_range range;
 	struct mem_cgroup *memcg;
+        pte_t pte;
+#ifdef CONFIG_ZRAM_NON_COMPRESS
+        bool non_compress = 0;
+#endif
 
 	mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, vma, mm, addr,
 				addr + PAGE_SIZE);
@@ -188,6 +192,11 @@ static int __replace_page(struct vm_area_struct *vma, unsigned long addr,
 
 	if (new_page) {
 		get_page(new_page);
+#ifdef CONFIG_ZRAM_NON_COMPRESS
+                non_compress = TestClearPageNonCompress(old_page);
+                if (non_compress)
+                        SetPageNonCompress(new_page);
+#endif
 		page_add_new_anon_rmap(new_page, vma, addr, false);
 		mem_cgroup_commit_charge(new_page, memcg, false, false);
 		lru_cache_add_active_or_unevictable(new_page, vma);
@@ -202,9 +211,14 @@ static int __replace_page(struct vm_area_struct *vma, unsigned long addr,
 
 	flush_cache_page(vma, addr, pte_pfn(*pvmw.pte));
 	ptep_clear_flush_notify(vma, addr, pvmw.pte);
-	if (new_page)
-		set_pte_at_notify(mm, addr, pvmw.pte,
-				  mk_pte(new_page, vma->vm_page_prot));
+	if (new_page) {
+		pte = mk_pte(new_page, vma->vm_page_prot);
+#ifdef CONFIG_ZRAM_NON_COMPRESS
+		if (non_compress)
+			pte = pte_wrprotect(pte);
+#endif
+		set_pte_at_notify(mm, addr, pvmw.pte, pte);
+	}
 
 	page_remove_rmap(old_page, false);
 	if (!page_mapped(old_page))

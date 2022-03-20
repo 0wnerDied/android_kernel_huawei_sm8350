@@ -115,6 +115,7 @@ static void fake_signal_wake_up(struct task_struct *p)
 bool freeze_task(struct task_struct *p)
 {
 	unsigned long flags;
+	static pid_t hwpged_pid = 0;
 
 	/*
 	 * This check can race with freezer_do_not_count, but worst case that
@@ -134,10 +135,34 @@ bool freeze_task(struct task_struct *p)
 		return false;
 	}
 
-	if (!(p->flags & PF_KTHREAD))
+	if (!(p->flags & PF_KTHREAD)) {
 		fake_signal_wake_up(p);
-	else
+		if (!hwpged_pid) {
+			struct task_struct *task = pid_task(find_vpid(current->tgid), PIDTYPE_TGID);
+			if (task && !strncmp(task->comm, "hwpged", 6)) { // match pg process name
+				hwpged_pid = current->tgid;
+				pr_err("hwpged: first hwpged freeze pid=%d,tgid=%d,comm=%s", current->pid,
+				       current->tgid, task->comm);
+			} else if (task) {
+				if (printk_ratelimit())
+					pr_err("hwpged: first suspicious freeze pid=%d,tgid=%d,comm=%s",
+					       current->pid, current->tgid, task->comm);
+			}
+		} else if (hwpged_pid != current->tgid) {
+			struct task_struct *task = pid_task(find_vpid(current->tgid), PIDTYPE_TGID);
+			if (task && !strncmp(task->comm, "hwpged", 6)) { // match pg process name
+				hwpged_pid = current->tgid;
+				pr_err("hwpged: pid changed pid=%d,tgid=%d,comm=%s", current->pid,
+				       current->tgid, task->comm);
+			} else if (task) {
+				if (printk_ratelimit())
+					pr_err("hwpged: suspicious freeze pid=%d,tgid=%d,comm=%s", current->pid,
+					       current->tgid, task->comm);
+			}
+		}
+	} else {
 		wake_up_state(p, TASK_INTERRUPTIBLE);
+	}
 
 	spin_unlock_irqrestore(&freezer_lock, flags);
 	return true;

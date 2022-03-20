@@ -62,6 +62,15 @@ static DECLARE_SWAIT_QUEUE_HEAD(s2idle_wait_head);
 enum s2idle_states __read_mostly s2idle_state;
 static DEFINE_RAW_SPINLOCK(s2idle_lock);
 
+int s2idle_state_flag;
+EXPORT_SYMBOL(s2idle_state_flag);
+
+int suspend_freeze_processes_flag;
+EXPORT_SYMBOL(suspend_freeze_processes_flag);
+
+int dpm_suspend_start_flag;
+EXPORT_SYMBOL(dpm_suspend_start_flag);
+
 /**
  * pm_suspend_default_s2idle - Check if suspend-to-idle is the default suspend.
  *
@@ -95,6 +104,7 @@ static void s2idle_enter(void)
 		goto out;
 
 	s2idle_state = S2IDLE_STATE_ENTER;
+	s2idle_state_flag = 1;
 	raw_spin_unlock_irq(&s2idle_lock);
 
 	get_online_cpus();
@@ -113,6 +123,7 @@ static void s2idle_enter(void)
 
  out:
 	s2idle_state = S2IDLE_STATE_NONE;
+	s2idle_state_flag = 0;
 	raw_spin_unlock_irq(&s2idle_lock);
 
 	trace_suspend_resume(TPS("machine_suspend"), PM_SUSPEND_TO_IDLE, false);
@@ -358,7 +369,9 @@ static int suspend_prepare(suspend_state_t state)
 	}
 
 	trace_suspend_resume(TPS("freeze_processes"), 0, true);
+	suspend_freeze_processes_flag = 1;
 	error = suspend_freeze_processes();
+	suspend_freeze_processes_flag = 0;
 	trace_suspend_resume(TPS("freeze_processes"), 0, false);
 	if (!error)
 		return 0;
@@ -505,7 +518,9 @@ int suspend_devices_and_enter(suspend_state_t state)
 
 	suspend_console();
 	suspend_test_start();
+	dpm_suspend_start_flag = 1;
 	error = dpm_suspend_start(PMSG_SUSPEND);
+	dpm_suspend_start_flag = 0;
 	if (error) {
 		pr_err("Some devices failed to suspend, or early wake event detected\n");
 		log_suspend_abort_reason(

@@ -1269,6 +1269,46 @@ EXPORT_SYMBOL(do_settimeofday64);
  *
  * Adds or subtracts an offset value from the current time.
  */
+#ifdef CONFIG_HW_WAUDIO_MODULE
+int timekeeping_inject_offset(const struct timespec64 *ts)
+{
+	struct timekeeper *tk = &tk_core.timekeeper;
+	unsigned long flags;
+	struct timespec64 tmp;
+	int ret = 0;
+
+	if (ts->tv_nsec < 0 || ts->tv_nsec >= NSEC_PER_SEC)
+		return -EINVAL;
+
+	raw_spin_lock_irqsave(&timekeeper_lock, flags);
+	write_seqcount_begin(&tk_core.seq);
+
+	timekeeping_forward_now(tk);
+
+	/* Make sure the proposed value is valid */
+	tmp = timespec64_add(tk_xtime(tk), *ts);
+	if (timespec64_compare(&tk->wall_to_monotonic, ts) > 0 ||
+	    !timespec64_valid_settod(&tmp)) {
+		ret = -EINVAL;
+		goto error;
+	}
+
+	tk_xtime_add(tk, ts);
+	tk_set_wall_to_mono(tk, timespec64_sub(tk->wall_to_monotonic, *ts));
+
+error: /* even if we error out, we forwarded the time, so call update */
+	timekeeping_update(tk, TK_CLEAR_NTP | TK_MIRROR | TK_CLOCK_WAS_SET);
+
+	write_seqcount_end(&tk_core.seq);
+	raw_spin_unlock_irqrestore(&timekeeper_lock, flags);
+
+	/* signal hrtimers about time change */
+	clock_was_set();
+
+	return ret;
+}
+EXPORT_SYMBOL(timekeeping_inject_offset);
+#else
 static int timekeeping_inject_offset(const struct timespec64 *ts)
 {
 	struct timekeeper *tk = &tk_core.timekeeper;
@@ -1306,6 +1346,7 @@ error: /* even if we error out, we forwarded the time, so call update */
 
 	return ret;
 }
+#endif
 
 /*
  * Indicates if there is an offset between the system clock and the hardware

@@ -1950,7 +1950,35 @@ void blk_trace_remove_sysfs(struct device *dev)
 
 #ifdef CONFIG_EVENT_TRACING
 
+#ifdef CONFIG_MAS_BLK
+struct op_description {
+	unsigned int type;
+	char description;
+};
+
+int mas_blk_fill_rwbs(char *rwbs, unsigned int mas_op, int offset)
+{
+	int i = 0;
+	unsigned long loop;
+	struct op_description description[] = {
+		{ REQ_TZ, 'Z' }, { REQ_CP, 'C' },
+		{ REQ_VIP, 'V' }, { REQ_FAULT_OUT, 'P' },
+		{ REQ_BATCH_OUT, 'B' }, { REQ_TT_RB, 'T'}
+	};
+
+	for (loop = 0; loop < ARRAY_SIZE(description); ++loop)
+		if (mas_op & description[loop].type)
+			rwbs[offset + i++] = description[loop].description;
+
+	return i;
+}
+#endif
+
+#ifdef CONFIG_MAS_BLK
+void blk_fill_rwbs(char *rwbs, unsigned int op, unsigned int mas_op, int bytes)
+#else
 void blk_fill_rwbs(char *rwbs, unsigned int op, int bytes)
+#endif
 {
 	int i = 0;
 
@@ -1987,7 +2015,11 @@ void blk_fill_rwbs(char *rwbs, unsigned int op, int bytes)
 		rwbs[i++] = 'S';
 	if (op & REQ_META)
 		rwbs[i++] = 'M';
-
+	if (op & REQ_FG)
+		rwbs[i++] = 'H';
+#ifdef CONFIG_MAS_BLK
+	i += mas_blk_fill_rwbs(rwbs, mas_op, i);
+#endif
 	rwbs[i] = '\0';
 }
 EXPORT_SYMBOL_GPL(blk_fill_rwbs);

@@ -96,6 +96,7 @@
 #include <linux/cpufreq_times.h>
 #include <linux/stackleak.h>
 #include <linux/scs.h>
+#include <linux/xreclaimer.h>
 
 #include <asm/pgtable.h>
 #include <asm/pgalloc.h>
@@ -109,10 +110,27 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/task.h>
 
+#ifdef CONFIG_HW_RECLAIM_ACCT
+#include <chipset_common/reclaim_acct/reclaim_acct.h>
+#endif
+
+#ifdef CONFIG_HW_VIP_THREAD
+#include <cpu_netlink/cpu_netlink.h>
+#endif
+
+#ifdef CONFIG_HW_QOS_THREAD
+#include <chipset_common/hwqos/hwqos_common.h>
+#include <chipset_common/hwqos/hwqos_fork.h>
+#endif
+
 /*
  * Minimum number of threads to boot the kernel
  */
 #define MIN_THREADS 20
+
+#ifdef CONFIG_HW_RTG
+#include <cpu_netlink/cpu_netlink.h>
+#endif
 
 /*
  * Maximum number of threads
@@ -775,10 +793,25 @@ static inline void put_signal_struct(struct signal_struct *sig)
 
 void __put_task_struct(struct task_struct *tsk)
 {
+#ifdef CONFIG_HW_RTG
+	struct related_thread_group *grp = tsk->grp;
+	unsigned long irqflag;
+#endif
 	WARN_ON(!tsk->exit_state);
 	WARN_ON(refcount_read(&tsk->usage));
 	WARN_ON(tsk == current);
 
+#ifdef CONFIG_HW_QOS_THREAD
+	release_task_qos_info(tsk);
+#endif
+
+#ifdef CONFIG_HW_RTG
+	if (grp) {
+		raw_spin_lock_irqsave(&grp->lock, irqflag);
+		list_del_init(&tsk->grp_list);
+		raw_spin_unlock_irqrestore(&grp->lock, irqflag);
+	}
+#endif
 	cgroup_free(tsk);
 	task_numa_free(tsk, true);
 	security_task_free(tsk);
@@ -1074,11 +1107,15 @@ static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
 	mm_init_owner(mm, p);
 	RCU_INIT_POINTER(mm->exe_file, NULL);
 	mmu_notifier_mm_init(mm);
+	xreclaimer_mm_init(mm);
 	init_tlb_flush_pending(mm);
 #if defined(CONFIG_TRANSPARENT_HUGEPAGE) && !USE_SPLIT_PMD_PTLOCKS
 	mm->pmd_huge_pte = NULL;
 #endif
 	mm_init_uprobes_state(mm);
+#ifdef CONFIG_TASK_PROTECT_LRU
+	mm->protect = 0;
+#endif
 
 	if (current->mm) {
 		mm->flags = current->mm->flags & MMF_INIT_MASK;
@@ -1457,6 +1494,7 @@ static int copy_mm(unsigned long clone_flags, struct task_struct *tsk)
 	if (clone_flags & CLONE_VM) {
 		mmget(oldmm);
 		mm = oldmm;
+		xreclaimer_inc_mm_tasks(mm);
 		goto good_mm;
 	}
 
@@ -1632,6 +1670,9 @@ static int copy_signal(unsigned long clone_flags, struct task_struct *tsk)
 
 	tty_audit_fork(sig);
 	sched_autogroup_fork(sig);
+#ifdef CONFIG_HW_DIE_CATCH
+	sig->unexpected_die_catch_flags = 0; /* all new child don't inherit it */
+#endif
 
 	sig->oom_score_adj = current->signal->oom_score_adj;
 	sig->oom_score_adj_min = current->signal->oom_score_adj_min;
@@ -1708,6 +1749,10 @@ init_task_pid(struct task_struct *task, enum pid_type type, struct pid *pid)
 	else
 		task->signal->pids[type] = pid;
 }
+
+#ifdef CONFIG_HW_VIP_THREAD
+#include <chipset_common/hwcfs/hwcfs_fork.h>
+#endif
 
 static inline void rcu_copy_process(struct task_struct *p)
 {
@@ -1963,6 +2008,9 @@ static __latent_entropy struct task_struct *copy_process(
 		goto bad_fork_cleanup_count;
 
 	delayacct_tsk_init(p);	/* Must remain after dup_task_struct() */
+#ifdef CONFIG_HW_RECLAIM_ACCT
+	reclaimacct_tsk_init(p);
+#endif
 	p->flags &= ~(PF_SUPERPRIV | PF_WQ_WORKER | PF_IDLE);
 	p->flags |= PF_FORKNOEXEC;
 	INIT_LIST_HEAD(&p->children);
@@ -1979,6 +2027,9 @@ static __latent_entropy struct task_struct *copy_process(
 #endif
 	prev_cputime_init(&p->prev_cputime);
 
+#ifdef CONFIG_CPU_FREQ_POWER_STAT
+	p->cpu_power = 0;
+#endif
 #ifdef CONFIG_VIRT_CPU_ACCOUNTING_GEN
 	seqcount_init(&p->vtime.seqcount);
 	p->vtime.starttime = 0;
@@ -2045,7 +2096,13 @@ static __latent_entropy struct task_struct *copy_process(
 	p->sequential_io	= 0;
 	p->sequential_io_avg	= 0;
 #endif
+#ifdef CONFIG_HW_VIP_THREAD
+	init_task_vip_info(p);
+#endif
 
+#ifdef CONFIG_HUAWEI_SWAP_ZDATA
+	p->proc_reclaimed_result = NULL;
+#endif
 	/* Perform scheduler related setup. Assign this task to a CPU. */
 	retval = sched_fork(clone_flags, p);
 	if (retval)
@@ -2157,6 +2214,10 @@ static __latent_entropy struct task_struct *copy_process(
 	} else {
 		p->group_leader = p;
 		p->tgid = p->pid;
+#ifdef CONFIG_HW_CGROUP_WORKINGSET
+		p->ext_flags &= ~(PF_EXT_WSCG_MONITOR |
+				PF_EXT_WSCG_PREREAD);
+#endif
 	}
 
 	p->nr_dirtied = 0;
@@ -2286,6 +2347,15 @@ static __latent_entropy struct task_struct *copy_process(
 	write_unlock_irq(&tasklist_lock);
 
 	proc_fork_connector(p);
+
+#ifdef CONFIG_HW_QOS_THREAD
+	iaware_proc_fork_inherit(p, clone_flags);
+#endif
+
+#if defined(CONFIG_HW_VIP_THREAD) || defined(CONFIG_HW_RTG)
+	iaware_proc_fork_connector(p);
+#endif
+
 	cgroup_post_fork(p);
 	cgroup_threadgroup_change_end(current);
 	perf_event_fork(p);

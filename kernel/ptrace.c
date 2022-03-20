@@ -31,6 +31,7 @@
 #include <linux/cn_proc.h>
 #include <linux/compat.h>
 #include <linux/sched/signal.h>
+#include <chipset_common/kernel_harden/hw_ptrace_log.h>
 
 #include <asm/syscall.h>	/* for syscall_get_* */
 
@@ -266,9 +267,17 @@ static int ptrace_check_attach(struct task_struct *child, bool ignore_state)
 
 static bool ptrace_has_cap(struct user_namespace *ns, unsigned int mode)
 {
+#ifdef CONFIG_HUAWEI_PMU_SHARE
+	int check_cap = (mode & PTRACE_MODE_PERF_EVENT) ? CAP_PERF_EVENT : CAP_SYS_PTRACE;
+
+	if (mode & PTRACE_MODE_NOAUDIT)
+		return ns_capable_noaudit(ns, check_cap);
+	return ns_capable(ns, check_cap);
+#else
 	if (mode & PTRACE_MODE_NOAUDIT)
 		return ns_capable_noaudit(ns, CAP_SYS_PTRACE);
 	return ns_capable(ns, CAP_SYS_PTRACE);
+#endif
 }
 
 /* Returns 0 on success, -errno on denial. */
@@ -1009,6 +1018,7 @@ int ptrace_request(struct task_struct *child, long request,
 		return generic_ptrace_peekdata(child, addr, data);
 	case PTRACE_POKETEXT:
 	case PTRACE_POKEDATA:
+		record_ptrace_info_before_return(request, child);
 		return generic_ptrace_pokedata(child, addr, data);
 
 #ifdef PTRACE_OLDSETOPTIONS
@@ -1323,6 +1333,7 @@ int compat_ptrace_request(struct task_struct *child, compat_long_t request,
 
 	case PTRACE_POKETEXT:
 	case PTRACE_POKEDATA:
+		record_ptrace_info_before_return(request, child);
 		ret = ptrace_access_vm(child, addr, &data, sizeof(data),
 				FOLL_FORCE | FOLL_WRITE);
 		ret = (ret != sizeof(data) ? -EIO : 0);

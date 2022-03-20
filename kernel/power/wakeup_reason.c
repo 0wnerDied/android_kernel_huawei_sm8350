@@ -27,6 +27,10 @@
 #include <linux/notifier.h>
 #include <linux/suspend.h>
 #include <linux/slab.h>
+#ifdef CONFIG_HUAWEI_DUBAI
+#include <huawei_platform/power/dubai/dubai_wakeup_stats.h>
+#include <chipset_common/dubai/dubai.h>
+#endif
 
 /*
  * struct wakeup_irq_node - stores data and relationships for IRQs logged as
@@ -233,6 +237,10 @@ void __log_abort_or_abnormal_wake(bool abort, const char *fmt, va_list args)
 	vsnprintf(non_irq_wake_reason, MAX_SUSPEND_ABORT_LEN, fmt, args);
 
 	spin_unlock_irqrestore(&wakeup_reason_lock, flags);
+
+#ifdef CONFIG_HUAWEI_DUBAI
+	dubai_update_suspend_abort_reason(non_irq_wake_reason);
+#endif
 }
 
 void log_suspend_abort_reason(const char *fmt, ...)
@@ -285,9 +293,13 @@ static void print_wakeup_sources(void)
 	}
 
 	if (wakeup_reason == RESUME_IRQ && !list_empty(&leaf_irqs))
-		list_for_each_entry(n, &leaf_irqs, siblings)
+		list_for_each_entry(n, &leaf_irqs, siblings) {
 			pr_info("Resume caused by IRQ %d, %s\n", n->irq,
 				n->irq_name);
+#ifdef CONFIG_HUAWEI_DUBAI
+			dubai_log_irq_wakeup(n->irq_name);
+#endif
+		}
 	else if (wakeup_reason == RESUME_ABNORMAL)
 		pr_info("Resume caused by %s\n", non_irq_wake_reason);
 	else

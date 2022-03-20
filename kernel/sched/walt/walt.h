@@ -11,7 +11,24 @@
 #include <linux/sched/sysctl.h>
 #include <linux/sched/core_ctl.h>
 
+#ifdef CONFIG_HW_RTG
+#include "../hw_rtg/include/rtg.h"
+#endif
+
 #define EXITING_TASK_MARKER	0xdeaddead
+
+#define WINDOW_STATS_RECENT		0
+#define WINDOW_STATS_MAX		1
+#define WINDOW_STATS_MAX_RECENT_AVG	2
+#define WINDOW_STATS_AVG		3
+#define WINDOW_STATS_INVALID_POLICY	4
+
+#ifdef CONFIG_HW_RTG
+extern __read_mostly unsigned int sched_ravg_hist_size;
+extern __read_mostly unsigned int sched_group_upmigrate;
+extern __read_mostly unsigned int sched_group_downmigrate;
+extern bool uclamp_task_colocated(struct task_struct *p);
+#endif
 
 extern unsigned int walt_rotation_enabled;
 extern int __read_mostly num_sched_clusters;
@@ -160,17 +177,50 @@ static inline bool is_suh_max(void)
 	return sysctl_sched_user_hint == sched_user_hint_max;
 }
 
+extern struct list_head cluster_head;
+#define for_each_sched_cluster(cluster) \
+	list_for_each_entry_rcu(cluster, &cluster_head, list)
+
+#ifdef CONFIG_HW_RTG
+#define for_each_sched_cluster_reverse(cluster) \
+	list_for_each_entry_reverse(cluster, &cluster_head, list)
+
+#define min_cap_cluster() \
+	list_first_entry(&cluster_head, struct walt_sched_cluster, list)
+
+#define max_cap_cluster() \
+	list_last_entry(&cluster_head, struct walt_sched_cluster, list)
+#endif
+
 #define DEFAULT_CGROUP_COLOC_ID 1
+#if defined(CONFIG_QCOM_WALT_RTG) || defined(CONFIG_HW_RTG)
 static inline bool walt_should_kick_upmigrate(struct task_struct *p, int cpu)
 {
+#ifdef CONFIG_QCOM_WALT_RTG
 	struct walt_related_thread_group *rtg = p->wts.grp;
+#elif defined (CONFIG_HW_RTG)
+	struct related_thread_group *rtg = p->grp;
+#endif
 
 	if (is_suh_max() && rtg && rtg->id == DEFAULT_CGROUP_COLOC_ID &&
-			    rtg->skip_min && p->wts.unfilter)
-		return is_min_capacity_cpu(cpu);
+			    p->wts.unfilter) {
+#if defined (CONFIG_HW_RTG_NORMALIZED_UTIL) && defined (CONFIG_HW_RTG)
+		if (rtg->preferred_cluster &&
+		    rtg->preferred_cluster != min_cap_cluster())
+#elif defined(CONFIG_QCOM_WALT_RTG)
+		if (rtg->skip_min)
+#endif
+			return is_min_capacity_cpu(cpu);
+	}
 
 	return false;
 }
+#else
+static inline bool walt_should_kick_upmigrate(struct task_struct *p, int cpu)
+{
+	return false;
+}
+#endif
 
 extern bool is_rtgb_active(void);
 extern u64 get_rtgb_active_time(void);
@@ -182,7 +232,9 @@ static inline void walt_try_to_wake_up(struct task_struct *p)
 	struct rq_flags rf;
 	u64 wallclock;
 	unsigned int old_load;
+#ifdef CONFIG_QCOM_WALT_RTG
 	struct walt_related_thread_group *grp = NULL;
+#endif
 
 	rq_lock_irqsave(rq, &rf);
 	old_load = task_load(p);
@@ -192,11 +244,13 @@ static inline void walt_try_to_wake_up(struct task_struct *p)
 	note_task_waking(p, wallclock);
 	rq_unlock_irqrestore(rq, &rf);
 
+#ifdef CONFIG_QCOM_WALT_RTG
 	rcu_read_lock();
 	grp = task_related_thread_group(p);
 	if (update_preferred_cluster(grp, p, old_load, false))
 		set_preferred_cluster(grp);
 	rcu_read_unlock();
+#endif
 }
 
 static inline unsigned int walt_nr_rtg_high_prio(int cpu)

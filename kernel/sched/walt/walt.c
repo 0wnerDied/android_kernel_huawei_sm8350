@@ -9,6 +9,20 @@
 #include <linux/sched/stat.h>
 #include <trace/events/sched.h>
 #include "qc_vas.h"
+#ifdef CONFIG_HW_SCHED_WALT
+#include "../hw_walt/walt_hw.h"
+#endif
+#ifdef CONFIG_HW_SCHED_PRED_LOAD
+#include "../hw_walt/pred_load.h"
+#endif
+
+#ifdef CONFIG_HW_RTG
+#include <linux/sched/hw_rtg/rtg_sched.h>
+#endif
+
+#ifdef CONFIG_HW_TOP_TASK
+#include "../hw_task/hw_top_task.h"
+#endif
 
 #include <trace/events/sched.h>
 
@@ -24,12 +38,6 @@ const char *migrate_type_names[] = {"GROUP_TO_RQ", "RQ_TO_GROUP",
 
 #define EARLY_DETECTION_DURATION 9500000
 #define MAX_NUM_CGROUP_COLOC_ID 20
-
-#define WINDOW_STATS_RECENT		0
-#define WINDOW_STATS_MAX		1
-#define WINDOW_STATS_MAX_RECENT_AVG	2
-#define WINDOW_STATS_AVG		3
-#define WINDOW_STATS_INVALID_POLICY	4
 
 #define MAX_NR_CLUSTERS			3
 
@@ -111,7 +119,11 @@ unsigned int sysctl_sched_capacity_margin_up[MAX_MARGIN_LEVELS] = {
 			[0 ... MAX_MARGIN_LEVELS-1] = 1078}; /* ~5% margin */
 unsigned int sysctl_sched_capacity_margin_down[MAX_MARGIN_LEVELS] = {
 			[0 ... MAX_MARGIN_LEVELS-1] = 1205}; /* ~15% margin */
+#ifndef CONFIG_HW_SCHED_WALT
 static unsigned int walt_cpu_high_irqload;
+#else
+static unsigned int sched_walt_cpu_high_irqload;
+#endif
 
 unsigned int sysctl_sched_walt_rotate_big_tasks;
 unsigned int walt_rotation_enabled;
@@ -119,7 +131,11 @@ unsigned int walt_rotation_enabled;
 __read_mostly unsigned int sysctl_sched_asym_cap_sibling_freq_match_pct = 100;
 __read_mostly unsigned int sched_ravg_hist_size = 5;
 
+#ifdef CONFIG_HW_CPU_FREQ_GOV_SCHEDUTIL
+extern unsigned int sched_io_is_busy;
+#else
 static __read_mostly unsigned int sched_io_is_busy = 1;
+#endif
 
 __read_mostly unsigned int sysctl_sched_window_stats_policy =
 	WINDOW_STATS_MAX_RECENT_AVG;
@@ -145,6 +161,13 @@ static __read_mostly unsigned int walt_cpu_util_freq_divisor;
 unsigned int __read_mostly sched_init_task_load_windows;
 unsigned int __read_mostly sched_init_task_load_windows_scaled;
 unsigned int __read_mostly sysctl_sched_init_task_load_pct = 15;
+
+#ifdef CONFIG_HW_SCHED_WALT
+bool __read_mostly walt_disabled = false;
+unsigned int sysctl_sched_walt_cpu_overload_irqload __read_mostly =
+	(3 * NSEC_PER_SEC / CONFIG_HZ);
+unsigned int sysctl_sched_walt_init_task_load_pct = 15;
+#endif
 
 unsigned int max_possible_capacity = 1024; /* max(rq->max_possible_capacity) */
 unsigned int
@@ -373,9 +396,9 @@ update_window_start(struct rq *rq, u64 wallclock, int event)
 
 	delta = wallclock - rq->wrq.window_start;
 	if (delta < 0) {
+		delta = 0;
 		printk_deferred("WALT-BUG CPU%d; wallclock=%llu is lesser than window_start=%llu",
 			rq->cpu, wallclock, rq->wrq.window_start);
-		SCHED_BUG_ON(1);
 	}
 	if (delta < sched_ravg_window)
 		return old_window_start;
@@ -872,8 +895,13 @@ migrate_top_tasks(struct task_struct *p, struct rq *src_rq, struct rq *dst_rq)
 {
 	int index;
 	int top_index;
+#ifdef CONFIG_HW_TOP_TASK
+	u32 curr_window = p->wts.curr_load;
+	u32 prev_window = p->wts.prev_load;
+#else
 	u32 curr_window = p->wts.curr_window;
 	u32 prev_window = p->wts.prev_window;
+#endif
 	u8 src = src_rq->wrq.curr_table;
 	u8 dst = dst_rq->wrq.curr_table;
 	u8 *src_table;
@@ -945,7 +973,11 @@ void fixup_busy_time(struct task_struct *p, int new_cpu)
 	u64 *src_nt_curr_runnable_sum, *dst_nt_curr_runnable_sum;
 	u64 *src_nt_prev_runnable_sum, *dst_nt_prev_runnable_sum;
 	bool new_task;
+#ifdef CONFIG_HW_RTG
+	struct related_thread_group *grp;
+#else
 	struct walt_related_thread_group *grp;
+#endif
 	long pstate;
 
 	if (!p->on_rq && p->state != TASK_WAKING)
@@ -983,7 +1015,11 @@ void fixup_busy_time(struct task_struct *p, int new_cpu)
 
 	new_task = is_new_task(p);
 	/* Protected by rq_lock */
+#ifdef CONFIG_HW_RTG
+	grp = p->grp;
+#else
 	grp = p->wts.grp;
+#endif
 
 	/*
 	 * For frequency aggregation, we continue to do migration fixups
@@ -1033,11 +1069,14 @@ void fixup_busy_time(struct task_struct *p, int new_cpu)
 
 	migrate_top_tasks(p, src_rq, dest_rq);
 
+
+#ifndef CONFIG_HW_CPU_FREQ_GOV_SCHEDUTIL_COMMON
 	if (!same_freq_domain(new_cpu, task_cpu(p))) {
 		src_rq->wrq.notif_pending = true;
 		dest_rq->wrq.notif_pending = true;
 		walt_irq_work_queue(&walt_migration_irq_work);
 	}
+#endif
 
 	if (is_ed_enabled()) {
 		if (p == src_rq->wrq.ed_task) {
@@ -1165,6 +1204,9 @@ static u32 get_pred_busy(struct task_struct *p,
 	u64 cur_freq_runtime = 0;
 	int first = NUM_BUSY_BUCKETS, final;
 	u32 ret = runtime;
+#if defined(CONFIG_HW_SCHED_PRED_LOAD) && defined(CONFIG_HW_CPU_FREQ_GOV_SCHEDUTIL_COMMON)
+	struct rq *rq = task_rq(p);
+#endif
 
 	/* skip prediction for new tasks due to lack of history */
 	if (unlikely(is_new_task(p)))
@@ -1212,6 +1254,12 @@ static u32 get_pred_busy(struct task_struct *p,
 	 * than all recorded history. Always predict at least runtime.
 	 */
 	ret = max(runtime, ret);
+
+#if defined(CONFIG_HW_SCHED_PRED_LOAD) && defined(CONFIG_HW_CPU_FREQ_GOV_SCHEDUTIL_COMMON)
+	if (((u64)ret << SCHED_CAPACITY_SHIFT) >
+	    ((u64)capacity_curr_of(cpu_of(rq)) * (rq->wrq.prev_window_size)))
+		sugov_mark_util_change(cpu_of(rq), PRED_LOAD_CHANGE);
+#endif
 out:
 	trace_sched_update_pred_demand(p, runtime,
 		mult_frac((unsigned int)cur_freq_runtime, 100,
@@ -1295,9 +1343,23 @@ static void update_top_tasks(struct task_struct *p, struct rq *rq,
 	u8 *curr_table = rq->wrq.top_tasks[curr];
 	u8 *prev_table = rq->wrq.top_tasks[prev];
 	int old_index, new_index, update_index;
+#ifdef CONFIG_HW_TOP_TASK
+	u32 curr_window;
+	u32 prev_window = p->wts.prev_load;
+#ifdef CONFIG_HW_CPU_FREQ_GOV_SCHEDUTIL
+	u32 load = 0;
+#endif /* CONFIG_HW_CPU_FREQ_GOV_SCHEDUTIL */
+#else
 	u32 curr_window = p->wts.curr_window;
 	u32 prev_window = p->wts.prev_window;
+#endif /* CONFIG_HW_TOP_TASK */
+
 	bool zero_index_update;
+
+#ifdef CONFIG_HW_TOP_TASK
+	p->wts.curr_load = task_load_freq(p);
+	curr_window = p->wts.curr_load;
+#endif
 
 	if (old_curr_window == curr_window && !new_window)
 		return;
@@ -1382,6 +1444,11 @@ static void update_top_tasks(struct task_struct *p, struct rq *rq,
 			__set_bit(NUM_LOAD_INDICES - new_index - 1,
 				rq->wrq.top_tasks_bitmap[curr]);
 	}
+
+#if defined(CONFIG_HW_TOP_TASK) && defined(CONFIG_HW_CPU_FREQ_GOV_SCHEDUTIL)
+	load = max(curr_window, prev_window);
+	sugov_mark_top_task(rq, load);
+#endif
 }
 
 static void rollover_top_tasks(struct rq *rq, bool full_window)
@@ -1434,10 +1501,12 @@ static void rollover_task_window(struct task_struct *p, bool full_window)
 		p->wts.active_time += task_rq(p)->wrq.prev_window_size;
 }
 
+#ifndef CONFIG_HW_CPU_FREQ_GOV_SCHEDUTIL
 void sched_set_io_is_busy(int val)
 {
 	sched_io_is_busy = val;
 }
+#endif
 
 static inline int cpu_is_waiting_on_io(struct rq *rq)
 {
@@ -1480,12 +1549,11 @@ static int account_busy_for_cpu_time(struct rq *rq, struct task_struct *p,
 	return SCHED_FREQ_ACCOUNT_WAIT_TIME;
 }
 
-#define DIV64_U64_ROUNDUP(X, Y) div64_u64((X) + (Y - 1), Y)
+#ifdef CONFIG_HW_RTG_WALT
+#include "../hw_rtg/rtg_walt.c"
+#endif
 
-static inline u64 scale_exec_time(u64 delta, struct rq *rq)
-{
-	return (delta * rq->wrq.task_exec_scale) >> 10;
-}
+#define DIV64_U64_ROUNDUP(X, Y) div64_u64((X) + (Y - 1), Y)
 
 /* Convert busy time to frequency equivalent
  * Assumes load is scaled to 1024
@@ -1555,13 +1623,40 @@ static void update_cpu_busy_time(struct task_struct *p, struct rq *rq,
 	u64 *nt_curr_runnable_sum = &rq->wrq.nt_curr_runnable_sum;
 	u64 *nt_prev_runnable_sum = &rq->wrq.nt_prev_runnable_sum;
 	bool new_task;
+#ifdef CONFIG_HW_RTG_CPU_TIME
+	struct group_cpu_time *cpu_time;
+#endif
+#ifdef CONFIG_QCOM_WALT_RTG
 	struct walt_related_thread_group *grp;
+#endif
 	int cpu = rq->cpu;
+#ifdef CONFIG_HW_TOP_TASK
+	int nr_full_window = 0;
+	u32 old_curr_window = p->wts.curr_load;
+#else
 	u32 old_curr_window = p->wts.curr_window;
+#endif
 
 	new_window = mark_start < window_start;
-	if (new_window)
+	if (new_window) {
 		full_window = (window_start - mark_start) >= window_size;
+#ifdef CONFIG_HW_TOP_TASK
+		nr_full_window = div64_u64((window_start - mark_start), walt_ravg_window);
+#endif
+	}
+
+#ifdef CONFIG_HW_RTG_CPU_TIME
+	rcu_read_lock();
+	grp = task_related_thread_group(p);
+	rcu_read_unlock();
+	if (grp && grp->mode.freq_enabled && rq->cluster == grp->preferred_cluster) {
+		cpu_time = group_update_cpu_time(rq, p->grp);
+		if (cpu_time) {
+			curr_runnable_sum = &cpu_time->curr_runnable_sum;
+			prev_runnable_sum = &cpu_time->prev_runnable_sum;
+		}
+	}
+#endif
 
 	/*
 	 * Handle per-task window rollover. We don't care about the
@@ -1579,9 +1674,27 @@ static void update_cpu_busy_time(struct task_struct *p, struct rq *rq,
 		rollover_top_tasks(rq, full_window);
 	}
 
-	if (!account_busy_for_cpu_time(rq, p, irqtime, event))
-		goto done;
+#ifdef CONFIG_HW_TOP_TASK
+	if (new_window && !is_idle_task(p) && !exiting_task(p))
+		rollover_top_task_load(p, nr_full_window);
+#endif
 
+	if (!account_busy_for_cpu_time(rq, p, irqtime, event)) {
+#ifdef CONFIG_HW_TOP_TASK
+		if (!new_window)
+			/*
+			 * account_busy_for_cpu_time() = 0 so busy time no
+			 * need to be accounted to the current window. No
+			 * rollover since we didn't start a new window.
+			 * Therefore, no changes for curr_table or prev_table
+			 */
+			return;
+		update_top_task_load(p, rq, event, wallclock, false);
+#endif
+		goto done;
+	}
+
+#ifdef CONFIG_QCOM_WALT_RTG
 	grp = p->wts.grp;
 	if (grp) {
 		struct group_cpu_time *cpu_time = &rq->wrq.grp_time;
@@ -1592,6 +1705,7 @@ static void update_cpu_busy_time(struct task_struct *p, struct rq *rq,
 		nt_curr_runnable_sum = &cpu_time->nt_curr_runnable_sum;
 		nt_prev_runnable_sum = &cpu_time->nt_prev_runnable_sum;
 	}
+#endif
 
 	if (!new_window) {
 		/*
@@ -1614,8 +1728,14 @@ static void update_cpu_busy_time(struct task_struct *p, struct rq *rq,
 		if (!is_idle_task(p)) {
 			p->wts.curr_window += delta;
 			p->wts.curr_window_cpu[cpu] += delta;
+#ifdef CONFIG_HW_TOP_TASK
+			p->wts.load_sum += delta;
+#endif
 		}
 
+#ifdef CONFIG_HW_TOP_TASK
+		return;
+#endif
 		goto done;
 	}
 
@@ -1665,6 +1785,9 @@ static void update_cpu_busy_time(struct task_struct *p, struct rq *rq,
 		p->wts.curr_window = delta;
 		p->wts.curr_window_cpu[cpu] = delta;
 
+#ifdef CONFIG_HW_TOP_TASK
+		update_top_task_load(p, rq, event, wallclock, true);
+#endif
 		goto done;
 	}
 
@@ -1724,6 +1847,9 @@ static void update_cpu_busy_time(struct task_struct *p, struct rq *rq,
 			p->wts.curr_window_cpu[cpu] = delta;
 		}
 
+#ifdef CONFIG_HW_TOP_TASK
+		update_top_task_load(p, rq, event, wallclock, true);
+#endif
 		goto done;
 	}
 
@@ -1739,7 +1865,6 @@ static void update_cpu_busy_time(struct task_struct *p, struct rq *rq,
 		 * after a period of idleness, so we know the IRQ busy time
 		 * started at wallclock - irqtime.
 		 */
-
 		SCHED_BUG_ON(!is_idle_task(p));
 		mark_start = wallclock - irqtime;
 
@@ -1764,7 +1889,11 @@ static void update_cpu_busy_time(struct task_struct *p, struct rq *rq,
 
 		/* Process the remaining IRQ busy time in the current window. */
 		delta = wallclock - window_start;
+#ifdef CONFIG_HW_RTG_CPU_TIME
+		*curr_runnable_sum = scale_exec_time(delta, rq);
+#else
 		rq->wrq.curr_runnable_sum = scale_exec_time(delta, rq);
+#endif
 
 		return;
 	}
@@ -1934,6 +2063,37 @@ static u64 add_to_task_demand(struct rq *rq, struct task_struct *p, u64 delta)
 	return delta;
 }
 
+#ifdef CONFIG_HW_TASK_RAVG_SUM
+static int account_busy_for_task_ravg_sum(struct task_struct *p, int event)
+{
+	/* No need to bother updating task demand for exiting tasks
+	 * or the idle task. */
+	if (exiting_task(p) || is_idle_task(p))
+		return 0;
+
+	/* When a task is waking up it is completing a segment of non-busy
+	 * time. Likewise, if wait time is not treated as busy time, then
+	 * when a task begins to run or is migrated, it is not running and
+	 * is completing a segment of non-busy time. */
+	if (event == TASK_WAKE || event == PICK_NEXT_TASK || event == TASK_MIGRATE)
+		return 0;
+
+	return 1;
+}
+
+static void add_to_task_ravg_sum(struct rq *rq, struct task_struct *p,
+				u64 delta, int event)
+{
+	if (!account_busy_for_task_ravg_sum(p, event))
+		return;
+
+	delta = scale_exec_time(delta, rq);
+	p->wts.ravg_sum += delta;
+}
+#else
+static inline void add_to_task_ravg_sum(struct rq *rq, struct task_struct *p, u64 delta, int event) {}
+#endif
+
 /*
  * Account cpu demand of task and/or update task's cpu demand history
  *
@@ -1992,7 +2152,11 @@ static u64 update_task_demand(struct task_struct *p, struct rq *rq,
 	int new_window, nr_full_windows;
 	u32 window_size = sched_ravg_window;
 	u64 runtime;
+	u64 ret;
 
+#ifdef CONFIG_HW_RTG_WALT
+	update_group_demand(p, rq, event, wallclock);
+#endif
 	new_window = mark_start < window_start;
 	if (!account_busy_for_task_demand(rq, p, event)) {
 		if (new_window)
@@ -2013,7 +2177,9 @@ static u64 update_task_demand(struct task_struct *p, struct rq *rq,
 		 * The simple case - busy time contained within the existing
 		 * window.
 		 */
-		return add_to_task_demand(rq, p, wallclock - mark_start);
+		ret = add_to_task_demand(rq, p, wallclock - mark_start);
+		add_to_task_ravg_sum(rq, p, wallclock - mark_start, event);
+		return ret;
 	}
 
 	/*
@@ -2026,6 +2192,7 @@ static u64 update_task_demand(struct task_struct *p, struct rq *rq,
 
 	/* Process (window_start - mark_start) first */
 	runtime = add_to_task_demand(rq, p, window_start - mark_start);
+	add_to_task_ravg_sum(rq, p, wallclock - mark_start, event);
 
 	/* Push new sample(s) into task's demand history */
 	update_history(rq, p, p->wts.sum, 1, event);
@@ -2045,6 +2212,7 @@ static u64 update_task_demand(struct task_struct *p, struct rq *rq,
 	/* Process (wallclock - window_start) next */
 	mark_start = window_start;
 	runtime += add_to_task_demand(rq, p, wallclock - mark_start);
+	add_to_task_ravg_sum(rq, p, wallclock - mark_start, event);
 
 	return runtime;
 }
@@ -2137,12 +2305,21 @@ void walt_update_task_ravg(struct task_struct *p, struct rq *rq, int event,
 {
 	u64 old_window_start;
 
+#ifdef CONFIG_HW_SCHED_WALT
+	if (unlikely(walt_disabled))
+		return;
+#endif
+
 	if (!rq->wrq.window_start || p->wts.mark_start == wallclock)
 		return;
 
 	lockdep_assert_held(&rq->lock);
 
 	old_window_start = update_window_start(rq, wallclock, event);
+
+#ifdef CONFIG_HW_RTG_WALT
+	update_group_nr_running(p, event, wallclock);
+#endif
 
 	if (!p->wts.mark_start) {
 		update_task_cpu_cycles(p, cpu_of(rq), wallclock);
@@ -2160,11 +2337,17 @@ void walt_update_task_ravg(struct task_struct *p, struct rq *rq, int event,
 				&rq->wrq.grp_time);
 	trace_sched_update_task_ravg_mini(p, rq, event, wallclock, irqtime,
 				&rq->wrq.grp_time);
-
 done:
 	p->wts.mark_start = wallclock;
 
+#ifdef CONFIG_HW_CPU_FREQ_GOV_SCHEDUTIL_COMMON
+	if (old_window_start != rq->wrq.window_start) {
+		sugov_mark_util_change(cpu_of(rq), WALT_WINDOW_ROLLOVER);
+		trace_walt_window_rollover(cpu_of(rq));
+	}
+#else
 	run_walt_irq_work(old_window_start, rq);
+#endif
 }
 
 u32 sched_get_init_task_load(struct task_struct *p)
@@ -2190,9 +2373,12 @@ void init_new_task_load(struct task_struct *p)
 	u32 init_load_pct = current->wts.init_load_pct;
 
 	p->wts.init_load_pct = 0;
+#ifdef CONFIG_HW_RTG_WALT
+	init_task_rtg(p);
+#else
 	rcu_assign_pointer(p->wts.grp, NULL);
 	INIT_LIST_HEAD(&p->wts.grp_list);
-
+#endif
 	p->wts.mark_start = 0;
 	p->wts.sum = 0;
 	p->wts.curr_window = 0;
@@ -2246,7 +2432,11 @@ void free_task_load_ptrs(struct task_struct *p)
 
 void walt_task_dead(struct task_struct *p)
 {
+#ifdef CONFIG_HW_RTG
+	_sched_set_group_id(p, DEFAULT_RTG_GRP_ID);
+#elif defined(CONFIG_QCOM_WALT_RTG)
 	sched_set_group_id(p, 0);
+#endif
 	free_task_load_ptrs(p);
 }
 
@@ -2707,9 +2897,11 @@ int register_cpu_cycle_counter_cb(struct cpu_cycle_counter_cb *cb)
 	return 0;
 }
 
+#if defined(CONFIG_QCOM_WALT_RTG) || defined(CONFIG_HW_RTG_CPU_TIME)
 static void transfer_busy_time(struct rq *rq,
 				struct walt_related_thread_group *grp,
 					struct task_struct *p, int event);
+#endif
 
 /*
  * Enable colocation and frequency aggregation for all threads in a process.
@@ -2717,6 +2909,44 @@ static void transfer_busy_time(struct rq *rq,
  */
 unsigned int __read_mostly sysctl_sched_coloc_downmigrate_ns;
 
+#define ADD_TASK	0
+#define REM_TASK	1
+
+#ifdef CONFIG_UCLAMP_TASK_GROUP
+#ifdef CONFIG_HW_RTG
+bool uclamp_task_colocated(struct task_struct *p)
+#else
+static inline bool uclamp_task_colocated(struct task_struct *p)
+#endif
+{
+	struct cgroup_subsys_state *css;
+	struct task_group *tg;
+	bool colocate;
+
+	rcu_read_lock();
+	css = task_css(p, cpu_cgrp_id);
+	if (!css) {
+		rcu_read_unlock();
+		return false;
+	}
+	tg = container_of(css, struct task_group, css);
+	colocate = tg->wtg.colocate;
+	rcu_read_unlock();
+
+	return colocate;
+}
+#else
+#ifdef CONFIG_HW_RTG
+bool uclamp_task_colocated(struct task_struct *p)
+#else
+static inline bool uclamp_task_colocated(struct task_struct *p)
+#endif
+{
+	return false;
+}
+#endif /* CONFIG_UCLAMP_TASK_GROUP */
+
+#ifdef CONFIG_QCOM_WALT_RTG
 struct walt_related_thread_group
 			*related_thread_groups[MAX_NUM_CGROUP_COLOC_ID];
 static LIST_HEAD(active_related_thread_groups);
@@ -2866,9 +3096,6 @@ int update_preferred_cluster(struct walt_related_thread_group *grp,
 	return 0;
 }
 
-#define ADD_TASK	0
-#define REM_TASK	1
-
 static inline struct walt_related_thread_group*
 lookup_related_thread_group(unsigned int group_id)
 {
@@ -2969,32 +3196,6 @@ add_task_to_group(struct task_struct *p, struct walt_related_thread_group *grp)
 	return 0;
 }
 
-#ifdef CONFIG_UCLAMP_TASK_GROUP
-static inline bool uclamp_task_colocated(struct task_struct *p)
-{
-	struct cgroup_subsys_state *css;
-	struct task_group *tg;
-	bool colocate;
-
-	rcu_read_lock();
-	css = task_css(p, cpu_cgrp_id);
-	if (!css) {
-		rcu_read_unlock();
-		return false;
-	}
-	tg = container_of(css, struct task_group, css);
-	colocate = tg->wtg.colocate;
-	rcu_read_unlock();
-
-	return colocate;
-}
-#else
-static inline bool uclamp_task_colocated(struct task_struct *p)
-{
-	return false;
-}
-#endif /* CONFIG_UCLAMP_TASK_GROUP */
-
 void add_new_task_to_grp(struct task_struct *new)
 {
 	unsigned long flags;
@@ -3086,7 +3287,7 @@ unsigned int sched_get_group_id(struct task_struct *p)
 	return group_id;
 }
 
-#if defined(CONFIG_UCLAMP_TASK_GROUP)
+#if defined(CONFIG_UCLAMP_TASK_GROUP) && !defined(CONFIG_HW_CGROUP_RTG)
 /*
  * We create a default colocation group at boot. There is no need to
  * synchronize tasks between cgroups at creation time because the
@@ -3121,9 +3322,47 @@ int sync_cgroup_colocation(struct task_struct *p, bool insert)
 }
 #endif
 
-static bool is_cluster_hosting_top_app(struct walt_sched_cluster *cluster)
+u64 get_rtgb_active_time(void)
 {
 	struct walt_related_thread_group *grp;
+	u64 now = sched_clock();
+
+	grp = lookup_related_thread_group(DEFAULT_CGROUP_COLOC_ID);
+
+	if (grp && grp->skip_min && grp->start_ts)
+		return now - grp->start_ts;
+
+	return 0;
+}
+
+#elif !defined(CONFIG_HW_RTG)
+static inline struct walt_related_thread_group*
+lookup_related_thread_group(unsigned int group_id)
+{
+	return NULL;
+}
+
+void set_preferred_cluster(struct walt_related_thread_group *grp) {}
+
+int update_preferred_cluster(struct walt_related_thread_group *grp,
+		struct task_struct *p, u32 old_load, bool from_tick)
+{
+	return 0;
+}
+#else
+u64 get_rtgb_active_time(void)
+{
+	return 0;
+}
+#endif
+
+static bool is_cluster_hosting_top_app(struct walt_sched_cluster *cluster)
+{
+#ifdef CONFIG_HW_RTG
+	struct related_thread_group *grp;
+#else
+	struct walt_related_thread_group *grp;
+#endif
 	bool grp_on_min;
 
 	grp = lookup_related_thread_group(DEFAULT_CGROUP_COLOC_ID);
@@ -3131,10 +3370,33 @@ static bool is_cluster_hosting_top_app(struct walt_sched_cluster *cluster)
 	if (!grp)
 		return false;
 
-	grp_on_min = !grp->skip_min &&
-			(sched_boost_policy() != SCHED_BOOST_ON_BIG);
-
+	grp_on_min = (sched_boost_policy() != SCHED_BOOST_ON_BIG);
+#ifdef CONFIG_HW_RTG
+	grp_on_min = grp_on_min && grp->preferred_cluster &&
+		     grp->preferred_cluster == min_cap_cluster();
+#elif defined(CONFIG_QCOM_WALT_RTG)
+	grp_on_min = grp_on_min && !grp->skip_min;
+#endif
 	return (is_min_capacity_cluster(cluster) == grp_on_min);
+}
+
+bool is_rtgb_active(void)
+{
+#ifdef CONFIG_HW_RTG
+	struct related_thread_group *grp;
+#else
+	struct walt_related_thread_group *grp;
+#endif
+
+	grp = lookup_related_thread_group(DEFAULT_CGROUP_COLOC_ID);
+#ifdef CONFIG_HW_RTG
+	return grp && grp->preferred_cluster &&
+	       grp->preferred_cluster != min_cap_cluster();
+#elif defined(CONFIG_QCOM_WALT_RTG)
+	return grp && grp->skip_min;
+#else
+	return grp;
+#endif
 }
 
 static unsigned long thermal_cap_cpu[NR_CPUS];
@@ -3175,6 +3437,7 @@ void note_task_waking(struct task_struct *p, u64 wallclock)
 	p->wts.last_wake_ts = wallclock;
 }
 
+#if defined(CONFIG_QCOM_WALT_RTG) || defined(CONFIG_HW_RTG_CPU_TIME)
 /*
  * Task's cpu usage is accounted in:
  *	rq->wrq.curr/prev_runnable_sum,  when its ->grp is NULL
@@ -3348,27 +3611,7 @@ static void transfer_busy_time(struct rq *rq,
 
 	trace_sched_migration_update_sum(p, migrate_type, rq);
 }
-
-bool is_rtgb_active(void)
-{
-	struct walt_related_thread_group *grp;
-
-	grp = lookup_related_thread_group(DEFAULT_CGROUP_COLOC_ID);
-	return grp && grp->skip_min;
-}
-
-u64 get_rtgb_active_time(void)
-{
-	struct walt_related_thread_group *grp;
-	u64 now = sched_clock();
-
-	grp = lookup_related_thread_group(DEFAULT_CGROUP_COLOC_ID);
-
-	if (grp && grp->skip_min && grp->start_ts)
-		return now - grp->start_ts;
-
-	return 0;
-}
+#endif
 
 static void walt_init_window_dep(void);
 static void walt_tunables_fixup(void)
@@ -3403,8 +3646,13 @@ static void walt_update_irqload(struct rq *rq)
 	rq->wrq.prev_irq_time = cur_irq_time;
 
 	if (nr_windows < SCHED_HIGH_IRQ_TIMEOUT)
+#ifndef CONFIG_HW_SCHED_WALT
 		rq->wrq.high_irqload = (rq->wrq.avg_irqload >=
 					walt_cpu_high_irqload);
+#else
+		rq->wrq.high_irqload = (rq->wrq.avg_irqload >=
+					sched_walt_cpu_high_irqload);
+#endif
 	else
 		rq->wrq.high_irqload = 0;
 }
@@ -3573,13 +3821,20 @@ void walt_rotation_checkpoint(int nr_big)
 
 void walt_fill_ta_data(struct core_ctl_notif_data *data)
 {
+	int scale = 1024;
+	struct walt_sched_cluster *cluster;
+	int i = 0;
+#ifdef CONFIG_HW_RTG
+	struct related_thread_group *grp;
+#elif defined(CONFIG_QCOM_WALT_RTG)
 	struct walt_related_thread_group *grp;
+#endif
+
+#if defined(CONFIG_QCOM_WALT_RTG) || defined(CONFIG_HW_RTG)
 	unsigned long flags;
 	u64 total_demand = 0, wallclock;
 	struct task_struct *p;
-	int min_cap_cpu, scale = 1024;
-	struct walt_sched_cluster *cluster;
-	int i = 0;
+	int min_cap_cpu;
 
 	grp = lookup_related_thread_group(DEFAULT_CGROUP_COLOC_ID);
 
@@ -3590,15 +3845,17 @@ void walt_fill_ta_data(struct core_ctl_notif_data *data)
 	}
 
 	wallclock = sched_ktime_clock();
-
+#ifdef CONFIG_HW_RTG
+	list_for_each_entry(p, &grp->tasks, grp_list) {
+#elif defined(CONFIG_QCOM_WALT_RTG)
 	list_for_each_entry(p, &grp->tasks, wts.grp_list) {
+#endif
 		if (p->wts.mark_start < wallclock -
 		    (sched_ravg_window * sched_ravg_hist_size))
 			continue;
 
 		total_demand += p->wts.coloc_demand;
 	}
-
 	raw_spin_unlock_irqrestore(&grp->lock, flags);
 
 	/*
@@ -3616,6 +3873,7 @@ void walt_fill_ta_data(struct core_ctl_notif_data *data)
 			       (u64)sched_ravg_window * scale);
 
 fill_util:
+#endif
 	for_each_sched_cluster(cluster) {
 		int fcpu = cluster_first_cpu(cluster);
 
@@ -3678,7 +3936,12 @@ static void walt_init_window_dep(void)
 	sched_init_task_load_windows_scaled =
 		scale_demand(sched_init_task_load_windows);
 
+#ifndef CONFIG_HW_SCHED_WALT
 	walt_cpu_high_irqload = div64_u64((u64)sched_ravg_window * 95, (u64) 100);
+#else
+	sched_walt_cpu_high_irqload = div64_u64((u64)sched_ravg_window * 95,
+						(u64) 100);
+#endif
 }
 
 static void walt_init_once(void)
@@ -3687,6 +3950,9 @@ static void walt_init_once(void)
 	init_irq_work(&walt_cpufreq_irq_work, walt_irq_work);
 	walt_rotate_work_init();
 	walt_init_window_dep();
+#ifdef CONFIG_HW_SCHED_WALT
+	sysctl_sched_walt_init_task_load_pct = sysctl_sched_init_task_load_pct;
+#endif
 }
 
 void walt_sched_init_rq(struct rq *rq)
@@ -3729,6 +3995,11 @@ void walt_sched_init_rq(struct rq *rq)
 	rq->wrq.curr_top = 0;
 	rq->wrq.last_cc_update = 0;
 	rq->wrq.cycles = 0;
+#ifdef CONFIG_HW_TOP_TASK
+	rq->wrq.top_task_hist_size = DEFAULT_TOP_TASK_HIST_SIZE;
+	rq->wrq.top_task_stats_policy = DEFAULT_TOP_TASK_STATS_POLICY;
+	rq->wrq.top_task_stats_empty_window = DEFAULT_TOP_TASK_STATS_EMPTY_WINDOW;
+#endif
 	for (j = 0; j < NUM_TRACKED_WINDOWS; j++) {
 		memset(&rq->wrq.load_subs[j], 0,
 				sizeof(struct load_subtractions));
@@ -3757,8 +4028,9 @@ int walt_proc_user_hint_handler(struct ctl_table *table,
 	ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
 	if (ret || !write || (old_value == sysctl_sched_user_hint))
 		goto unlock;
-
+#ifndef CONFIG_HW_CPU_FREQ_GOV_SCHEDUTIL_COMMON
 	walt_irq_work_queue(&walt_migration_irq_work);
+#endif
 
 unlock:
 	mutex_unlock(&mutex);
@@ -3799,3 +4071,13 @@ unlock:
 	mutex_unlock(&mutex);
 	return ret;
 }
+
+#ifdef CONFIG_HW_SCHED_WALT
+#include "../hw_walt/walt_hw.c"
+#endif
+#ifdef CONFIG_HW_SCHED_PRED_LOAD
+#include "../hw_walt/pred_load.c"
+#endif
+#ifdef CONFIG_HW_TOP_TASK
+#include "../hw_task/hw_top_task.c"
+#endif

@@ -27,9 +27,21 @@
 
 #include "walt/walt.h"
 
+#ifdef CONFIG_HW_SCHED_WALT
+#include "hw_walt/walt_hw.h"
+#endif
+
+#ifdef CONFIG_HW_RTG
+#include <linux/sched/hw_rtg/rtg_sched.h>
+#endif
+
 #ifdef CONFIG_SMP
 static inline bool task_fits_max(struct task_struct *p, int cpu);
 #endif /* CONFIG_SMP */
+
+#ifdef CONFIG_HW_VIP_THREAD
+#include <chipset_common/hwcfs/hwcfs_common.h>
+#endif
 
 /*
  * Targeted preemption latency for CPU-bound tasks:
@@ -137,6 +149,10 @@ __read_mostly unsigned int sysctl_sched_prefer_spread;
 unsigned int sysctl_walt_rtg_cfs_boost_prio = 99; /* disabled by default */
 unsigned int sysctl_walt_low_latency_task_threshold; /* disabled by default */
 unsigned int sysctl_sched_sync_hint_enable = 1;
+#ifdef CONFIG_HW_SCHED_WALT
+unsigned int sysctl_sched_use_walt_cpu_util = 1;
+unsigned int sysctl_sched_use_walt_task_util = 1;
+#endif
 #endif
 unsigned int sched_small_task_threshold = 102;
 __read_mostly unsigned int sysctl_sched_force_lb_enable = 1;
@@ -993,6 +1009,16 @@ update_stats_enqueue_sleeper(struct cfs_rq *cfs_rq, struct sched_entity *se)
 				__schedstat_inc(se->statistics.iowait_count);
 				trace_sched_stat_iowait(tsk, delta);
 			}
+
+#ifdef CONFIG_HW_VIP_THREAD
+			/*
+			 * Blocking time is in units of nanosecs, so shift by
+			 * 20 to get a milliseconds-range estimation of the
+			 * amount of time that the task spent sleeping:
+			 */
+			if (tsk && tsk->static_vip && (tsk->pid == tsk->tgid))
+				sched_account_ui_thread_io_block_counts(delta >> 20);
+#endif
 
 			trace_sched_stat_blocked(tsk, delta);
 			trace_sched_blocked_reason(tsk);
@@ -3724,20 +3750,31 @@ static inline unsigned long _task_util_est(struct task_struct *p)
 static inline unsigned long task_util_est(struct task_struct *p)
 {
 #ifdef CONFIG_SCHED_WALT
+#ifdef CONFIG_HW_SCHED_WALT
+	if (likely(!walt_disabled && sysctl_sched_use_walt_task_util))
+#endif
 	return p->wts.demand_scaled;
 #endif
 	return max(task_util(p), _task_util_est(p));
 }
 
 #ifdef CONFIG_UCLAMP_TASK
+#ifdef CONFIG_HW_RTG
+unsigned long uclamp_task_util(struct task_struct *p)
+#else
 static inline unsigned long uclamp_task_util(struct task_struct *p)
+#endif
 {
 	return clamp(task_util_est(p),
 		     uclamp_eff_value(p, UCLAMP_MIN),
 		     uclamp_eff_value(p, UCLAMP_MAX));
 }
 #else
+#ifdef CONFIG_HW_RTG
+unsigned long uclamp_task_util(struct task_struct *p)
+#else
 static inline unsigned long uclamp_task_util(struct task_struct *p)
+#endif
 {
 	return task_util_est(p);
 }
@@ -3997,6 +4034,12 @@ static inline void walt_adjust_cpus_for_packing(struct task_struct *p,
 
 static inline void update_misfit_status(struct task_struct *p, struct rq *rq)
 {
+	bool task_fits = false;
+#ifdef CONFIG_HW_RTG_NORMALIZED_UTIL
+	int cpu = cpu_of(rq);
+	struct cpumask *rtg_target = NULL;
+#endif
+
 	if (!static_branch_unlikely(&sched_asym_cpucapacity))
 		return;
 
@@ -4005,7 +4048,17 @@ static inline void update_misfit_status(struct task_struct *p, struct rq *rq)
 		return;
 	}
 
-	if (task_fits_max(p, cpu_of(rq))) {
+#ifdef CONFIG_HW_RTG_NORMALIZED_UTIL
+	rtg_target = find_rtg_target(p);
+	if (rtg_target)
+		task_fits = capacity_orig_of(cpu) >=
+				capacity_orig_of(cpumask_first(rtg_target));
+	else
+		task_fits = task_fits_max(p, cpu_of(rq));
+#else
+	task_fits = task_fits_max(p, cpu_of(rq));
+#endif
+	if (task_fits) {
 		rq->misfit_task_load = 0;
 		return;
 	}
@@ -4810,7 +4863,7 @@ void unthrottle_cfs_rq(struct cfs_rq *cfs_rq)
 		if (se->on_rq)
 			break;
 		cfs_rq = cfs_rq_of(se);
-		enqueue_entity(cfs_rq, se, ENQUEUE_WAKEUP);
+			enqueue_entity(cfs_rq, se, ENQUEUE_WAKEUP);
 
 		cfs_rq->h_nr_running += task_delta;
 		cfs_rq->idle_h_nr_running += idle_task_delta;
@@ -4840,7 +4893,7 @@ void unthrottle_cfs_rq(struct cfs_rq *cfs_rq)
 	}
 
 	/* At this point se is NULL and we are at root level*/
-	add_nr_running(rq, task_delta);
+		add_nr_running(rq, task_delta);
 
 unthrottle_throttle:
 	/*
@@ -5521,6 +5574,10 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 		flags = ENQUEUE_WAKEUP;
 	}
 
+#ifdef CONFIG_HUAWEI_SCHED_VIP
+	sched_enqueue_vip_thread(rq, p);
+#endif
+
 	for_each_sched_entity(se) {
 		cfs_rq = cfs_rq_of(se);
 
@@ -5627,6 +5684,10 @@ static void dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 		}
 		flags |= DEQUEUE_SLEEP;
 	}
+
+#ifdef CONFIG_HUAWEI_SCHED_VIP
+	sched_dequeue_vip_thread(rq, p);
+#endif
 
 	for_each_sched_entity(se) {
 		cfs_rq = cfs_rq_of(se);
@@ -5848,7 +5909,23 @@ static int wake_affine(struct sched_domain *sd, struct task_struct *p,
 
 static unsigned long cpu_util_without(int cpu, struct task_struct *p);
 
+#ifdef CONFIG_HW_CPU_FREQ_GOV_SCHEDUTIL
+unsigned long get_cpu_util(int cpu)
+{
+#ifdef CONFIG_SCHED_WALT
+	struct walt_cpu_load walt_load = {0};
+	return cpu_util_freq_walt(cpu, &walt_load);
+#else
+	return cpu_util(cpu);
+#endif
+}
+#endif
+
+#ifdef CONFIG_HW_RTG
+unsigned long capacity_spare_without(int cpu, struct task_struct *p)
+#else
 static unsigned long capacity_spare_without(int cpu, struct task_struct *p)
+#endif
 {
 	return max_t(long, capacity_of(cpu) - cpu_util_without(cpu, p), 0);
 }
@@ -6420,9 +6497,7 @@ symmetric:
  */
 static unsigned long cpu_util_without(int cpu, struct task_struct *p)
 {
-#ifndef CONFIG_SCHED_WALT
 	struct cfs_rq *cfs_rq;
-#endif
 	unsigned int util;
 
 #ifdef CONFIG_SCHED_WALT
@@ -6432,6 +6507,9 @@ static unsigned long cpu_util_without(int cpu, struct task_struct *p)
 	 * utilization from cpu utilization. Instead just use
 	 * cpu_util for this case.
 	 */
+#ifdef CONFIG_HW_SCHED_WALT
+	if (likely(!walt_disabled && sysctl_sched_use_walt_cpu_util))
+#endif
 	if (likely(p->state == TASK_WAKING))
 		return cpu_util(cpu);
 #endif
@@ -6441,8 +6519,16 @@ static unsigned long cpu_util_without(int cpu, struct task_struct *p)
 		return cpu_util(cpu);
 
 #ifdef CONFIG_SCHED_WALT
+#ifdef CONFIG_HW_SCHED_WALT
+	if (likely(!walt_disabled && sysctl_sched_use_walt_cpu_util)) {
+#endif
 	util = max_t(long, cpu_util(cpu) - task_util(p), 0);
-#else
+#ifdef CONFIG_HW_SCHED_WALT
+	return min_t(unsigned long, util, capacity_orig_of(cpu));
+	}
+#endif
+#endif
+
 	cfs_rq = &cpu_rq(cpu)->cfs;
 	util = READ_ONCE(cfs_rq->avg.util_avg);
 
@@ -6501,7 +6587,6 @@ static unsigned long cpu_util_without(int cpu, struct task_struct *p)
 
 		util = max(util, estimated);
 	}
-#endif
 
 	/*
 	 * Utilization (estimated) can exceed the CPU capacity, thus let's
@@ -6524,6 +6609,8 @@ unsigned long capacity_curr_of(int cpu)
 }
 
 #ifdef CONFIG_SCHED_WALT
+
+#ifdef CONFIG_QCOM_WALT_RTG
 static inline bool walt_get_rtg_status(struct task_struct *p)
 {
 	struct walt_related_thread_group *grp;
@@ -6539,7 +6626,12 @@ static inline bool walt_get_rtg_status(struct task_struct *p)
 
 	return ret;
 }
-
+#else
+static inline bool walt_get_rtg_status(struct task_struct *p)
+{
+	return false;
+}
+#endif
 static inline bool walt_task_skip_min_cpu(struct task_struct *p)
 {
 	return sched_boost() != CONSERVATIVE_BOOST &&
@@ -6724,6 +6816,18 @@ static void walt_find_best_target(struct sched_domain *sd, cpumask_t *cpus,
 			new_util = max(min_util, new_util);
 			if (new_util > capacity_orig)
 				continue;
+
+#ifdef CONFIG_HUAWEI_SCHED_VIP
+			if (!idle_cpu(i)) {
+				/*
+				 * Never push a running normal cfs task to
+				 * a cpu with vip thread
+				 */
+				if (p->state == TASK_RUNNING &&
+				    !list_empty(&cpu_rq(i)->vip_prio_thread_list))
+					continue;
+			}
+#endif
 
 			/*
 			 * Pre-compute the maximum possible capacity we expect
@@ -7375,6 +7479,27 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int sd_flag, int wake_f
 	int want_affine = 0;
 	int sync = (wake_flags & WF_SYNC) && !(current->flags & PF_EXITING);
 	int target_cpu = -1;
+#ifdef CONFIG_HW_RTG_NORMALIZED_UTIL
+	struct cpumask *rtg_target = NULL;
+#endif
+
+#ifdef CONFIG_HUAWEI_SCHED_VIP
+	if (p->vip_prio) {
+		int vip_cpu = find_vip_cpu(p);
+
+		if (vip_cpu != -1)
+			return vip_cpu;
+	}
+#endif
+#ifdef CONFIG_HW_RTG_NORMALIZED_UTIL
+	rtg_target = find_rtg_target(p);
+	if (rtg_target) {
+		int rtg_cpu = find_rtg_cpu(p, rtg_target);
+
+		if (rtg_cpu != -1)
+			return rtg_cpu;
+	}
+#endif
 
 	trace_android_rvh_select_task_rq_fair(p, prev_cpu, sd_flag,
 			wake_flags, &target_cpu);
@@ -7673,6 +7798,18 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
 	find_matching_se(&se, &pse);
 	update_curr(cfs_rq_of(se));
 	BUG_ON(!pse);
+
+#ifdef CONFIG_HW_VIP_THREAD
+	if (p->static_vip || atomic64_read(&p->dynamic_vip)) {
+		trace_sched_vip_sched(p, "vip_preempt");
+		goto preempt;
+	}
+#endif
+#ifdef CONFIG_HUAWEI_SCHED_VIP
+	if (p->vip_prio)
+		goto preempt;
+#endif
+
 	if (wakeup_preempt_entity(se, pse) == 1) {
 		/*
 		 * Bias pick_next to pick the sched entity that is
@@ -7707,13 +7844,47 @@ static struct task_struct *
 pick_next_task_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 {
 	struct cfs_rq *cfs_rq = &rq->cfs;
-	struct sched_entity *se;
-	struct task_struct *p;
+	struct sched_entity *se = NULL;
+	struct task_struct *p = NULL;
 	int new_tasks;
 
 again:
 	if (!sched_fair_runnable(rq))
 		goto idle;
+
+#ifdef CONFIG_HUAWEI_SCHED_VIP
+	p = pick_next_vip_thread(rq);
+#endif
+#ifdef CONFIG_HW_VIP_THREAD
+	if (!p)
+		pick_vip_thread(rq, &p, &se);
+#endif
+
+#if defined(CONFIG_HUAWEI_SCHED_VIP) || defined(CONFIG_HW_VIP_THREAD)
+	if (p) {
+		if (prev)
+			put_prev_task(rq, prev);
+
+		do {
+			se = pick_next_entity(cfs_rq, NULL);
+			cfs_rq = group_cfs_rq(se);
+		} while (cfs_rq);
+
+		/*
+		 * If the CFS picked task is a per-cpu task, pick it
+		 * to prevent starving.
+		 * Otherwise go with our vip task.
+		 */
+		if (task_of(se)->nr_cpus_allowed == 1)
+			p = task_of(se);
+
+		se = &p->se;
+		for_each_sched_entity(se)
+			set_next_entity(cfs_rq_of(se), se);
+
+		goto done;
+	}
+#endif
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	if (!prev || prev->sched_class != &fair_sched_class)
@@ -7763,6 +7934,13 @@ again:
 	} while (cfs_rq);
 
 	p = task_of(se);
+
+#ifdef CONFIG_HW_VIP_THREAD
+	/*
+	 * pick vip or temp vip thread
+	 */
+	 pick_vip_thread(rq, &p, &se);
+#endif
 
 	/*
 	 * Since we haven't yet done put_prev_entity and if the selected task
@@ -8038,6 +8216,9 @@ enum fbq_type { regular, remote, all };
 
 enum group_type {
 	group_other = 0,
+#ifdef CONFIG_HUAWEI_SCHED_VIP
+	group_vip_preempt,
+#endif
 	group_misfit_task,
 	group_imbalanced,
 	group_overloaded,
@@ -8466,8 +8647,21 @@ redo:
 		if (!env->prefer_spread &&
 			((cpu_rq(env->src_cpu)->nr_running > 2) ||
 			(env->flags & LBF_IGNORE_BIG_TASKS)) &&
+#ifdef CONFIG_HUAWEI_SCHED_VIP
+			((load / 2) > env->imbalance) && !p->vip_prio)
+#else
 			((load / 2) > env->imbalance))
+#endif
 			goto next;
+
+#if defined(CONFIG_HUAWEI_SCHED_VIP) && defined(CONFIG_HW_RTG_NORMALIZED_UTIL)
+		if (p->vip_prio && find_rtg_target(p)) {
+			u64 now = walt_ktime_clock();
+			if ((now - p->wts.last_enqueued_ts < vip_task_load_balance_delay) &&
+			    (capacity_orig_of(env->dst_cpu) < capacity_orig_of(env->src_cpu)))
+				goto next;
+		}
+#endif
 
 		detach_task(p, env);
 		list_add(&p->se.group_node, &env->tasks);
@@ -8804,6 +8998,9 @@ struct sg_lb_stats {
 	unsigned int nr_numa_running;
 	unsigned int nr_preferred_running;
 #endif
+#ifdef CONFIG_HUAWEI_SCHED_VIP
+	enum vip_preempt_type vip_preempt_type;
+#endif
 };
 
 /*
@@ -8842,6 +9039,9 @@ static inline void init_sd_lb_stats(struct sd_lb_stats *sds)
 			.avg_load = 0UL,
 			.sum_nr_running = 0,
 			.group_type = group_other,
+#ifdef CONFIG_HUAWEI_SCHED_VIP
+			.vip_preempt_type = NO_VIP_PREEMPT,
+#endif
 		},
 	};
 }
@@ -9138,6 +9338,11 @@ group_type group_classify(struct sched_group *group,
 	if (sgs->group_misfit_task_load)
 		return group_misfit_task;
 
+#ifdef CONFIG_HUAWEI_SCHED_VIP
+	if (sgs->vip_preempt_type)
+		return group_vip_preempt;
+#endif
+
 	return group_other;
 }
 
@@ -9219,6 +9424,11 @@ static inline void update_sg_lb_stats(struct lb_env *env,
 			sgs->group_misfit_task_load = rq->misfit_task_load;
 			*sg_status |= SG_OVERLOAD;
 		}
+
+#ifdef CONFIG_HUAWEI_SCHED_VIP
+		if (rq->vip_preempt_type > sgs->vip_preempt_type)
+			sgs->vip_preempt_type = rq->vip_preempt_type;
+#endif
 	}
 
 	/* Isolated CPU has no weight */
@@ -9326,6 +9536,12 @@ static bool update_sd_pick_busiest(struct lb_env *env,
 	if (sgs->group_type == group_misfit_task &&
 	    sgs->group_misfit_task_load < busiest->group_misfit_task_load)
 		return false;
+
+#ifdef CONFIG_HUAWEI_SCHED_VIP
+	if (sgs->group_type == group_vip_preempt &&
+		sgs->vip_preempt_type <= busiest->vip_preempt_type)
+		return false;
+#endif
 
 asym_packing:
 
@@ -9915,6 +10131,11 @@ static struct sched_group *find_busiest_group(struct lb_env *env)
 	if (busiest->group_type == group_misfit_task)
 		goto force_balance;
 
+#ifdef CONFIG_HUAWEI_SCHED_VIP
+	if (should_balance_vip_thread(busiest, env, &sds))
+		goto force_balance;
+#endif
+
 	/*
 	 * If the local group is busier than the selected busiest group
 	 * don't try and pull any tasks.
@@ -10026,6 +10247,15 @@ static struct rq *find_busiest_queue(struct lb_env *env,
 
 			continue;
 		}
+
+#ifdef CONFIG_HUAWEI_SCHED_VIP
+		if (env->src_grp_type == group_vip_preempt) {
+			if (!busiest ||
+				rq->vip_preempt_type > busiest->vip_preempt_type)
+				busiest = rq;
+			continue;
+		}
+#endif
 
 		/*
 		 * Ignore cpu, which is undergoing active_balance and doesn't
@@ -10463,6 +10693,12 @@ no_move:
 	} else
 		sd->nr_balance_failed = 0;
 
+#ifdef CONFIG_HW_CPU_FREQ_GOV_SCHEDUTIL_COMMON
+	/* Assumes one 'busiest' cpu that we pulled tasks from */
+	sugov_check_freq_update(this_cpu);
+	sugov_check_freq_update(cpu_of(busiest));
+#endif
+
 	if (likely(!active_balance) || voluntary_active_balance(&env)) {
 		/* We were unbalanced, so reset the balancing interval */
 		sd->balance_interval = sd->min_interval;
@@ -10614,6 +10850,9 @@ int active_load_balance_cpu_stop(void *data)
 		.loop                   = 0,
 	};
 #endif
+#ifdef CONFIG_HW_CPU_FREQ_GOV_SCHEDUTIL_COMMON
+	bool moved = false;
+#endif
 
 	rq_lock_irq(busiest_rq, &rf);
 	/*
@@ -10651,6 +10890,9 @@ int active_load_balance_cpu_stop(void *data)
 			update_rq_clock(busiest_rq);
 			detach_task(push_task, &env);
 			push_task_detached = 1;
+#ifdef CONFIG_HW_CPU_FREQ_GOV_SCHEDUTIL_COMMON
+			moved = true;
+#endif
 		}
 		goto out_unlock;
 	}
@@ -10689,6 +10931,9 @@ int active_load_balance_cpu_stop(void *data)
 			schedstat_inc(sd->alb_pushed);
 			/* Active balancing done, reset the failure counter. */
 			sd->nr_balance_failed = 0;
+#ifdef CONFIG_HW_CPU_FREQ_GOV_SCHEDUTIL_COMMON
+			moved = true;
+#endif
 		} else {
 			schedstat_inc(sd->alb_failed);
 		}
@@ -10721,7 +10966,12 @@ out_unlock:
 		attach_one_task(target_rq, p);
 
 	local_irq_enable();
-
+#ifdef CONFIG_HW_CPU_FREQ_GOV_SCHEDUTIL_COMMON
+	if (moved) {
+		sugov_check_freq_update(target_cpu);
+		sugov_check_freq_update(busiest_cpu);
+	}
+#endif
 	return 0;
 }
 
@@ -12330,3 +12580,6 @@ const struct cpumask *sched_trace_rd_span(struct root_domain *rd)
 #endif
 }
 EXPORT_SYMBOL_GPL(sched_trace_rd_span);
+#ifdef CONFIG_HUAWEI_SCHED_VIP
+#include "vip.c"
+#endif
