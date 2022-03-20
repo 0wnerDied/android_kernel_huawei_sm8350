@@ -488,6 +488,9 @@ LINUXINCLUDE    := \
 		-I$(objtree)/include \
 		$(USERINCLUDE)
 
+LINUXINCLUDE	+= \
+		-I$(srctree)/lib/libc_sec/include
+
 KBUILD_AFLAGS   := -D__ASSEMBLY__ -fno-PIE
 KBUILD_CFLAGS   := -Wall -Wundef -Werror=strict-prototypes -Wno-trigraphs \
 		   -fno-strict-aliasing -fno-common -fshort-wchar -fno-PIE \
@@ -645,6 +648,11 @@ ifeq ($(MAKECMDGOALS),)
 endif
 
 export KBUILD_MODULES KBUILD_BUILTIN
+
+# Define macro to control nolog version
+ifeq ($(FINAL_RELEASE),true)
+  CFLAGS_KERNEL += -DCONFIG_FINAL_RELEASE
+endif
 
 ifdef need-config
 include include/config/auto.conf
@@ -1106,8 +1114,11 @@ export mod_compress_cmd
 
 ifdef CONFIG_MODULE_SIG_ALL
 $(eval $(call config_filename,MODULE_SIG_KEY))
-
+ifneq ($(CONFIG_MODULE_SIG_KEY),"huawei_signing_key.pem")
 mod_sign_cmd = scripts/sign-file $(CONFIG_MODULE_SIG_HASH) $(MODULE_SIG_KEY_SRCPREFIX)$(CONFIG_MODULE_SIG_KEY) certs/signing_key.x509
+else
+mod_sign_cmd = $(CONFIG_SHELL) $(srctree)/../../vendor/huawei/chipset_common/build/signkernel/sign-kernel.sh
+endif
 else
 mod_sign_cmd = true
 endif
@@ -1377,6 +1388,34 @@ ifneq ($(dtstree),)
 PHONY += dtbs dtbs_install dtbs_check
 dtbs: include/config/kernel.release scripts_dtc
 	$(Q)$(MAKE) $(build)=$(dtstree)
+
+ifeq ($(CONFIG_LCD_KIT_DRIVER),y)
+$(info "11111")
+
+ifndef LCD_KIT_DTS_OUT
+LCD_KIT_DTS_OUT := $(objtree)/arch/$(SRCARCH)/boot/dts
+endif
+export LCD_KIT_DTS_OUT
+TOP_DIR := $(srctree)/../..
+config_generate_dir := ${LCD_KIT_DTS_OUT}/lcdkit3.0
+LCD_KIT_TOOLPATH := $(TOP_DIR)/vendor/huawei/chipset_common/devkit/lcdkit/lcdkit3.0/tools
+LCD_KIT_DPD_FILE_PATH = $(TOP_DIR)/out/target/product/$(TARGET_PRODUCT)/obj/KERNEL_OBJ/drivers/devkit/lcdkit/lcdkit3.0/kernel/qcom/common/src
+DTS_TYPE := trebledto
+$(info "22222")
+lcd_kit: FORCE
+	mkdir -p ${LCD_KIT_DPD_FILE_PATH}; \
+	cd ${LCD_KIT_TOOLPATH};perl ./lcd_kit_parser.pl $(TARGET_PRODUCT) $(DTS_TYPE) $(shell pwd)/${config_generate_dir}; \
+	perl ./lcd_kit_parser.pl ${TARGET_PRODUCT} effect $(LCD_KIT_DPD_FILE_PATH)
+	cp -rf $(shell pwd)/${config_generate_dir} $(TOP_DIR)/vendor/qcom/proprietary/devicetree/qcom;
+
+$(info "displayengine")
+display_engine: FORCE
+	cp -rf $(TOP_DIR)/external/libdrm/include/displayengine/* $(TOP_DIR)/kernel/msm-5.4/include/uapi/drm/
+endif
+
+ifeq ($(CONFIG_LCD_KIT_DRIVER),y)
+dtbs: prepare scripts lcd_kit display_engine
+endif
 
 ifneq ($(filter dtbs_check, $(MAKECMDGOALS)),)
 dtbs: dt_binding_check

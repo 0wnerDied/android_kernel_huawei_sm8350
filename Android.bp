@@ -32,11 +32,11 @@ cc_library_headers {
     name: "qti_kernel_headers",
     arch: {
         arm: {
-            generated_headers: ["qti_generate_kernel_headers_arm"],
+            generated_headers: ["qti_generate_kernel_headers_arm", "display_engine_kernel_headers"],
             export_generated_headers: ["qti_generate_kernel_headers_arm"],
         },
         arm64: {
-            generated_headers: ["qti_generate_kernel_headers_arm64"],
+            generated_headers: ["qti_generate_kernel_headers_arm64", "display_engine_kernel_headers"],
             export_generated_headers: ["qti_generate_kernel_headers_arm64"],
         },
     },
