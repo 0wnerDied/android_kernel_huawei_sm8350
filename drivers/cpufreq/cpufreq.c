@@ -32,6 +32,10 @@
 #include <linux/sched/sysctl.h>
 #include <trace/events/power.h>
 
+#ifdef CONFIG_DRG
+#include <linux/drg.h>
+#endif
+
 static LIST_HEAD(cpufreq_policy_list);
 
 /* Macros to iterate over CPU policies */
@@ -89,6 +93,9 @@ static int cpufreq_set_policy(struct cpufreq_policy *policy,
  */
 static BLOCKING_NOTIFIER_HEAD(cpufreq_policy_notifier_list);
 SRCU_NOTIFIER_HEAD_STATIC(cpufreq_transition_notifier_list);
+#ifdef CONFIG_BIG_CLUSTER_CORE_CTRL
+ATOMIC_NOTIFIER_HEAD(cpufreq_govinfo_notifier_list);
+#endif
 
 static int off __read_mostly;
 static int cpufreq_disabled(void)
@@ -117,6 +124,15 @@ struct kobject *get_governor_parent_kobj(struct cpufreq_policy *policy)
 		return cpufreq_global_kobject;
 }
 EXPORT_SYMBOL_GPL(get_governor_parent_kobj);
+
+struct cpufreq_frequency_table *cpufreq_frequency_get_table(unsigned int cpu)
+{
+	struct cpufreq_policy *policy = per_cpu(cpufreq_cpu_data, cpu);
+
+	return policy && (!policy_is_inactive(policy)) ?
+			policy->freq_table : NULL;
+}
+EXPORT_SYMBOL_GPL(cpufreq_frequency_get_table);
 
 static inline u64 get_cpu_idle_time_jiffy(unsigned int cpu, u64 *wall)
 {
@@ -1340,6 +1356,12 @@ static void cpufreq_policy_free(struct cpufreq_policy *policy)
 	free_cpumask_var(policy->real_cpus);
 	free_cpumask_var(policy->related_cpus);
 	free_cpumask_var(policy->cpus);
+#ifdef CONFIG_HW_CPUFREQ_GOVERNOR_BACKUP
+	if (policy->backup_governor_data) {
+		kfree(policy->backup_governor_data);
+		policy->backup_governor_data = NULL;
+	}
+#endif
 	kfree(policy);
 }
 
@@ -1991,6 +2013,12 @@ int cpufreq_register_notifier(struct notifier_block *nb, unsigned int list)
 		ret = blocking_notifier_chain_register(
 				&cpufreq_policy_notifier_list, nb);
 		break;
+#ifdef CONFIG_BIG_CLUSTER_CORE_CTRL
+	case CPUFREQ_GOVINFO_NOTIFIER:
+		ret = atomic_notifier_chain_register(
+				&cpufreq_govinfo_notifier_list, nb);
+		break;
+#endif
 	default:
 		ret = -EINVAL;
 	}
@@ -2031,6 +2059,12 @@ int cpufreq_unregister_notifier(struct notifier_block *nb, unsigned int list)
 		ret = blocking_notifier_chain_unregister(
 				&cpufreq_policy_notifier_list, nb);
 		break;
+#ifdef CONFIG_BIG_CLUSTER_CORE_CTRL
+	case CPUFREQ_GOVINFO_NOTIFIER:
+		ret = atomic_notifier_chain_unregister(
+				&cpufreq_govinfo_notifier_list, nb);
+		break;
+#endif
 	default:
 		ret = -EINVAL;
 	}
@@ -2180,6 +2214,9 @@ int __cpufreq_driver_target(struct cpufreq_policy *policy,
 	/* Make sure that target_freq is within supported range */
 	target_freq = clamp_val(target_freq, policy->min, policy->max);
 
+#ifdef CONFIG_DRG
+	target_freq = drg_cpufreq_check_limit(policy, target_freq);
+#endif
 	pr_debug("target for CPU %u: %u kHz, relation %u, requested %u kHz\n",
 		 policy->cpu, target_freq, relation, old_target_freq);
 

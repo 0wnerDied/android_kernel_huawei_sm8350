@@ -70,7 +70,7 @@ static irqreturn_t btmrvl_wake_irq_bt(int irq, void *priv)
 	disable_irq_nosync(irq);
 
 	pm_wakeup_event(dev, 0);
-	pm_system_wakeup();
+	pm_system_irq_wakeup(irq);
 
 	return IRQ_HANDLED;
 }

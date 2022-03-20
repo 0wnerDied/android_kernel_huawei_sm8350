@@ -180,6 +180,16 @@ struct binder_work {
 		BINDER_WORK_DEAD_BINDER_AND_CLEAR,
 		BINDER_WORK_CLEAR_DEATH_NOTIFICATION,
 	} type;
+
+#ifdef CONFIG_HW_BINDER_FG_REQ_FIRST
+	uint64_t seq;
+#endif
+
+#ifdef CONFIG_HW_BINDER_SCHED
+	u64 binder_begin;
+	int qos;
+	uid_t sender_euid;
+#endif
 };
 
 struct binder_error {
@@ -434,6 +444,17 @@ struct binder_proc {
 	bool is_dead;
 
 	struct list_head todo;
+#ifdef CONFIG_HW_BINDER_FG_REQ_FIRST
+	struct list_head fg_todo;
+	uint32_t fg_count;
+#endif
+#ifdef CONFIG_HW_BINDER_SCHED
+	bool is_system_server;
+	struct list_head bg_todo;
+	u64 last_check_time;
+	uint32_t bg_count;
+	int dynamic_qos_attr;
+#endif
 	struct binder_stats stats;
 	struct list_head delivered_death;
 	int max_threads;
@@ -492,6 +513,9 @@ struct binder_thread {
 	struct list_head waiting_thread_node;
 	int pid;
 	int looper;              /* only modified by this thread */
+#ifdef CONFIG_HW_BINDER_SCHED
+	unsigned int flag;       /* only modified by this thread */
+#endif
 	bool looper_need_return; /* can be written by other thread */
 	struct binder_transaction *transaction_stack;
 	struct list_head todo;
@@ -526,6 +550,11 @@ struct binder_transaction {
 	int debug_id;
 	struct binder_work work;
 	struct binder_thread *from;
+#ifdef CONFIG_BINDER_TRANSACTION_PROC_BRIEF
+	int async_from_pid;
+	int async_from_tid;
+	u64 timestamp;
+#endif
 	struct binder_transaction *from_parent;
 	struct binder_proc *to_proc;
 	struct binder_thread *to_thread;

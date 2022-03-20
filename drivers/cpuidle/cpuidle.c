@@ -24,6 +24,10 @@
 #include <linux/tick.h>
 #include <trace/events/power.h>
 
+#ifdef CONFIG_HUAWEI_IDLE_NOTIFY
+#include <linux/cpuidle_notifier.h>
+#endif
+
 #include "cpuidle.h"
 
 DEFINE_PER_CPU(struct cpuidle_device *, cpuidle_devices);
@@ -226,12 +230,20 @@ int __nocfi cpuidle_enter_state(struct cpuidle_device *dev, struct cpuidle_drive
 	trace_cpu_idle_rcuidle(index, dev->cpu);
 	time_start = ns_to_ktime(local_clock());
 
+#ifdef CONFIG_HUAWEI_IDLE_NOTIFY
+	atomic_notifier_call_chain(&idle_status_notifier_list, index, &dev->cpu);
+#endif
+
 	stop_critical_timings();
 	entered_state = target_state->enter(dev, drv, index);
 	start_critical_timings();
 
 	sched_clock_idle_wakeup_event();
 	time_end = ns_to_ktime(local_clock());
+#ifdef CONFIG_HUAWEI_IDLE_NOTIFY
+	atomic_notifier_call_chain(&idle_status_notifier_list, -1, &dev->cpu);
+#endif
+
 	trace_cpu_idle_rcuidle(PWR_EVENT_EXIT, dev->cpu);
 
 	/* The cpu is no longer idle or about to enter idle. */

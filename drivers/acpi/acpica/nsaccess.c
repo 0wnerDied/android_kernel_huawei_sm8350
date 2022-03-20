@@ -67,21 +67,7 @@ acpi_status acpi_ns_root_initialize(void)
 	ACPI_DEBUG_PRINT((ACPI_DB_INFO,
 			  "Entering predefined entries into namespace\n"));
 
-	/*
-	 * Create the initial (default) namespace.
-	 * This namespace looks like something similar to this:
-	 *
-	 *   ACPI Namespace (from Namespace Root):
-	 *    0  _GPE Scope        00203160 00
-	 *    0  _PR_ Scope        002031D0 00
-	 *    0  _SB_ Device       00203240 00 Notify Object: 0020ADD8
-	 *    0  _SI_ Scope        002032B0 00
-	 *    0  _TZ_ Device       00203320 00
-	 *    0  _REV Integer      00203390 00 = 0000000000000002
-	 *    0  _OS_ String       00203488 00 Len 14 "Microsoft Windows NT"
-	 *    0  _GL_ Mutex        00203580 00 Object 002035F0
-	 *    0  _OSI Method       00203678 00 Args 1 Len 0000 Aml 00000000
-	 */
+	
 	for (init_val = acpi_gbl_pre_defined_names; init_val->name; init_val++) {
 		status = AE_OK;
 

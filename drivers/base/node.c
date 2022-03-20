@@ -381,6 +381,12 @@ static ssize_t node_read_meminfo(struct device *dev,
 		       "Node %d Active(file):   %8lu kB\n"
 		       "Node %d Inactive(file): %8lu kB\n"
 		       "Node %d Unevictable:    %8lu kB\n"
+#ifdef CONFIG_TASK_PROTECT_LRU
+		       "Node %d Active(prot_anon):   %8lu kB\n"
+		       "Node %d Inactive(prot_anon): %8lu kB\n"
+		       "Node %d Active(prot_file):   %8lu kB\n"
+		       "Node %d Inactive(prot_file): %8lu kB\n"
+#endif
 		       "Node %d Mlocked:        %8lu kB\n",
 		       nid, K(i.totalram),
 		       nid, K(i.freeram),
@@ -394,6 +400,12 @@ static ssize_t node_read_meminfo(struct device *dev,
 		       nid, K(node_page_state(pgdat, NR_ACTIVE_FILE)),
 		       nid, K(node_page_state(pgdat, NR_INACTIVE_FILE)),
 		       nid, K(node_page_state(pgdat, NR_UNEVICTABLE)),
+#ifdef CONFIG_TASK_PROTECT_LRU
+		       nid, K(node_page_state(pgdat, NR_PROTECT_ACTIVE_ANON)),
+		       nid, K(node_page_state(pgdat, NR_PROTECT_INACTIVE_ANON)),
+		       nid, K(node_page_state(pgdat, NR_PROTECT_ACTIVE_FILE)),
+		       nid, K(node_page_state(pgdat, NR_PROTECT_INACTIVE_FILE)),
+#endif
 		       nid, K(sum_zone_node_page_state(nid, NR_MLOCK)));
 
 #ifdef CONFIG_HIGHMEM
@@ -788,7 +800,7 @@ static int do_register_memory_block_under_node(int nid,
 
 /* register memory section under specified node if it spans that node */
 static int register_mem_block_under_node_early(struct memory_block *mem_blk,
-					       void *arg)
+					 void *arg)
 {
 	unsigned long memory_block_pfns = memory_block_size_bytes() / PAGE_SIZE;
 	unsigned long start_pfn = section_nr_to_pfn(mem_blk->start_section_nr);
@@ -813,11 +825,11 @@ static int register_mem_block_under_node_early(struct memory_block *mem_blk,
 		 * We need to check if page belongs to nid only at the boot
 		 * case because node's ranges can be interleaved.
 		 */
-		page_nid = get_nid_for_pfn(pfn);
-		if (page_nid < 0)
-			continue;
-		if (page_nid != nid)
-			continue;
+			page_nid = get_nid_for_pfn(pfn);
+			if (page_nid < 0)
+				continue;
+			if (page_nid != nid)
+				continue;
 
 		return do_register_memory_block_under_node(nid, mem_blk);
 	}

@@ -11,6 +11,9 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 
+#ifdef CONFIG_HUAWEI_FREQ_STATS_COUNTING_IDLE
+#include <linux/time_in_state.h>
+#endif
 
 struct cpufreq_stats {
 	unsigned int total_trans;
@@ -243,4 +246,7 @@ void cpufreq_stats_record_transition(struct cpufreq_policy *policy,
 	stats->trans_table[old_index * stats->max_state + new_index]++;
 	stats->total_trans++;
 	spin_unlock_irqrestore(&stats->lock, flags);
+#ifdef CONFIG_HUAWEI_FREQ_STATS_COUNTING_IDLE
+	time_in_state_update_freq(policy->cpus, stats->last_index);
+#endif
 }

@@ -35,6 +35,9 @@ struct cpu_freqs {
 	unsigned int offset;
 	unsigned int max_state;
 	unsigned int last_index;
+#ifdef CONFIG_CPU_FREQ_POWER_STAT
+	unsigned int *current_table;
+#endif
 	unsigned int freq_table[0];
 };
 
@@ -143,8 +146,14 @@ void cpufreq_acct_update_power(struct task_struct *p, u64 cputime)
 
 	spin_lock_irqsave(&task_time_in_state_lock, flags);
 	if ((state < p->max_state || !cpufreq_task_times_realloc_locked(p)) &&
-	    p->time_in_state)
+	    p->time_in_state) {
 		p->time_in_state[state] += cputime;
+#ifdef CONFIG_CPU_FREQ_POWER_STAT
+		/* Account power usage */
+		if (p->cpu_power != ULLONG_MAX)
+			p->cpu_power += (unsigned long long)((unsigned long)freqs->current_table[freqs->last_index] * cputime / NSEC_PER_MSEC);
+#endif
+	}
 	spin_unlock_irqrestore(&task_time_in_state_lock, flags);
 }
 
@@ -184,8 +193,20 @@ void cpufreq_times_create_policy(struct cpufreq_policy *policy)
 	freqs = tmp;
 	freqs->max_state = count;
 
-	cpufreq_for_each_valid_entry(pos, table)
-		freqs->freq_table[index++] = pos->frequency;
+#ifdef CONFIG_CPU_FREQ_POWER_STAT
+	freqs->current_table = kzalloc(sizeof(int) * count, GFP_KERNEL);
+	if (!freqs->current_table) {
+		kfree(freqs);
+		return;
+	}
+#endif
+	cpufreq_for_each_valid_entry(pos, table) {
+		freqs->freq_table[index] = pos->frequency;
+#ifdef CONFIG_CPU_FREQ_POWER_STAT
+		freqs->current_table[index] = pos->electric_current;
+#endif
+		index++;
+	}
 
 	index = cpufreq_times_get_index(freqs, policy->cur);
 	if (index >= 0)

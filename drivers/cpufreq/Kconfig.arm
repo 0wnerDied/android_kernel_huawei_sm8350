@@ -354,3 +354,6 @@ config CPU_FREQ_MSM
 	depends on CPU_FREQ
 	help
 	  This enables the CPUFreq driver for Qualcomm Technologies, Inc. CPUs.
+
+source "drivers/cpufreq/Kconfig.huawei"
+source "drivers/cpufreq/hw/Kconfig.arm"

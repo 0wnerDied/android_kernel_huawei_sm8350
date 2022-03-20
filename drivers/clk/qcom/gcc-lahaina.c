@@ -610,13 +610,18 @@ static struct clk_rcg2 gcc_gp1_clk_src = {
 	},
 };
 
+static const struct freq_tbl ftbl_gcc_gp2_clk_src[] = {
+	F(19200, P_BI_TCXO, 32, 4, 125),
+	{ }
+};
+
 static struct clk_rcg2 gcc_gp2_clk_src = {
 	.cmd_rcgr = 0x65004,
 	.mnd_width = 8,
 	.hid_width = 5,
 	.parent_map = gcc_parent_map_1,
-	.freq_tbl = ftbl_gcc_gp1_clk_src,
-	.enable_safe_config = true,
+	.freq_tbl = ftbl_gcc_gp2_clk_src,
+	.enable_safe_config = false,
 	.flags = HW_CLK_CTRL_MODE,
 	.clkr.hw.init = &(struct clk_init_data){
 		.name = "gcc_gp2_clk_src",

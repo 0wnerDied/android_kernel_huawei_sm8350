@@ -22,6 +22,8 @@ obj-$(CONFIG_CPUFREQ_DT_PLATDEV)	+= cpufreq-dt-platdev.o
 
 obj-$(CONFIG_CPUFREQ_DUMMY)		+= dummy-cpufreq.o
 
+obj-$(CONFIG_HUAWEI_FREQ_STATS_COUNTING_IDLE) += time_in_state.o
+
 ##################################################################################
 # x86 drivers.
 # Link order matters. K8 is preferred to ACPI because of firmware bugs in early

@@ -3522,7 +3522,7 @@ static irqreturn_t btusb_oob_wake_handler(int irq, void *priv)
 	struct btusb_data *data = priv;
 
 	pm_wakeup_event(&data->udev->dev, 0);
-	pm_system_wakeup();
+	pm_system_irq_wakeup(irq);
 
 	/* Disable only if not already disabled (keep it balanced) */
 	if (test_and_clear_bit(BTUSB_OOB_WAKE_ENABLED, &data->flags)) {

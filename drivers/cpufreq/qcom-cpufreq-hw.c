@@ -32,6 +32,11 @@
 #define MAX_FN_SIZE			20
 #define LIMITS_POLLING_DELAY_MS		10
 #define MAX_ROW				2
+#define MIN_VALID_FREQUENCY		691200
+
+#ifdef CONFIG_DRG
+#include <linux/drg.h>
+#endif
 
 #define CYCLE_CNTR_OFFSET(c, m, acc_count)				\
 			(acc_count ? ((c - cpumask_first(m) + 1) * 4) : 0)
@@ -234,6 +239,9 @@ static u64 qcom_cpufreq_get_cpu_cycle_counter(int cpu)
 
 	return cycle_counter_ret;
 }
+#ifdef CONFIG_HUAWEI_BB
+int rdr_cpufreq_trace(const struct cpufreq_policy *policy, unsigned int index);
+#endif
 
 static int
 qcom_cpufreq_hw_target_index(struct cpufreq_policy *policy,
@@ -254,10 +262,12 @@ qcom_cpufreq_hw_target_index(struct cpufreq_policy *policy,
 	writel_relaxed(index, policy->driver_data + offsets[REG_PERF_STATE]);
 	arch_set_freq_scale(policy->related_cpus, freq,
 			    policy->cpuinfo.max_freq);
+#ifdef CONFIG_HUAWEI_BB
+	rdr_cpufreq_trace(policy, index);
+#endif
 
 	for (i = 0; i < c->sdpm_base_count && freq < policy->cur; i++)
 		writel_relaxed(freq / 1000, c->sdpm_base[i]);
-
 	return 0;
 }
 
@@ -372,6 +382,9 @@ static void qcom_cpufreq_ready(struct cpufreq_policy *policy)
 	if (WARN_ON(!np))
 		return;
 
+#ifdef CONFIG_DRG
+	drg_cpufreq_register(policy);
+#endif
 	/*
 	 * For now, just loading the cooling device;
 	 * thermal DT code takes care of matching them.
@@ -428,6 +441,83 @@ static struct cpufreq_driver cpufreq_qcom_hw_driver = {
 	.resume		= qcom_cpufreq_hw_resume,
 };
 
+#ifdef CONFIG_CPU_FREQ_POWER_STAT
+struct freq_current_map {
+	unsigned int freq;
+	unsigned int cur_uamp;
+};
+
+static void cpufreq_current_init(struct cpufreq_qcom *c)
+{
+	struct freq_current_map *tbl = NULL;
+	struct device_node *current_np = NULL;
+	int cpu = cpumask_first(&c->related_cpus);
+	struct device_node *cpu_np = of_get_cpu_node(cpu, NULL);
+	int nr, i, j, freq_cnt;
+	const struct property *prop = NULL;
+	const __be32 *val;
+
+	if (!cpu_np) {
+		pr_err("%s: failed to get CPU%d node\n",
+			__func__, cpu);
+		return;
+	}
+
+	current_np = of_parse_phandle(cpu_np, "freq-current", 0);
+	if (!current_np) {
+		pr_err("%s: failed to get freq-current%d node\n",
+			__func__, cpu);
+		return;
+	}
+
+	prop = of_find_property(current_np, "table", NULL);
+	if (!prop) {
+		pr_err("%s: failed to get CPU%d freq-current table\n",
+			__func__, cpu);
+		return;
+	}
+	if (!prop->value)
+		return;
+
+	nr = prop->length / sizeof(u32);
+	if (nr % 2) {
+		pr_err("%s: invalid freq-current table\n", __func__);
+		return;
+	}
+
+	freq_cnt = nr / 2;
+	if (freq_cnt != lut_max_entries)
+		pr_err("%s: mismatch freq count %d != %d\n", __func__, freq_cnt, lut_max_entries);
+
+	tbl = kzalloc(sizeof(struct freq_current_map) * freq_cnt, GFP_KERNEL);
+	if (!tbl) {
+		pr_err("%s: failed to alloc table\n", __func__);
+		return;
+	}
+
+	val = prop->value;
+	for (i = 0; i < freq_cnt; i++) {
+		unsigned int freq = be32_to_cpup(val++);
+		unsigned int cur_uamp = be32_to_cpup(val++);
+
+		tbl[i].freq = freq;
+		tbl[i].cur_uamp = cur_uamp;
+	}
+
+	for (i = 0; i < lut_max_entries; i++) {
+		unsigned int freq = c->table[i].frequency;
+
+		for (j = 0; j < (freq_cnt - 1); j++) {
+			if (tbl[j].freq >= freq)
+				break;
+		}
+		c->table[i].electric_current = tbl[j].cur_uamp;
+	}
+
+	kfree(tbl);
+}
+#endif
+
 static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 				    struct cpufreq_qcom *c, u32 max_cores)
 {
@@ -461,6 +551,11 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 		else
 			freq = cpu_hw_rate / 1000;
 
+		if (freq < MIN_VALID_FREQUENCY) {
+			c->table[i].frequency = CPUFREQ_ENTRY_INVALID;
+			continue;
+		}
+
 		c->table[i].frequency = freq;
 		dev_dbg(dev, "index=%d freq=%d, core_count %d\n",
 				i, c->table[i].frequency, core_count);
@@ -486,6 +581,10 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 
 	if (cpu_dev)
 		dev_pm_opp_set_sharing_cpus(cpu_dev, &c->related_cpus);
+
+#ifdef CONFIG_CPU_FREQ_POWER_STAT
+	cpufreq_current_init(c);
+#endif
 
 	return 0;
 }

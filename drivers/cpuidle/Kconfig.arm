@@ -107,3 +107,5 @@ config QGKI_LPM_IPI_CHECK
 	help
 	 When this option is selected, last cpu doesn't select cluster low
 	 power mode if there is any pending IPI already on any online cpu.
+
+source "drivers/cpuidle/Kconfig.huawei"
