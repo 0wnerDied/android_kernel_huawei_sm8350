@@ -20,7 +20,7 @@
 			linux,input-type = <1>;
 			linux,code = <KEY_VOLUMEUP>;
 			gpio-key,wakeup;
-			debounce-interval = <15>;
+			debounce-interval = <30>;
 			linux,can-disable;
 		};
 	};
@@ -31,7 +31,7 @@
 	qcom,clk-freq-out = <1000000>;
 	#address-cells = <1>;
 	#size-cells = <0>;
-	nq@28 {
+	/*nq@28 {
 		compatible = "qcom,sn-nci";
 		reg = <0x28>;
 		qcom,sn-irq = <&tlmm 41 0x00>;
@@ -47,7 +47,7 @@
 		pinctrl-names = "nfc_active", "nfc_suspend";
 		pinctrl-0 = <&nfc_int_active &nfc_enable_active>;
 		pinctrl-1 = <&nfc_int_suspend &nfc_enable_suspend>;
-	};
+	};*/
 };
 
 &ufsphy_mem {

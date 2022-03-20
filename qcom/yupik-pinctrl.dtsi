@@ -586,12 +586,12 @@
 		qupv3_se8_i2c_pins: qupv3_se8_i2c_pins {
 			qupv3_se8_i2c_active: qupv3_se8_i2c_active {
 				mux {
-					pins = "gpio32", "gpio33";
+					pins = "gpio33";
 					function = "qup10";
 				};
 
 				config {
-					pins = "gpio32", "gpio33";
+					pins = "gpio33";
 					drive-strength = <2>;
 					bias-pull-up;
 				};
@@ -599,12 +599,12 @@
 
 			qupv3_se8_i2c_sleep: qupv3_se8_i2c_sleep {
 				mux {
-					pins = "gpio32", "gpio33";
+					pins = "gpio33";
 					function = "gpio";
 				};
 
 				config {
-					pins = "gpio32", "gpio33";
+					pins = "gpio33";
 					drive-strength = <2>;
 					bias-disable;
 				};
@@ -614,13 +614,13 @@
 		qupv3_se8_spi_pins: qupv3_se8_spi_pins {
 			qupv3_se8_spi_active: qupv3_se8_spi_active {
 				mux {
-					pins = "gpio32", "gpio33",
+					pins = "gpio33",
 							"gpio34", "gpio35";
 					function = "qup10";
 				};
 
 				config {
-					pins = "gpio32", "gpio33",
+					pins = "gpio33",
 							"gpio34", "gpio35";
 					drive-strength = <6>;
 					bias-disable;
@@ -629,13 +629,13 @@
 
 			qupv3_se8_spi_sleep: qupv3_se8_spi_sleep {
 				mux {
-					pins = "gpio32", "gpio33",
+					pins = "gpio33",
 							"gpio34", "gpio35";
 					function = "gpio";
 				};
 
 				config {
-					pins = "gpio32", "gpio33",
+					pins = "gpio33",
 							"gpio34", "gpio35";
 					drive-strength = <6>;
 					bias-disable;
@@ -1016,13 +1016,13 @@
 			qupv3_se13_spi_active: qupv3_se13_spi_active {
 				mux {
 					pins = "gpio52", "gpio53",
-							"gpio54", "gpio55";
+							"gpio54";
 					function = "qup15";
 				};
 
 				config {
 					pins = "gpio52", "gpio53",
-							"gpio54", "gpio55";
+							"gpio54";
 					drive-strength = <6>;
 					bias-disable;
 				};
@@ -1031,13 +1031,13 @@
 			qupv3_se13_spi_sleep: qupv3_se13_spi_sleep {
 				mux {
 					pins = "gpio52", "gpio53",
-							"gpio54", "gpio55";
-					function = "gpio";
+							"gpio54";
+					function = "qup15";
 				};
 
 				config {
 					pins = "gpio52", "gpio53",
-							"gpio54", "gpio55";
+							"gpio54";
 					drive-strength = <6>;
 					bias-disable;
 				};
@@ -2034,12 +2034,10 @@
 		sec_aux_pcm_din {
 			sec_aux_pcm_din_sleep: sec_aux_pcm_din_sleep {
 				mux {
-					pins = "gpio107";
 					function = "gpio";
 				};
 
 				config {
-					pins = "gpio107";
 					drive-strength = <2>;   /* 2 mA */
 					bias-pull-down;         /* PULL DOWN */
 					input-enable;
@@ -2048,12 +2046,10 @@
 
 			sec_aux_pcm_din_active: sec_aux_pcm_din_active {
 				mux {
-					pins = "gpio107";
 					function = "mi2s1_data0";
 				};
 
-				config {
-					pins = "gpio107";
+				config {				
 					drive-strength = <8>;   /* 8 mA */
 					bias-disable;           /* NO PULL */
 				};
@@ -2382,12 +2378,10 @@
 		sec_tdm_din {
 			sec_tdm_din_sleep: sec_tdm_din_sleep {
 				mux {
-					pins = "gpio107";
 					function = "gpio";
 				};
 
 				config {
-					pins = "gpio107";
 					drive-strength = <2>;   /* 2 mA */
 					bias-pull-down;         /* PULL DOWN */
 					input-enable;
@@ -2396,12 +2390,10 @@
 
 			sec_tdm_din_active: sec_tdm_din_active {
 				mux {
-					pins = "gpio107";
 					function = "mi2s1_data0";
 				};
 
 				config {
-					pins = "gpio107";
 					drive-strength = <8>;   /* 8 mA */
 					bias-disable;           /* NO PULL */
 				};
@@ -2794,12 +2786,10 @@
 		sec_mi2s_sd0 {
 			sec_mi2s_sd0_sleep: sec_mi2s_sd0_sleep {
 				mux {
-					pins = "gpio107";
 					function = "gpio";
 				};
 
 				config {
-					pins = "gpio107";
 					drive-strength = <2>;   /* 2 mA */
 					bias-pull-down;         /* PULL DOWN */
 					input-enable;
@@ -2808,12 +2798,10 @@
 
 			sec_mi2s_sd0_active: sec_mi2s_sd0_active {
 				mux {
-					pins = "gpio107";
 					function = "mi2s1_data0";
 				};
 
 				config {
-					pins = "gpio107";
 					drive-strength = <8>;   /* 8 mA */
 					bias-disable;           /* NO PULL */
 				};

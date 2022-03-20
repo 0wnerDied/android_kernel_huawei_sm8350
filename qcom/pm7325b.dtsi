@@ -52,6 +52,7 @@
 			reg = <0xdf00>;
 			qcom,vib-ldo-volt-uv = <3000000>;
 			qcom,disable-overdrive;
+			status = "disabled";
 		};
 
 		pm7325b_lcdb: qcom,lcdb@fd00 {
@@ -223,6 +224,7 @@
 		polling-delay = <0>;
 		thermal-governor = "step_wise";
 		thermal-sensors = <&bcl_soc>;
+		status = "disabled";
 
 		trips {
 			socd_trip:socd-trip {

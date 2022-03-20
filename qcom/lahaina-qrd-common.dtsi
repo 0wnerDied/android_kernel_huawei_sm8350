@@ -2,7 +2,6 @@
 #include <dt-bindings/input/input.h>
 #include "display/lahaina-sde-display-qrd.dtsi"
 #include "camera/lahaina-camera-sensor-qrd.dtsi"
-#include "lahaina-audio-overlay.dtsi"
 #include "lahaina-thermal-overlay.dtsi"
 
 #include "lahaina-pmic-overlay.dtsi"
@@ -56,22 +55,6 @@
 	status = "ok";
 };
 
-&swr_dmic_01 {
-	status = "disabled";
-};
-
-&swr_dmic_02 {
-	status = "disabled";
-};
-
-&swr_dmic_03 {
-	status = "disabled";
-};
-
-&swr_dmic_04 {
-	status = "disabled";
-};
-
 &tx_swr_clk_active {
 	config {
 		drive-strength = <2>;
@@ -100,10 +83,8 @@
 	cdc_tert_mi2s_gpios: msm_cdc_pinctrl_tert {
 		compatible = "qcom,msm-cdc-pinctrl";
 		pinctrl-names = "aud_active", "aud_sleep";
-		pinctrl-0 = <&tert_mi2s_sck_active &tert_mi2s_ws_active
-				&tert_mi2s_sd0_active>;
-		pinctrl-1 = <&tert_mi2s_sck_sleep &tert_mi2s_ws_sleep
-				&tert_mi2s_sd0_sleep>;
+		pinctrl-0 = <&tert_mi2s_sck_active &tert_mi2s_sd0_active>;
+		pinctrl-1 = <&tert_mi2s_sck_sleep &tert_mi2s_sd0_sleep>;
 		#gpio-cells = <0>;
 	};
 };
@@ -183,35 +164,7 @@
 	#address-cells = <1>;
 	#size-cells = <0>;
 
-	status = "ok";
-	qcom,i2c-touch-active = "focaltech,fts_ts";
-
-	focaltech@38 {
-		compatible = "focaltech,fts_ts";
-		reg = <0x38>;
-		interrupt-parent = <&tlmm>;
-		interrupts = <23 0x2008>;
-		focaltech,reset-gpio = <&tlmm 22 0x00>;
-		focaltech,irq-gpio = <&tlmm 23 0x2008>;
-		focaltech,max-touch-number = <5>;
-		focaltech,display-coords = <0 0 1080 2340>;
-
-		vdd-supply = <&L3C>;
-
-		pinctrl-names = "pmx_ts_active", "pmx_ts_suspend","pmx_ts_release";
-		pinctrl-0 = <&ts_active>;
-		pinctrl-1 = <&ts_int_suspend &ts_reset_suspend>;
-		pinctrl-2 = <&ts_release>;
-
-		panel = <&dsi_r66451_amoled_cmd
-			 &dsi_r66451_amoled_video &dsi_r66451_amoled_144hz_cmd>;
-
-		focaltech,trusted-touch-mode = "vm_mode";
-		focaltech,touch-environment = "pvm";
-		focaltech,trusted-touch-spi-irq = <566>;
-		focaltech,trusted-touch-io-bases = <0xF114000 0xF115000 0xF116000 0xF117000 0x990000 0x00910000>;
-		focaltech,trusted-touch-io-sizes = <0x1000 0x1000 0x1000 0x1000 0x1000 0x4000>;
-	};
+	status = "disabled";
 };
 
 &battery_charger {
@@ -231,7 +184,7 @@
 	qcom,clk-freq-out = <1000000>;
 	#address-cells = <1>;
 	#size-cells = <0>;
-	nq@28 {
+	/*nq@28 {
 		compatible = "qcom,sn-nci";
 		reg = <0x28>;
 		qcom,sn-irq = <&tlmm 87 0x00>;
@@ -246,7 +199,7 @@
 				&nfc_clk_req_active &nfc_fwdl_active>;
 		pinctrl-1 = <&nfc_int_suspend &nfc_enable_suspend
 				&nfc_clk_req_suspend &nfc_fwdl_suspend>;
-	};
+	};*/
 };
 
 &spmi_debug_bus {
@@ -318,14 +271,9 @@
 			linux,input-type = <1>;
 			linux,code = <KEY_VOLUMEUP>;
 			gpio-key,wakeup;
-			debounce-interval = <15>;
+			debounce-interval = <30>;
 			linux,can-disable;
 		};
-	};
-	qcom,qbt_handler {
-		compatible = "qcom,qbt-handler";
-		qcom,ipc-gpio = <&tlmm 38 0>;
-		qcom,finger-detect-gpio = <&tlmm 39 0>;
 	};
 };
 
@@ -372,3 +320,5 @@
 		};
 	};
 };
+
+#include "lahaina-audio-overlay.dtsi"

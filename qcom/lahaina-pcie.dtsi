@@ -278,8 +278,7 @@
 				0 0 0 4 &intc GIC_SPI 439 IRQ_TYPE_LEVEL_HIGH>;
 		msi-parent = <&pcie1_msi>;
 
-		perst-gpio = <&tlmm 97 0>;
-		wake-gpio = <&tlmm 99 0>;
+		status = "disabled";
 		pinctrl-names = "default";
 		pinctrl-0 = <&pcie1_perst_default
 				&pcie1_clkreq_default

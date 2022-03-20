@@ -97,6 +97,7 @@
 
 	vddio-supply = <&L12C>;
 	vdd-supply = <&L13C>;
+	ddic-supply = <&L1D>;
 	avdd-supply = <&display_panel_avdd>;
 	lab-supply = <&ab_vreg>;
 	ibb-supply = <&ibb_vreg>;

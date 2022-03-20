@@ -531,6 +531,7 @@
 		polling-delay = <0>;
 		thermal-governor = "step_wise";
 		thermal-sensors = <&bcl_soc>;
+		status = "disabled";
 
 		trips {
 			socd_trip:socd-trip {

@@ -49,13 +49,15 @@
 	qcom,platform-te-gpio = <&tlmm 80 0>;
 	qcom,panel-te-source = <0>;
 
-	vddio-supply = <&L8C>;
+	vddio-supply = <&L12C>;
+	vdd-supply = <&L13C>;
+	ddic-supply = <&L16B>;
 	lab-supply = <&lcdb_ldo_vreg>;
 	ibb-supply = <&lcdb_ncp_vreg>;
 };
 
 &mdss_mdp {
-	connectors = <&smmu_sde_unsec &smmu_sde_sec &sde_wb &sde_dsi &sde_rscc &sde_dp>;
+	connectors = <&smmu_sde_unsec &smmu_sde_sec &sde_wb &sde_dsi &sde_rscc>;
 };
 
 &dsi_nt36672e_fhd_plus_60_video {

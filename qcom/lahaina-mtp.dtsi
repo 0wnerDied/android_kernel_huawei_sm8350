@@ -14,6 +14,7 @@
 	status = "ok";
 };
 
+
 &soc {
 	gpio_keys {
 		compatible = "gpio-keys";
@@ -28,19 +29,14 @@
 			linux,input-type = <1>;
 			linux,code = <KEY_VOLUMEUP>;
 			gpio-key,wakeup;
-			debounce-interval = <15>;
+			debounce-interval = <30>;
 			linux,can-disable;
 		};
 	};
 
-	qcom,qbt_handler {
-		compatible = "qcom,qbt-handler";
-		qcom,ipc-gpio = <&tlmm 38 0>;
-		qcom,finger-detect-gpio = <&tlmm 39 0>;
-	};
-
 	extcon_usb1: extcon_usb1 {
 		compatible = "linux,extcon-usb-gpio";
+		status = "disabled";
 		vbus-gpio =  <&pm8350_gpios 9 GPIO_ACTIVE_HIGH>;
 		id-gpio = <&tlmm 51 GPIO_ACTIVE_HIGH>;
 		vbus-out-gpio = <&pm8350_gpios 8 GPIO_ACTIVE_HIGH>;
@@ -56,62 +52,7 @@
 	#address-cells = <1>;
 	#size-cells = <0>;
 
-	status = "ok";
-	qcom,i2c-touch-active = "st,fts";
-
-	st_fts@49 {
-		compatible = "st,fts";
-		reg = <0x49>;
-		interrupt-parent = <&tlmm>;
-		interrupts = <23 0x2008>;
-		vdd-supply = <&L8C>;
-		avdd-supply = <&L3C>;
-		pinctrl-names = "pmx_ts_active", "pmx_ts_suspend";
-		pinctrl-0 = <&ts_active>;
-		pinctrl-1 = <&ts_int_suspend &ts_reset_suspend>;
-		st,irq-gpio = <&tlmm 23 0x2008>;
-		st,reset-gpio = <&tlmm 22 0x00>;
-		st,x-flip = <1>;
-		st,y-flip = <1>;
-		st,regulator_dvdd = "vdd";
-		st,regulator_avdd = "avdd";
-		st,trusted-touch-mode = "vm_mode";
-		st,touch-environment = "pvm";
-		st,trusted-touch-spi-irq = <566>;
-		st,trusted-touch-io-bases = <0xF114000 0xF115000 0xF116000 0xF117000 0x990000 0x00910000>;
-		st,trusted-touch-io-sizes = <0x1000 0x1000 0x1000 0x1000 0x1000 0x4000>;
-		panel = <&dsi_sw43404_amoled_cmd &dsi_sw43404_amoled_video
-			 &dsi_sw43404_amoled_fhd_plus_cmd>;
-	};
-
-	focaltech@38 {
-		compatible = "focaltech,fts_ts";
-		reg = <0x38>;
-		interrupt-parent = <&tlmm>;
-		interrupts = <23 0x2008>;
-		focaltech,reset-gpio = <&tlmm 22 0x00>;
-		focaltech,irq-gpio = <&tlmm 23 0x2008>;
-		focaltech,max-touch-number = <5>;
-		focaltech,display-coords = <0 0 1080 2340>;
-
-		vdd-supply = <&L3C>;
-		vcc_i2c-supply = <&L8C>;
-
-		pinctrl-names = "pmx_ts_active", "pmx_ts_suspend","pmx_ts_release";
-		pinctrl-0 = <&ts_active>;
-		pinctrl-1 = <&ts_int_suspend &ts_reset_suspend>;
-		pinctrl-2 = <&ts_release>;
-
-		panel = <&dsi_r66451_amoled_cmd
-			 &dsi_r66451_amoled_60hz_cmd
-			 &dsi_r66451_amoled_video &dsi_r66451_amoled_144hz_cmd>;
-
-		focaltech,trusted-touch-mode = "vm_mode";
-		focaltech,touch-environment = "pvm";
-		focaltech,trusted-touch-spi-irq = <566>;
-		focaltech,trusted-touch-io-bases = <0xF114000 0xF115000 0xF116000 0xF117000 0x990000 0x00910000>;
-		focaltech,trusted-touch-io-sizes = <0x1000 0x1000 0x1000 0x1000 0x1000 0x4000>;
-	};
+	status = "disabled";
 };
 
 &sdhc_2 {
@@ -123,11 +64,21 @@
 	qcom,vdd-io-voltage-level = <1808000 2960000>;
 	qcom,vdd-io-current-level = <200 22000>;
 
-	pinctrl-names = "default", "sleep";
+	vdd-sim-supply = <&pm8350c_l5>;
+	qcom,vdd-sim-voltage-level = <1808000 3000000>;
+	qcom,vdd-sim-current-level = <0 22000>;
+
+	pinctrl-names = "default", "sleep", "sd_off", "sim_off";
 	pinctrl-0 = <&sdc2_on>;
 	pinctrl-1 = <&sdc2_off>;
+	pinctrl-2 = <&sdc2_sd_off>;
+	pinctrl-3 = <&sdc2_sim_off>;
 
-	cd-gpios = <&tlmm 92 GPIO_ACTIVE_LOW>;
+	cd-gpios = <&tlmm 92 GPIO_ACTIVE_HIGH>;
+
+	sim-dat-gpios = <&tlmm 133 GPIO_ACTIVE_HIGH>;
+	sim-clk-gpios = <&tlmm 134 GPIO_ACTIVE_HIGH>;
+	sim-rst-gpios = <&tlmm 135 GPIO_ACTIVE_HIGH>;
 
 	status = "ok";
 };
@@ -200,10 +151,8 @@
 	cdc_tert_mi2s_gpios: msm_cdc_pinctrl_tert {
 		compatible = "qcom,msm-cdc-pinctrl";
 		pinctrl-names = "aud_active", "aud_sleep";
-		pinctrl-0 = <&tert_mi2s_sck_active &tert_mi2s_ws_active
-				&tert_mi2s_sd0_active>;
-		pinctrl-1 = <&tert_mi2s_sck_sleep &tert_mi2s_ws_sleep
-				&tert_mi2s_sd0_sleep>;
+		pinctrl-0 = <&tert_mi2s_sck_active &tert_mi2s_sd0_active>;
+		pinctrl-1 = <&tert_mi2s_sck_sleep &tert_mi2s_sd0_sleep>;
 		#gpio-cells = <0>;
 	};
 };
@@ -230,7 +179,7 @@
 	qcom,clk-freq-out = <1000000>;
 	#address-cells = <1>;
 	#size-cells = <0>;
-	nq@28 {
+	/*nq@28 {
 		compatible = "qcom,sn-nci";
 		reg = <0x28>;
 		qcom,sn-irq = <&tlmm 87 0x00>;
@@ -245,7 +194,5 @@
 				&nfc_clk_req_active &nfc_fwdl_active>;
 		pinctrl-1 = <&nfc_int_suspend &nfc_enable_suspend
 				&nfc_clk_req_suspend &nfc_fwdl_suspend>;
-	};
+	};*/
 };
-
-#include "camera/lahaina-camera-sensor-mtp.dtsi"

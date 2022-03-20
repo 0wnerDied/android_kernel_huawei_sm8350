@@ -24,6 +24,8 @@
 			compatible = "qcom,qpnp-power-on";
 			reg = <0x800>;
 			qcom,system-reset;
+			qcom,s3-debounce = <32>;
+			qcom,s3-src = "kpdpwr-and-resin";
 			qcom,store-hard-reset-reason;
 		};
 
@@ -32,8 +34,10 @@
 			reg = <0x1300>, <0x800>;
 			reg-names = "pon_hlos", "pon_pbs";
 			interrupts = <0x0 0x13 0x7 IRQ_TYPE_EDGE_BOTH>,
-				     <0x0 0x13 0x6 IRQ_TYPE_EDGE_BOTH>;
-			interrupt-names = "kpdpwr", "resin";
+				     <0x0 0x13 0x6 IRQ_TYPE_EDGE_BOTH>,
+				     <0x0 0x13 0x0 IRQ_TYPE_EDGE_BOTH>,
+				     <0x0 0x13 0x2 IRQ_TYPE_EDGE_BOTH>;
+			interrupt-names = "kpdpwr", "resin", "kpdpwr-bark", "kpdpwr-resin-bark";
 			qcom,kpdpwr-sw-debounce;
 
 			qcom,pon_1 {
@@ -44,6 +48,15 @@
 			qcom,pon_2 {
 				qcom,pon-type = <PON_POWER_ON_TYPE_RESIN>;
 				linux,code = <KEY_VOLUMEDOWN>;
+			};
+			qcom,pon_3 {
+				qcom,pon-type = <PON_POWER_ON_TYPE_KPDPWR_RESIN>;
+				qcom,support-reset = <1>;
+				qcom,s1-timer = <6720>;
+				qcom,s2-timer = <2000>;
+				qcom,s2-type = <PON_POWER_OFF_TYPE_HARD_RESET>;
+				qcom,pull-up;
+				qcom,use-bark;
 			};
 		};
 
@@ -184,6 +197,14 @@
 			reg = <0x3400>;
 			interrupts = <0x0 0x34 0x0 IRQ_TYPE_EDGE_RISING>;
 			interrupt-names = "threshold";
+			#address-cells = <1>;
+			#size-cells = <0>;
+			#thermal-sensor-cells = <1>;
+		};
+
+		pmk8350_adc_tm_iio: adc_tm_iio@3400 {
+			compatible = "qcom,adc-tm7-iio";
+			reg = <0x3400>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 			#thermal-sensor-cells = <1>;

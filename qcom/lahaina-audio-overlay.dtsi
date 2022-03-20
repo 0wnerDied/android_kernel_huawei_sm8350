@@ -5,7 +5,7 @@
 #include "lahaina-lpi.dtsi"
 
 &bolero {
-	qcom,num-macros = <4>;
+	qcom,num-macros = <3>;
 	qcom,bolero-version = <4>;
 	#address-cells = <1>;
 	#size-cells = <1>;
@@ -83,42 +83,6 @@
 				compatible = "qcom,wcd938x-slave";
 				reg = <0x0D 0x01170223>;
 			};
-
-			swr_dmic_04: dmic_swr@58350223 {
-				compatible = "qcom,swr-dmic";
-				reg = <0x08 0x58350223>;
-				qcom,swr-dmic-prefix = "SWR_MIC3";
-				qcom,codec-name = "swr-dmic.04";
-				qcom,swr-dmic-supply = <3>;
-				qcom,wcd-handle = <&wcd938x_codec>;
-			};
-
-			swr_dmic_03: dmic_swr@58350222 {
-				compatible = "qcom,swr-dmic";
-				reg = <0x08 0x58350222>;
-				qcom,swr-dmic-prefix = "SWR_MIC2";
-				qcom,codec-name = "swr-dmic.03";
-				qcom,swr-dmic-supply = <1>;
-				qcom,wcd-handle = <&wcd938x_codec>;
-			};
-
-			swr_dmic_02: dmic_swr@58350221 {
-				compatible = "qcom,swr-dmic";
-				reg = <0x08 0x58350221>;
-				qcom,swr-dmic-prefix = "SWR_MIC1";
-				qcom,codec-name = "swr-dmic.02";
-				qcom,swr-dmic-supply = <1>;
-				qcom,wcd-handle = <&wcd938x_codec>;
-			};
-
-			swr_dmic_01: dmic_swr@58350220 {
-				compatible = "qcom,swr-dmic";
-				reg = <0x08 0x58350220>;
-				qcom,swr-dmic-prefix = "SWR_MIC0";
-				qcom,codec-name = "swr-dmic.01";
-				qcom,swr-dmic-supply = <3>;
-				qcom,wcd-handle = <&wcd938x_codec>;
-			};
 		};
 	};
 
@@ -169,6 +133,7 @@
 
 	wsa_macro: wsa-macro@3240000 {
 		compatible = "qcom,wsa-macro";
+		status = "disable";
 		reg = <0x3240000 0x0>;
 		clock-names = "wsa_core_clk", "wsa_npl_clk";
 		clocks = <&clock_audio_wsa_1 0>,
@@ -180,6 +145,7 @@
 			compatible = "qcom,swr-mstr";
 			#address-cells = <2>;
 			#size-cells = <0>;
+			status = "disable";
 			clock-names = "lpass_core_hw_vote",
 					"lpass_audio_hw_vote";
 			clocks = <&lpass_core_hw_vote 0>,
@@ -267,7 +233,7 @@
 		qcom,cdc-vdd-buck-current = <650000>;
 
 		cdc-vdd-mic-bias-supply = <&BOB>;
-		qcom,cdc-vdd-mic-bias-voltage = <3296000 3296000>;
+		qcom,cdc-vdd-mic-bias-voltage = <3460000 3460000>;
 		qcom,cdc-vdd-mic-bias-current = <30000>;
 
 		qcom,cdc-micbias1-mv = <1800>;
@@ -317,27 +283,10 @@
 		"IN2_HPHR", "HPHR_OUT",
 		"IN3_AUX", "AUX_OUT",
 		"HAP_IN", "PCM_OUT",
-		"WSA SRC0_INP", "SRC0",
-		"TX SWR_INPUT", "SWR_MIC0 SWR_DMIC_OUTPUT",
-		"TX SWR_INPUT", "SWR_MIC1 SWR_DMIC_OUTPUT",
-		"TX SWR_INPUT", "SWR_MIC2 SWR_DMIC_OUTPUT",
-		"TX SWR_INPUT", "SWR_MIC3 SWR_DMIC_OUTPUT",
-		"VA SWR_INPUT", "SWR_MIC0 SWR_DMIC_VA_OUTPUT",
-		"VA SWR_INPUT", "SWR_MIC1 SWR_DMIC_VA_OUTPUT",
-		"VA SWR_INPUT", "SWR_MIC2 SWR_DMIC_VA_OUTPUT",
-		"VA SWR_INPUT", "SWR_MIC3 SWR_DMIC_VA_OUTPUT",
-		"VA SWR_INPUT", "SWR_MIC0 SWR_DMIC_OUTPUT",
-		"VA SWR_INPUT", "SWR_MIC1 SWR_DMIC_OUTPUT",
-		"VA SWR_INPUT", "SWR_MIC2 SWR_DMIC_OUTPUT",
-		"VA SWR_INPUT", "SWR_MIC3 SWR_DMIC_OUTPUT",
-		"WSA_TX DEC0_INP", "TX DEC0 MUX",
-		"WSA_TX DEC1_INP", "TX DEC1 MUX",
 		"RX_TX DEC0_INP", "TX DEC0 MUX",
 		"RX_TX DEC1_INP", "TX DEC1 MUX",
 		"RX_TX DEC2_INP", "TX DEC2 MUX",
 		"RX_TX DEC3_INP", "TX DEC3 MUX",
-		"SpkrLeft IN", "WSA_SPK1 OUT",
-		"SpkrRight IN", "WSA_SPK2 OUT",
 		"TX SWR_INPUT", "WCD_TX_OUTPUT",
 		"VA SWR_INPUT", "VA_SWR_CLK",
 		"VA SWR_INPUT", "WCD_TX_OUTPUT",
@@ -356,24 +305,18 @@
 		"VA DMIC3", "VA MIC BIAS1",
 		"VA DMIC4", "VA MIC BIAS4",
 		"VA DMIC5", "VA MIC BIAS4";
-	qcom,msm-mbhc-hphl-swh = <1>;
+	qcom,msm-mbhc-hphl-swh = <0>;
 	qcom,msm-mbhc-gnd-swh = <1>;
 	qcom,cdc-dmic01-gpios = <&cdc_dmic01_gpios>;
 	qcom,cdc-dmic23-gpios = <&cdc_dmic23_gpios>;
 	qcom,cdc-dmic45-gpios = <&cdc_dmic45_gpios>;
 	asoc-codec  = <&stub_codec>, <&bolero>,
 		      <&wcd938x_codec>, <&swr_haptics>,
-		      <&wsa883x_0221>, <&wsa883x_0222>,
-		      <&swr_dmic_04>, <&swr_dmic_03>,
-		      <&swr_dmic_02>, <&swr_dmic_01>,
 		      <&ext_disp_audio_codec>;
 	asoc-codec-names = "msm-stub-codec.1", "bolero_codec",
 			   "wcd938x_codec", "swr-haptics",
-			   "wsa-codec1", "wsa-codec2",
-			   "swr-dmic.04", "swr-dmic.03",
-			   "swr-dmic.02", "swr-dmic.01",
 			   "msm-ext-disp-audio-codec-rx";
-	qcom,wsa-max-devs = <2>;
+	qcom,wsa-max-devs = <0>;
 	qcom,cps_reg_phy_addr = <0x3250300 0x3250304 0x3250318>;
 	qcom,cps_wsa_vbatt_temp_reg_addr = <0x0003429 0x0003422>;
 	qcom,cps_threshold_levels = <148 168>;
@@ -382,6 +325,10 @@
 	qcom,cps_lower2_values = <0x0F 0x0F 0x18>;
 	qcom,msm_audio_ssr_devs = <&audio_apr>, <&q6core>, <&lpi_tlmm>,
 				  <&bolero>;
+	qcom,msm-mbhc-usbc-audio-supported = <1>;
+	qcom,headphone_low_power_supported = <0>;
+	qcom,headphone_low_power_gpio_switch = <0>;
+	qcom,quin-mi2s-gpios = <&cdc_quin_mi2s_gpios>;
 };
 
 &q6core {
@@ -446,6 +393,17 @@
 		pinctrl-1 = <&cdc_dmic45_clk_sleep &cdc_dmic45_data_sleep>;
 		qcom,lpi-gpios;
 		qcom,tlmm-pins = <180>;
+		#gpio-cells = <0>;
+	};
+
+	cdc_quin_mi2s_gpios: msm_cdc_pinctrl_quin {
+		compatible = "qcom,msm-cdc-pinctrl";
+		pinctrl-names = "aud_active", "aud_sleep";
+		pinctrl-0 = <&lpi_i2s1_sck_active &lpi_i2s1_ws_active
+		&lpi_i2s1_sd0_active &lpi_i2s1_sd1_active>;
+		pinctrl-1 = <&lpi_i2s1_sck_sleep &lpi_i2s1_ws_sleep
+		&lpi_i2s1_sd0_sleep &lpi_i2s1_sd1_sleep>;
+		qcom,lpi-gpios;
 		#gpio-cells = <0>;
 	};
 };

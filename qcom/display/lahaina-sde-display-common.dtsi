@@ -55,8 +55,18 @@
 			qcom,supply-post-on-sleep = <0>;
 		};
 
-		qcom,panel-supply-entry@2 {
-			reg = <2>;
+                qcom,panel-supply-entry@2 {
+                        reg = <2>;
+                        qcom,supply-name = "ddic";
+                        qcom,supply-min-voltage = <1200000>;
+                        qcom,supply-max-voltage = <1200000>;
+                        qcom,supply-enable-load = <60700>;
+                        qcom,supply-disable-load = <80>;
+                        qcom,supply-post-on-sleep = <20>;
+                };
+
+		qcom,panel-supply-entry@3 {
+			reg = <3>;
 			qcom,supply-name = "lab";
 			qcom,supply-min-voltage = <4600000>;
 			qcom,supply-max-voltage = <6000000>;
@@ -64,8 +74,8 @@
 			qcom,supply-disable-load = <0>;
 		};
 
-		qcom,panel-supply-entry@3 {
-			reg = <3>;
+		qcom,panel-supply-entry@4 {
+			reg = <4>;
 			qcom,supply-name = "ibb";
 			qcom,supply-min-voltage = <4600000>;
 			qcom,supply-max-voltage = <6000000>;
@@ -108,6 +118,8 @@
 
 		qcom,mdp = <&mdss_mdp>;
 		qcom,dsi-default-panel = <&dsi_sw43404_amoled_cmd>;
+		qcom,dsi-default-panel-boe = <&dsi_sw43404_amoled_cmd>;
+		qcom,dsi-default-panel-lg = <&dsi_sw43404_amoled_cmd>;
 		qcom,demura-panel-id = <0x0 0x0>;
 	};
 
@@ -125,8 +137,6 @@
 /* PHY TIMINGS REVISION YC with reduced margins*/
 &dsi_sw43404_amoled_cmd {
 	qcom,dsi-select-clocks = "mux_byte_clk0", "mux_pixel_clk0";
-	qcom,dsi-dyn-clk-enable;
-	qcom,dsi-dyn-clk-list = <606979440 604450359 601921278>;
 
 	qcom,mdss-dsi-panel-status-check-mode = "reg_read";
 	qcom,mdss-dsi-panel-status-command = [06 01 00 01 00 00 01 0a];
@@ -141,12 +151,10 @@
 
 	qcom,mdss-dsi-display-timings {
 		timing@0 {
-			qcom,mdss-dsi-panel-phy-timings = [00 14 05 05 13 13 05
-				05 06 02 04 00 12 0a];
-			qcom,display-topology = <2 2 1>;
+			qcom,mdss-dsi-panel-phy-timings = [00 2A 0B 0B 1C 26 0B
+				0C 0C 0B 02 04 23 10];
+			qcom,display-topology = <1 0 1>;
 			qcom,default-topology-index = <0>;
-
-			qcom,panel-roi-alignment = <720 180 180 180 1440 180>;
 		};
 	};
 };
@@ -165,7 +173,7 @@
 	qcom,mdss-dsi-panel-status-command-state = "dsi_lp_mode";
 	qcom,mdss-dsi-panel-status-value = <0x9c>;
 	qcom,mdss-dsi-panel-status-read-length = <1>;
-	qcom,esd-check-enabled;
+	qcom,esd-check-disabled;
 
 	qcom,dsi-panel-gpio-address = <0x0F100000 0x1000>;
 	qcom,dsi-panel-gpio-pins = <12 24>;

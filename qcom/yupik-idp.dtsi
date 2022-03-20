@@ -21,7 +21,7 @@
 			linux,input-type = <1>;
 			linux,code = <KEY_VOLUMEUP>;
 			gpio-key,wakeup;
-			debounce-interval = <15>;
+			debounce-interval = <30>;
 			linux,can-disable;
 		};
 	};
@@ -32,7 +32,7 @@
 	qcom,clk-freq-out = <1000000>;
 	#address-cells = <1>;
 	#size-cells = <0>;
-	nq@28 {
+	/*nq@28 {
 		compatible = "qcom,sn-nci";
 		reg = <0x28>;
 		qcom,sn-irq = <&tlmm 41 0x00>;
@@ -48,7 +48,7 @@
 		pinctrl-names = "nfc_active", "nfc_suspend";
 		pinctrl-0 = <&nfc_int_active &nfc_enable_active>;
 		pinctrl-1 = <&nfc_int_suspend &nfc_enable_suspend>;
-	};
+	};*/
 };
 
 &ufsphy_mem {
@@ -156,6 +156,30 @@
 		qcom,pre-scaling = <32 100>;
 	};
 
+	pm7325b_gpio1 {
+		reg = <PM7325B_ADC7_GPIO1_100K_PU>;
+		label = "pm7325b_gpio1";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+		qcom,pre-scaling = <1 1>;
+    };
+
+	pm7325b_gpio3 {
+		reg = <PM7325B_ADC7_GPIO3_100K_PU>;
+		label = "pm7325b_gpio3";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+		qcom,pre-scaling = <1 1>;
+    };
+
+	pm7325b_gpio4 {
+		reg = <PM7325B_ADC7_GPIO4_100K_PU>;
+		label = "pm7325b_gpio4";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+		qcom,pre-scaling = <1 1>;
+    };
+
 	pm7325b_ichg_fb {
 		reg = <PM7325B_ADC7_ICHG_FB>;
 		label = "pm7325b_ichg_fb";
@@ -233,6 +257,36 @@
 	};
 };
 
+&pmk8350_adc_tm_iio {
+	io-channels = <&pmk8350_vadc PM7325B_ADC7_GPIO1_100K_PU>,
+			<&pmk8350_vadc PM7325B_ADC7_GPIO3_100K_PU>,
+			<&pmk8350_vadc PM7325B_ADC7_GPIO4_100K_PU>;
+
+	pm7325b_gpio1 {
+		reg = <PM7325B_ADC7_GPIO1_100K_PU>;
+		label = "pm7325b_gpio1";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+		qcom,pre-scaling = <1 1>;
+    };
+
+	pm7325b_gpio3 {
+		reg = <PM7325B_ADC7_GPIO3_100K_PU>;
+		label = "pm7325b_gpio3";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+		qcom,pre-scaling = <1 1>;
+    };
+
+	pm7325b_gpio4 {
+		reg = <PM7325B_ADC7_GPIO4_100K_PU>;
+		label = "pm7325b_gpio4";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+		qcom,pre-scaling = <1 1>;
+    };
+};
+
 &thermal_zones {
 	conn-therm-usr {
 		polling-delay-passive = <0>;
@@ -249,7 +303,7 @@
 		};
 	};
 
-	charger-therm-usr {
+	charger {
 		polling-delay-passive = <0>;
 		polling-delay = <0>;
 		thermal-governor = "user_space";
@@ -262,6 +316,27 @@
 				type = "passive";
 			};
 		};
+	};
+
+	charger1 {
+		polling-delay-passive = <0>;
+		polling-delay = <0>;
+		thermal-governor = "user_space";
+		thermal-sensors = <&pmk8350_adc_tm_iio PM7325B_ADC7_GPIO1_100K_PU>;
+	};
+
+	rfboard {
+		polling-delay-passive = <0>;
+		polling-delay = <0>;
+		thermal-governor = "user_space";
+		thermal-sensors = <&pmk8350_adc_tm_iio PM7325B_ADC7_GPIO3_100K_PU>;
+	};
+
+	pa_0 {
+		polling-delay-passive = <0>;
+		polling-delay = <0>;
+		thermal-governor = "user_space";
+		thermal-sensors = <&pmk8350_adc_tm_iio PM7325B_ADC7_GPIO4_100K_PU>;
 	};
 };
 
@@ -383,35 +458,5 @@
 	#address-cells = <1>;
 	#size-cells = <0>;
 
-	status = "ok";
-	qcom,i2c-touch-active="novatek,NVT-ts";
-
-	novatek@62 {
-		compatible = "novatek,NVT-ts";
-		reg = <0x62>;
-
-		interrupt-parent = <&tlmm>;
-		interrupts = <81 0x2008>;
-
-		pinctrl-names = "pmx_ts_active","pmx_ts_suspend",
-					"pmx_ts_release";
-
-		pinctrl-0 = <&ts_active>;
-		pinctrl-1 = <&ts_int_suspend &ts_reset_suspend>;
-		pinctrl-2 = <&ts_release>;
-
-		novatek,reset-gpio = <&tlmm 105 0x00>;
-		novatek,irq-gpio = <&tlmm 81 0x2008>;
-
-		panel = <&dsi_nt36672e_fhd_plus_60_video
-			&dsi_nt36672e_fhd_plus_120_video
-			&dsi_nt36672e_fhd_plus_144_video>;
-
-		novatek,trusted-touch-mode = "vm_mode";
-		novatek,touch-environment = "pvm";
-		novatek,trusted-touch-spi-irq = <601>;
-		novatek,trusted-touch-io-bases = <0xf134000 0xf135000 0xf169000 0xf151000 0xa94000 0x00a10000>;
-		novatek,trusted-touch-io-sizes = <0x1000 0x1000 0x1000 0x1000 0x1000 0x4000>;
-	};
+	status = "disable";
 };
-#include "camera/yupik-camera-sensor-idp.dtsi"

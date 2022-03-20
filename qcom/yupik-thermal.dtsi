@@ -288,23 +288,6 @@
 				type = "passive";
 			};
 		};
-
-		cooling-maps {
-			pa_fr1_cdev0 {
-				trip = <&sub6_pa1_trip0>;
-				cooling-device = <&modem_pa_fr1 1 1>;
-			};
-
-			pa_fr1_cdev1 {
-				trip = <&sub6_pa1_trip1>;
-				cooling-device = <&modem_pa_fr1 2 2>;
-			};
-
-			pa_fr1_cdev2 {
-				trip = <&sub6_pa1_trip2>;
-				cooling-device = <&modem_pa_fr1 3 3>;
-			};
-		};
 	};
 
 	modem-lte-pa2-step {
@@ -330,23 +313,6 @@
 				temperature = <55000>;
 				hysteresis = <5000>;
 				type = "passive";
-			};
-		};
-
-		cooling-maps {
-			pa_cdev0 {
-				trip = <&sub6_pa2_trip0>;
-				cooling-device = <&modem_pa 1 1>;
-			};
-
-			pa_cdev1 {
-				trip = <&sub6_pa2_trip1>;
-				cooling-device = <&modem_pa 2 2>;
-			};
-
-			pa_cdev2 {
-				trip = <&sub6_pa2_trip2>;
-				cooling-device = <&modem_pa 3 3>;
 			};
 		};
 	};

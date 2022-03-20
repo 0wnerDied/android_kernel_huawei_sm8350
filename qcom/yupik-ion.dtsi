@@ -20,7 +20,7 @@
 			reg = <ION_SECURE_CARVEOUT_HEAP_ID>;
 			qcom,ion-heap-type = "SECURE_CARVEOUT";
 			cdsp {
-				memory-region = <&cdsp_secure_heap_mem>;
+				//memory-region = <&cdsp_secure_heap_mem>;
 				token = <0x20000000>;
 			};
 		};

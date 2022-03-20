@@ -133,8 +133,8 @@
 		resets = <&clock_gcc GCC_QUSB2PHY_PRIM_BCR>;
 		reset-names = "phy_reset";
 		qcom,param-override-seq =
-			<0xe6 0x6c	/* override_x0 */
-			 0x0b 0x70	/* override_x1 */
+			<0xe7 0x6c	/* override_x0 */
+			 0xcf 0x70	/* override_x1 */
 			 0x17 0x74>;	/* override x2 */
 	};
 
@@ -234,6 +234,7 @@
 			USB3_DP_QSERDES_TXA_LANE_MODE_5 0x3F 0
 			USB3_DP_QSERDES_TXA_RCV_DETECT_LVL_2 0x12 0
 			USB3_DP_QSERDES_TXA_PI_QEC_CTRL 0x21 0
+			USB3_DP_QSERDES_TXA_TX_DRV_LVL 0x3f 0
 			USB3_DP_QSERDES_RXA_UCDR_FO_GAIN 0x0A 0
 			USB3_DP_QSERDES_RXA_UCDR_SO_GAIN 0x03 0
 			USB3_DP_QSERDES_RXA_UCDR_FASTLOCK_FO_GAIN 0x2F 0
@@ -343,7 +344,7 @@
 		compatible = "qcom,dwc-usb3-msm";
 		reg = <0xa800000 0x100000>;
 		reg-names = "core_base";
-
+		status = "disabled";
 		iommus = <&apps_smmu 0x20 0x0>;
 		qcom,iommu-dma = "atomic";
 		qcom,iommu-dma-addr-pool = <0x90000000 0x60000000>;
