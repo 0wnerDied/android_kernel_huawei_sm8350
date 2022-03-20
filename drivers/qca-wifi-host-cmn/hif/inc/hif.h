@@ -46,7 +46,8 @@ typedef void __iomem *A_target_id_t;
 typedef void *hif_handle_t;
 
 #if defined(HIF_IPCI) && defined(FEATURE_HAL_DELAYED_REG_WRITE)
-#define HIF_WORK_DRAIN_WAIT_CNT 10
+#define HIF_WORK_DRAIN_WAIT_CNT 50
+#define HIF_EP_WAKE_RESET_WAIT_CNT 10
 #endif
 
 #define HIF_TYPE_AR6002   2
@@ -1075,10 +1076,12 @@ enum hif_ep_vote_type {
 /**
  * enum hif_ep_vote_access - hif ep vote access
  * HIF_EP_VOTE_ACCESS_ENABLE: Enable ep voting
+ * HIF_EP_VOTE_INTERMEDIATE_ACCESS: allow during transistion
  * HIF_EP_VOTE_ACCESS_DISABLE: disable ep voting
  */
 enum hif_ep_vote_access {
 	HIF_EP_VOTE_ACCESS_ENABLE,
+	HIF_EP_VOTE_INTERMEDIATE_ACCESS,
 	HIF_EP_VOTE_ACCESS_DISABLE
 };
 
@@ -1477,6 +1480,14 @@ int32_t hif_get_int_ctx_irq_num(struct hif_opaque_softc *softc,
 QDF_STATUS hif_configure_ext_group_interrupts(struct hif_opaque_softc *hif_ctx);
 
 /**
+ * hif_deconfigure_ext_group_interrupts() - Deconfigure ext group intrrupts
+ * @hif_ctx: hif opaque context
+ *
+ * Return: None
+ */
+void hif_deconfigure_ext_group_interrupts(struct hif_opaque_softc *hif_ctx);
+
+/**
  * hif_register_ext_group() - API to register external group
  * interrupt handler.
  * @hif_ctx : HIF Context
@@ -1697,6 +1708,7 @@ hif_softc_to_hif_opaque_softc(struct hif_softc *hif_handle)
 
 #if defined(HIF_IPCI) && defined(FEATURE_HAL_DELAYED_REG_WRITE)
 QDF_STATUS hif_try_prevent_ep_vote_access(struct hif_opaque_softc *hif_ctx);
+void hif_set_ep_intermediate_vote_access(struct hif_opaque_softc *hif_ctx);
 void hif_allow_ep_vote_access(struct hif_opaque_softc *hif_ctx);
 void hif_set_ep_vote_access(struct hif_opaque_softc *hif_ctx,
 			    uint8_t type, uint8_t access);
@@ -1707,6 +1719,11 @@ static inline QDF_STATUS
 hif_try_prevent_ep_vote_access(struct hif_opaque_softc *hif_ctx)
 {
 	return QDF_STATUS_SUCCESS;
+}
+
+static inline void
+hif_set_ep_intermediate_vote_access(struct hif_opaque_softc *hif_ctx)
+{
 }
 
 static inline void

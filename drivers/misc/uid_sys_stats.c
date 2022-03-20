@@ -69,6 +69,10 @@ struct uid_entry {
 	u64 stime;
 	u64 active_utime;
 	u64 active_stime;
+#ifdef CONFIG_CPU_FREQ_POWER_STAT
+	unsigned long long active_power;
+	unsigned long long power;
+#endif
 	int state;
 	struct io_stats io[UID_STATE_SIZE];
 	struct hlist_node hash;
@@ -343,6 +347,9 @@ static int uid_cputime_show(struct seq_file *m, void *v)
 	hash_for_each(hash_table, bkt, uid_entry, hash) {
 		uid_entry->active_stime = 0;
 		uid_entry->active_utime = 0;
+#ifdef CONFIG_CPU_FREQ_POWER_STAT
+		uid_entry->active_power = 0;
+#endif
 	}
 
 	rcu_read_lock();
@@ -359,6 +366,14 @@ static int uid_cputime_show(struct seq_file *m, void *v)
 		}
 		/* avoid double accounting of dying threads */
 		if (!(task->flags & PF_EXITING)) {
+#ifdef CONFIG_CPU_FREQ_POWER_STAT
+			/* if this task is exiting, we have already accounted for the
+			 * time and power.
+			 */
+			if (task->cpu_power == ULLONG_MAX)
+				continue;
+			uid_entry->active_power += task->cpu_power;
+#endif
 			task_cputime_adjusted(task, &utime, &stime);
 			uid_entry->active_utime += utime;
 			uid_entry->active_stime += stime;
@@ -371,8 +386,16 @@ static int uid_cputime_show(struct seq_file *m, void *v)
 							uid_entry->active_utime;
 		u64 total_stime = uid_entry->stime +
 							uid_entry->active_stime;
+#ifdef CONFIG_CPU_FREQ_POWER_STAT
+		unsigned long long total_power = uid_entry->power +
+							uid_entry->active_power;
+		seq_printf(m, "%d: %llu %llu %llu\n", uid_entry->uid,
+			ktime_to_us(total_utime), ktime_to_us(total_stime),
+			total_power);
+#else
 		seq_printf(m, "%d: %llu %llu\n", uid_entry->uid,
 			ktime_to_us(total_utime), ktime_to_us(total_stime));
+#endif
 	}
 
 	rt_mutex_unlock(&uid_lock);
@@ -644,6 +667,10 @@ static int process_notifier(struct notifier_block *self,
 	task_cputime_adjusted(task, &utime, &stime);
 	uid_entry->utime += utime;
 	uid_entry->stime += stime;
+#ifdef CONFIG_CPU_FREQ_POWER_STAT
+	uid_entry->power += task->cpu_power;
+	task->cpu_power = ULLONG_MAX;
+#endif
 
 	add_uid_io_stats(uid_entry, task, UID_STATE_DEAD_TASKS);
 

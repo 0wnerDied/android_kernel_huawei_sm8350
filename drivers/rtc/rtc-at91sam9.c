@@ -310,7 +310,7 @@ static irqreturn_t at91_rtc_interrupt(int irq, void *_rtc)
 			   rtt_readl(rtc, MR) &
 			   ~(AT91_RTT_ALMIEN | AT91_RTT_RTTINCIEN));
 		/* Trigger a system wakeup */
-		pm_system_wakeup();
+		pm_system_irq_wakeup(irq);
 	} else {
 		at91_rtc_flush_events(rtc);
 	}

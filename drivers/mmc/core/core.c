@@ -50,6 +50,9 @@
 #include "mmc_ops.h"
 #include "sd_ops.h"
 #include "sdio_ops.h"
+#ifdef CONFIG_SDSIM_MUX
+#include <linux/mmc/sdhci_mux_sdsim.h>
+#endif
 
 /* The max erase timeout, used when host->max_busy_timeout isn't specified */
 #define MMC_ERASE_TIMEOUT_MS	(60 * 1000) /* 60 s */
@@ -2019,6 +2022,10 @@ int mmc_set_signal_voltage(struct mmc_host *host, int signal_voltage)
 
 void mmc_set_initial_signal_voltage(struct mmc_host *host)
 {
+#ifdef CONFIG_SDSIM_MUX
+	if (!mmc_set_signal_voltage(host, MMC_SIGNAL_VOLTAGE_180))
+		dev_dbg(mmc_dev(host), "Initial signal voltage of 1.8v\n");
+#else
 	/* Try to set signal voltage to 3.3V but fall back to 1.8v or 1.2v */
 	if (!mmc_set_signal_voltage(host, MMC_SIGNAL_VOLTAGE_330))
 		dev_dbg(mmc_dev(host), "Initial signal voltage of 3.3v\n");
@@ -2026,6 +2033,7 @@ void mmc_set_initial_signal_voltage(struct mmc_host *host)
 		dev_dbg(mmc_dev(host), "Initial signal voltage of 1.8v\n");
 	else if (!mmc_set_signal_voltage(host, MMC_SIGNAL_VOLTAGE_120))
 		dev_dbg(mmc_dev(host), "Initial signal voltage of 1.2v\n");
+#endif
 }
 
 int mmc_host_set_uhs_voltage(struct mmc_host *host)
@@ -2957,7 +2965,7 @@ int mmc_set_blocklen(struct mmc_card *card, unsigned int blocklen)
 }
 EXPORT_SYMBOL(mmc_set_blocklen);
 
-static void mmc_hw_reset_for_init(struct mmc_host *host)
+void mmc_hw_reset_for_init(struct mmc_host *host)
 {
 	mmc_pwrseq_reset(host);
 
@@ -3132,6 +3140,9 @@ void mmc_rescan(struct work_struct *work)
 	struct mmc_host *host =
 		container_of(work, struct mmc_host, detect.work);
 	int i;
+#ifdef CONFIG_SDSIM_MUX
+	bool extend_wakelock = false;
+#endif
 
 	if (host->rescan_disable)
 		return;
@@ -3180,6 +3191,11 @@ void mmc_rescan(struct work_struct *work)
 		goto out;
 #endif
 
+#ifdef CONFIG_SDSIM_MUX
+	if (mmc_card_is_removable(host) && (host->sd_sim_mux == 1))
+		sdsim_detect(host);
+#endif
+
 	mmc_claim_host(host);
 	if (mmc_card_is_removable(host) && host->ops->get_cd &&
 			host->ops->get_cd(host) == 0) {
@@ -3189,8 +3205,12 @@ void mmc_rescan(struct work_struct *work)
 	}
 
 	for (i = 0; i < ARRAY_SIZE(freqs); i++) {
-		if (!mmc_rescan_try_freq(host, max(freqs[i], host->f_min)))
+		if (!mmc_rescan_try_freq(host, max(freqs[i], host->f_min))) {
+#ifdef CONFIG_SDSIM_MUX
+			extend_wakelock = true;
+#endif
 			break;
+		}
 		if (freqs[i] <= host->f_min)
 			break;
 	}
@@ -3200,6 +3220,13 @@ void mmc_rescan(struct work_struct *work)
 	mmc_release_host(host);
 
  out:
+#ifdef CONFIG_SDSIM_MUX
+	if (extend_wakelock && mmc_card_is_removable(host) && (host->sd_sim_mux == 1)) {
+	   pr_err("sdsim mmc detect wake lock hold.....\n");
+	   /* mmc detect to wake lock hold 5s for vold mount */
+	   __pm_wakeup_event(host->detect_wake_lock, 5000);
+	}
+#endif
 	if (host->caps & MMC_CAP_NEEDS_POLL)
 		mmc_schedule_delayed_work(&host->detect, HZ);
 }

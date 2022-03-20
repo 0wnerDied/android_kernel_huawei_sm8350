@@ -17,6 +17,9 @@
 #include <linux/msm-geni-se.h>
 #include <linux/spinlock.h>
 #include <linux/pinctrl/consumer.h>
+#ifdef CONFIG_RAINBOW_HIMNTN
+#include <linux/himntn_kernel.h>
+#endif
 
 #define GENI_SE_IOMMU_VA_START	(0x40000000)
 #define GENI_SE_IOMMU_VA_SIZE	(0xC0000000)
@@ -111,6 +114,10 @@ struct geni_se_device {
 #define HW_VER_MINOR_MASK GENMASK(27, 16)
 #define HW_VER_MINOR_SHFT 16
 #define HW_VER_STEP_MASK GENMASK(15, 0)
+
+#ifdef CONFIG_RAINBOW_HIMNTN
+	bool himntn_switch;
+#endif
 
 /**
  * geni_read_reg_nolog() - Helper function to read from a GENI register
@@ -1767,6 +1774,9 @@ static int geni_se_probe(struct platform_device *pdev)
 	 * console UART as dummy consumer of ICC to get rid of this HACK
 	 */
 #if IS_ENABLED(CONFIG_SERIAL_MSM_GENI_CONSOLE)
+#ifdef CONFIG_RAINBOW_HIMNTN
+	if (himntn_switch) {
+#endif
 	geni_se_dev->wrapper_rsc.wrapper_dev = dev;
 	geni_se_dev->wrapper_rsc.ctrl_dev = dev;
 
@@ -1784,6 +1794,9 @@ static int geni_se_probe(struct platform_device *pdev)
 				ret);
 		return ret;
 	}
+#ifdef CONFIG_RAINBOW_HIMNTN
+	}
+#endif
 #endif
 
 	ret = of_platform_populate(dev->of_node, geni_se_dt_match, NULL, dev);
@@ -1818,6 +1831,9 @@ static struct platform_driver geni_se_driver = {
 
 static int __init geni_se_driver_init(void)
 {
+#ifdef CONFIG_RAINBOW_HIMNTN
+	himntn_switch = cmd_himntn_item_switch(HIMNTN_ID_UART_LOG_SWITCH);
+#endif
 	return platform_driver_register(&geni_se_driver);
 }
 arch_initcall(geni_se_driver_init);

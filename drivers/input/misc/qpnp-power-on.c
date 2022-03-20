@@ -27,6 +27,18 @@
 #include <linux/regulator/machine.h>
 #include <linux/regulator/of_regulator.h>
 
+#ifdef CONFIG_HW_COMB_KEY
+#include <huawei_platform/comb_key/power_key_event.h>
+#include <huawei_platform/comb_key/volume_key_event.h>
+#endif
+
+#ifdef CONFIG_HW_ZEROHUNG
+#include <chipset_common/hwzrhung/hung_wp_screen.h>
+#endif
+#ifdef CONFIG_BOOT_DETECTOR_QCOM
+#include <hwbootfail/chipsets/bootfail_qcom.h>
+#endif
+
 #define PMIC_VER_8941				0x01
 #define PMIC_VERSION_REG			0x0105
 #define PMIC_VERSION_REV4_REG			0x0103
@@ -165,6 +177,11 @@ enum qpnp_pon_version {
 #define QPNP_PON_BUFFER_SIZE			9
 
 #define QPNP_POFF_REASON_UVLO			13
+
+#ifdef CONFIG_BOOT_DETECTOR_QCOM
+#define BF_PWK_PRESS_FLAG 128
+#define BF_PWK_RELEASE_FLAG 0
+#endif
 
 enum pon_type {
 	PON_KPDPWR	 = PON_POWER_ON_TYPE_KPDPWR,
@@ -1032,6 +1049,34 @@ static int qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
 		pon_rt_sts);
 	key_status = pon_rt_sts & pon_rt_bit;
 
+	pr_err("PMIC input: code=%d, pon_type =%u, key_status=0x%02X\n", cfg->key_code, cfg->pon_type,
+		key_status);
+
+#ifdef CONFIG_BOOT_DETECTOR_QCOM
+	if (cfg->pon_type == PON_KPDPWR) {
+		if (key_status == BF_PWK_PRESS_FLAG) {
+			pr_debug("bootfail_pwk_check:press\n");
+			bootfail_pwk_press();
+		} else if (key_status == BF_PWK_RELEASE_FLAG) {
+			pr_debug("bootfail_pwk_check:release\n");
+			bootfail_pwk_release();
+		}
+	}
+#endif
+
+#ifdef CONFIG_HW_ZEROHUNG
+	hung_wp_screen_qcom_pkey_press(cfg->pon_type, key_status);
+	if (cfg->pon_type == PON_KPDPWR)
+		hung_wp_screen_powerkey_ncb(WP_SCREEN_PWK_RELEASE ^ key_status);
+#endif
+
+#ifdef CONFIG_HW_COMB_KEY
+	if (cfg->pon_type == PON_KPDPWR)
+		power_key_status_distinguish(!!key_status);
+	if (cfg->pon_type == PON_RESIN)
+		volume_key_status_distinguish(!!key_status);
+#endif
+
 	if (pon->kpdpwr_dbc_enable && cfg->pon_type == PON_KPDPWR) {
 		if (!key_status)
 			pon->kpdpwr_last_release_time = ktime_get();
@@ -1042,6 +1087,11 @@ static int qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
 	 * event
 	 */
 	if (!cfg->old_state && !key_status) {
+		if (strstr(saved_command_line, "enter_recovery=1")) {
+			pr_info("old_state %d, key_status %d, pon_type %d",
+				cfg->old_state, key_status, cfg->pon_type);
+			return 0;
+		}
 		input_report_key(pon->pon_input, cfg->key_code, 1);
 		input_sync(pon->pon_input);
 	}
@@ -2484,6 +2534,11 @@ static int qpnp_pon_probe(struct platform_device *pdev)
 		modem_reset_dev = pon;
 
 	qpnp_pon_debugfs_init(pon);
+
+#ifdef CONFIG_HW_COMB_KEY
+	power_key_nb_init();
+	volume_key_nb_init();
+#endif
 
 	return 0;
 }

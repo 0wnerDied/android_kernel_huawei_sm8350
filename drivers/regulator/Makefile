@@ -152,3 +152,6 @@ obj-$(CONFIG_REGULATOR_STUB) += stub-regulator.o
 obj-$(CONFIG_VIRTIO_REGULATOR) += virtio_regulator.o
 
 ccflags-$(CONFIG_REGULATOR_DEBUG) += -DDEBUG
+ifeq ($(CONFIG_FACTORY_ANDROID),true)
+KBUILD_CFLAGS += -DHIMNTN_FACTORY_MODE
+endif

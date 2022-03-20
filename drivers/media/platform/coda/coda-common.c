@@ -2447,12 +2447,7 @@ static int coda_open(struct file *file)
 
 	switch (dev->devtype->product) {
 	case CODA_960:
-		/*
-		 * Enabling the BWB when decoding can hang the firmware with
-		 * certain streams. The issue was tracked as ENGR00293425 by
-		 * Freescale. As a workaround, disable BWB for all decoders.
-		 * The enable_bwb module parameter allows to override this.
-		 */
+		
 		if (enable_bwb || ctx->inst_type == CODA_INST_ENCODER)
 			ctx->frame_mem_ctrl = CODA9_FRAME_ENABLE_BWB;
 		/* fallthrough */

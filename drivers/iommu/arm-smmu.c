@@ -116,8 +116,8 @@ struct arm_smmu_cb {
 int tbu_testbus_sel = TBU_TESTBUS_SEL_ALL;
 int tcu_testbus_sel = TCU_TESTBUS_SEL_ALL;
 
-module_param_named(tcu_testbus_sel, tcu_testbus_sel, int, 0644);
-module_param_named(tbu_testbus_sel, tbu_testbus_sel, int, 0644);
+//module_param_named(tcu_testbus_sel, tcu_testbus_sel, int, 0644);
+//module_param_named(tbu_testbus_sel, tbu_testbus_sel, int, 0644);
 
 struct arm_smmu_pte_info {
 	void *virt_addr;
@@ -247,7 +247,7 @@ static void arm_smmu_secure_domain_unlock(struct arm_smmu_domain *smmu_domain)
 #ifdef CONFIG_ARM_SMMU_SELFTEST
 
 static int selftest;
-module_param_named(selftest, selftest, int, 0644);
+//module_param_named(selftest, selftest, int, 0644);
 static int irq_count;
 
 struct arm_smmu_cf_selftest_data {

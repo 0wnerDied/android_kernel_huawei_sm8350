@@ -10,6 +10,8 @@
 #include <linux/regmap.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
+#include "huawei-rtc.h"
+#include "rtc_dmd_upload.h"
 
 /* RTC Register offsets from RTC CTRL REG */
 #define PM8XXX_ALARM_CTRL_OFFSET	0x01
@@ -83,6 +85,8 @@ static int pm8xxx_rtc_set_time(struct device *dev, struct rtc_time *tm)
 
 	if (!rtc_dd->allow_set_time)
 		return -EACCES;
+
+	dsm_rtc_valid(tm);
 
 	rtc_tm_to_time(tm, &secs);
 
@@ -208,6 +212,8 @@ static int pm8xxx_rtc_read_time(struct device *dev, struct rtc_time *tm)
 	secs = value[0] | (value[1] << 8) | (value[2] << 16) |
 	       ((unsigned long)value[3] << 24);
 
+	dsm_rtc_check_lasttime(secs);
+
 	rtc_time_to_tm(secs, tm);
 
 	dev_dbg(dev, "secs = %lu, h:m:s == %ptRt, y-m-d = %ptRdr\n", secs, tm, tm);
@@ -255,7 +261,7 @@ static int pm8xxx_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alarm)
 		goto rtc_rw_fail;
 	}
 
-	dev_dbg(dev, "Alarm Set for h:m:s=%ptRt, y-m-d=%ptRdr\n",
+	dev_info(dev, "Alarm Set for h:m:s=%ptRt, y-m-d=%ptRdr\n",
 		&alarm->time, &alarm->time);
 rtc_rw_fail:
 	spin_unlock_irqrestore(&rtc_dd->ctrl_reg_lock, irq_flags);
@@ -297,7 +303,7 @@ static int pm8xxx_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alarm)
 
 	alarm->enabled = !!(ctrl_reg & PM8xxx_RTC_ALARM_ENABLE);
 
-	dev_dbg(dev, "Alarm set for - h:m:s=%ptRt, y-m-d=%ptRdr\n",
+	dev_info(dev, "Alarm set for - h:m:s=%ptRt, y-m-d=%ptRdr\n",
 		&alarm->time, &alarm->time);
 
 	return 0;
@@ -491,6 +497,7 @@ static int pm8xxx_rtc_probe(struct platform_device *pdev)
 	int rc;
 	struct pm8xxx_rtc *rtc_dd;
 	const struct of_device_id *match;
+	const struct rtc_class_ops *rtc_ops = &pm8xxx_rtc_ops;
 
 	match = of_match_node(pm8xxx_id_table, pdev->dev.of_node);
 	if (!match)
@@ -523,13 +530,19 @@ static int pm8xxx_rtc_probe(struct platform_device *pdev)
 	if (rc)
 		return rc;
 
+	rtc_ops = get_huawei_rtc_rw_ops(&pm8xxx_rtc_ops);
 	platform_set_drvdata(pdev, rtc_dd);
 
 	device_init_wakeup(&pdev->dev, 1);
 
+	/* Initialise the HUAWEI RTC */
+	rc = huawei_rtc_init(&pdev->dev);
+	if (rc)
+		dev_err(&pdev->dev, "huawei rtc init failed !\n");
+
 	/* Register the RTC device */
 	rtc_dd->rtc = devm_rtc_device_register(&pdev->dev, "pm8xxx_rtc",
-					       &pm8xxx_rtc_ops, THIS_MODULE);
+					       rtc_ops, THIS_MODULE);
 	if (IS_ERR(rtc_dd->rtc)) {
 		dev_err(&pdev->dev, "%s: RTC registration failed (%ld)\n",
 			__func__, PTR_ERR(rtc_dd->rtc));
@@ -582,6 +595,7 @@ static SIMPLE_DEV_PM_OPS(pm8xxx_rtc_pm_ops,
 
 static struct platform_driver pm8xxx_rtc_driver = {
 	.probe		= pm8xxx_rtc_probe,
+	.remove		= huawei_rtc_remove,
 	.driver	= {
 		.name		= "rtc-pm8xxx",
 		.pm		= &pm8xxx_rtc_pm_ops,

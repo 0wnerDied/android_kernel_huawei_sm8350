@@ -5577,7 +5577,7 @@ static irqreturn_t cnss_pci_wake_handler(int irq, void *data)
 	 * calling pm_system_wakeup() is just to guarantee system suspend
 	 * can be aborted if it is not initiated in any case.
 	 */
-	pm_system_wakeup();
+	pm_system_irq_wakeup(irq);
 
 	if (cnss_pci_get_monitor_wake_intr(pci_priv) &&
 	    cnss_pci_get_auto_suspended(pci_priv)) {

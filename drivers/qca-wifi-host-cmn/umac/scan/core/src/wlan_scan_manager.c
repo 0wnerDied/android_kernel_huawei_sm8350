@@ -33,8 +33,17 @@
 #ifdef WLAN_POLICY_MGR_ENABLE
 #include <wlan_policy_mgr_api.h>
 #endif
+#ifdef CONFIG_HUAWEI_WIFI
+#include "csr_api.h"
+#define SCAN_TIMEOUT_TRIGGER_SSR_MAX_COUNT 5
+uint32_t g_scan_timout_count = 0;
+#endif
 #include <wlan_dfs_utils_api.h>
 #include <wlan_scan_cfg.h>
+
+#ifdef CONFIG_HUAWEI_DSM
+#include <hw_wlan/hw_wlan.h>
+#endif
 
 QDF_STATUS
 scm_scan_free_scan_request_mem(struct scan_start_request *req)
@@ -346,6 +355,18 @@ scm_scan_serialize_callback(struct wlan_serialization_command *cmd,
 		 * prepare internal scan cancel request
 		 */
 		status = scm_cancel_scan_request(req);
+#ifdef CONFIG_HUAWEI_WIFI
+		g_scan_timout_count++;
+		scm_debug("scan timeout count :%d", g_scan_timout_count);
+		if (g_scan_timout_count >= SCAN_TIMEOUT_TRIGGER_SSR_MAX_COUNT) {
+			scm_debug("scan timeout over %d times, trigger ssr", SCAN_TIMEOUT_TRIGGER_SSR_MAX_COUNT);
+			cds_trigger_recovery(QDF_SCAN_ATTEMPT_FAILURES);
+#ifdef CONFIG_HUAWEI_DSM
+	hw_wlan_dsm_client_notify(DSM_WIFI_FIRMWARE_DL_ERROR, "WLAN SSR");
+#endif
+			g_scan_timout_count = 0;
+		}
+#endif
 		break;
 
 	case WLAN_SER_CB_RELEASE_MEM_CMD:
@@ -1530,8 +1551,13 @@ scm_scan_event_handler(struct scheduler_msg *msg)
 
 	switch (event->type) {
 	case SCAN_EVENT_TYPE_COMPLETED:
-		if (event->reason == SCAN_REASON_COMPLETED)
+		if (event->reason == SCAN_REASON_COMPLETED) {
 			scm_11d_decide_country_code(vdev);
+#ifdef CONFIG_HUAWEI_WIFI
+			scm_debug("reset scan timeout count");
+			g_scan_timout_count = 0;
+#endif
+		}
 		/* fall through to release the command */
 	case SCAN_EVENT_TYPE_START_FAILED:
 	case SCAN_EVENT_TYPE_DEQUEUED:

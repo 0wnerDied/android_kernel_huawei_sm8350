@@ -44,7 +44,9 @@
 #define CNSS_MHI_M2_TIMEOUT_DEFAULT	25
 #define CNSS_QMI_TIMEOUT_DEFAULT	10000
 #endif
-#define CNSS_BDF_TYPE_DEFAULT		CNSS_BDF_ELF
+#define CNSS_BDF_TYPE_DEFAULT		CNSS_BDF_BIN
+//#define CNSS_BDF_TYPE_DEFAULT		CNSS_BDF_ELF
+//end
 #define CNSS_TIME_SYNC_PERIOD_DEFAULT	900000
 
 static struct cnss_plat_data *plat_env;
@@ -1117,7 +1119,6 @@ static int cnss_subsys_powerup(const struct subsys_desc *subsys_desc)
 {
 	struct cnss_plat_data *plat_priv;
 	int ret = 0;
-
 	if (!subsys_desc->dev) {
 		cnss_pr_err("dev from subsys_desc is NULL\n");
 		return -ENODEV;
@@ -1197,7 +1198,7 @@ static int cnss_subsys_ramdump(int enable,
 			       const struct subsys_desc *subsys_desc)
 {
 	struct cnss_plat_data *plat_priv = dev_get_drvdata(subsys_desc->dev);
-
+	int ret;
 	if (!plat_priv) {
 		cnss_pr_err("plat_priv is NULL\n");
 		return -ENODEV;
@@ -1205,8 +1206,8 @@ static int cnss_subsys_ramdump(int enable,
 
 	if (!enable)
 		return 0;
-
-	return cnss_bus_dev_ramdump(plat_priv);
+	ret = cnss_bus_dev_ramdump(plat_priv);
+	return ret;
 }
 
 static void cnss_recovery_work_handler(struct work_struct *work)
@@ -2561,7 +2562,7 @@ int cnss_request_firmware_direct(struct cnss_plat_data *plat_priv,
 					       &plat_priv->plat_dev->dev);
 	else
 		return firmware_request_nowarn(fw_entry, filename,
-					       &plat_priv->plat_dev->dev);
+					&plat_priv->plat_dev->dev);
 }
 
 #if IS_ENABLED(CONFIG_INTERCONNECT)

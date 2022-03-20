@@ -170,6 +170,14 @@ int mmc_send_op_cond(struct mmc_host *host, u32 ocr, u32 *rocr)
 {
 	struct mmc_command cmd = {};
 	int i, err = 0;
+#ifdef CONFIG_SDSIM_MUX
+	bool ocr_det_flag = false;
+	/* 0x5A(magic num) indicate that mmc detect probe base vdd 1.8v */
+	if ((ocr & 0x7F) == 0x5A) {
+		ocr_det_flag = true;
+		ocr = 0;
+	}
+#endif
 
 	cmd.opcode = MMC_SEND_OP_COND;
 	cmd.arg = mmc_host_is_spi(host) ? 0 : ocr;
@@ -179,7 +187,10 @@ int mmc_send_op_cond(struct mmc_host *host, u32 ocr, u32 *rocr)
 		err = mmc_wait_for_cmd(host, &cmd, 0);
 		if (err)
 			break;
-
+#ifdef CONFIG_SDSIM_MUX
+		if (ocr_det_flag)
+			break;
+#endif
 		/* wait until reset completes */
 		if (mmc_host_is_spi(host)) {
 			if (!(cmd.resp[0] & R1_SPI_IDLE))

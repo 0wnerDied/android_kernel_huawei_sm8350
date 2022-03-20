@@ -138,4 +138,8 @@ config ARM_SPE_PMU
 	  Extension, which provides periodic sampling of operations in
 	  the CPU pipeline and reports this via the perf AUX interface.
 
+config HUAWEI_PMU_SHARE
+	bool "Huawei PMU share"
+	default n
+
 endmenu

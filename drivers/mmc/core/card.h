@@ -39,6 +39,7 @@
 #define mmc_card_set_suspended(c) ((c)->state |= MMC_STATE_SUSPENDED)
 #define mmc_card_clr_suspended(c) ((c)->state &= ~MMC_STATE_SUSPENDED)
 
+#define mmc_card_removable_mmc(c) (mmc_card_mmc((c)) && mmc_card_is_removable((c)->host))
 /*
  * The world is not perfect and supplies us with broken mmc/sdio devices.
  * For at least some of these bugs we need a work-around.

@@ -33,3 +33,11 @@ obj-$(CONFIG_REBOOT_MODE) += reboot-mode.o
 obj-$(CONFIG_SYSCON_REBOOT_MODE) += syscon-reboot-mode.o
 obj-$(CONFIG_POWER_RESET_SC27XX) += sc27xx-poweroff.o
 obj-$(CONFIG_NVMEM_REBOOT_MODE) += nvmem-reboot-mode.o
+
+ifeq ($(TARGET_BUILD_VARIANT),eng)
+ccflags-y += -DCONFIG_DUMPCTL_ENG_MODE
+endif
+
+ifeq ($(HLTHERM_RUNTEST), true)
+ccflags-y += -DCONFIG_HLTHERM_RUNTEST
+endif

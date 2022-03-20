@@ -2242,8 +2242,19 @@ static int sdhci_get_cd(struct mmc_host *mmc)
 	 * Try slot gpio detect, if defined it take precedence
 	 * over build in controller functionality
 	 */
-	if (gpio_cd >= 0)
+	if (gpio_cd >= 0) {
+#ifdef CONFIG_SDSIM_MUX
+		if(host->mmc->sd_sim_mux == 1) {
+			if (gpio_cd == 0) {
+				host->mmc->sd_cmd_det_result = 1;
+				return !!gpio_cd;
+			} else {
+				return host->mmc->sd_card_inserted;
+			}
+		}
+#endif
 		return !!gpio_cd;
+	}
 
 	/* If polling, assume that the card is always present. */
 	if (host->quirks & SDHCI_QUIRK_BROKEN_CARD_DETECTION)

@@ -1579,7 +1579,7 @@ static irqreturn_t mwifiex_irq_wakeup_handler(int irq, void *priv)
 
 	/* Notify PM core we are wakeup source */
 	pm_wakeup_event(adapter->dev, 0);
-	pm_system_wakeup();
+	pm_system_irq_wakeup(irq);
 
 	return IRQ_HANDLED;
 }

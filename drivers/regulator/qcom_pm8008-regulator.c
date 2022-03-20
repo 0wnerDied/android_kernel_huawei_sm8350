@@ -806,6 +806,20 @@ static int pm8008_regulator_probe(struct platform_device *pdev)
 		return rc;
 	}
 
+	/* 0x4288: register base address of LDO3, 0x0: disable OCP */
+	rc = regmap_write(regmap, 0x4288, 0x0);
+	if (rc < 0) {
+		pr_err("failed to write 0x4288 rc=%d, disable LDO3 OCP failed.\n", rc);
+		return rc;
+	}
+
+	/* 0x4388: register base address of LDO4, 0x0: disable OCP */
+	rc = regmap_write(regmap, 0x4388, 0x0);
+	if (rc < 0) {
+		pr_err("failed to write 0x4388 rc=%d, disable LDO4 OCP failed.\n", rc);
+		return rc;
+	}
+
 	return 0;
 }
 

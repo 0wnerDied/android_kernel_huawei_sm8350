@@ -471,6 +471,18 @@ void qdf_pm_system_wakeup(void)
 
 qdf_export_symbol(qdf_pm_system_wakeup);
 
+/**
+ * qdf_pm_system_irq_wakeup(unsigned int irq_number) - wakeup system
+ *
+ * Return: None
+ */
+void qdf_pm_system_irq_wakeup(unsigned int irq_number)
+{
+	pm_system_irq_wakeup(irq_number);
+}
+
+qdf_export_symbol(qdf_pm_system_irq_wakeup);
+
 #ifdef FEATURE_RUNTIME_PM
 /**
  * qdf_runtime_pm_get() - do a get opperation on the device

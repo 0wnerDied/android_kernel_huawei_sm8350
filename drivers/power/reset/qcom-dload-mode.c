@@ -16,6 +16,10 @@
 #include <linux/qcom_scm.h>
 #include <soc/qcom/minidump.h>
 
+#ifdef CONFIG_RAINBOW_HIMNTN
+#include <linux/himntn_kernel.h>
+#endif
+
 enum qcom_download_dest {
 	QCOM_DOWNLOAD_DEST_UNKNOWN = -1,
 	QCOM_DOWNLOAD_DEST_QPST = 0,
@@ -226,6 +230,35 @@ static ssize_t dload_mode_store(struct kobject *kobj,
 		return -EINVAL;
 	}
 
+#ifdef CONFIG_DUMPCTL_ENG_MODE
+	if (msm_minidump_enabled())
+		mode = QCOM_DOWNLOAD_FULLDUMP;
+	else
+		mode = QCOM_DOWNLOAD_FULLDUMP;
+#else
+#ifdef CONFIG_RAINBOW_HIMNTN
+	/* If fastboot dump flag setted, must both */
+	if (cmd_himntn_item_switch(HIMNTN_ID_FASTBOOT_SWITCH)) {
+		if (msm_minidump_enabled())
+			mode = QCOM_DOWNLOAD_FULLDUMP;
+		else
+			mode = QCOM_DOWNLOAD_FULLDUMP;
+	} else {
+		if (!msm_minidump_enabled()) {
+			pr_err("Minidump is not enabled, himntn open\n");
+			return -EINVAL;
+		}
+		mode = QCOM_DOWNLOAD_MINIDUMP;
+	}
+#else
+	if (!msm_minidump_enabled()) {
+		pr_err("Minidump is not enabled, himntn close\n");
+		return -EINVAL;
+	}
+	mode = QCOM_DOWNLOAD_MINIDUMP;
+#endif
+#endif
+	pr_err("dload mode set to 0x%x(full-0x10, mini-0x20, both-0x30)\n", mode);
 	return set_dump_mode(mode) ? : count;
 }
 static struct reset_attribute attr_dload_mode = __ATTR_RW(dload_mode);

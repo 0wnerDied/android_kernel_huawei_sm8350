@@ -109,3 +109,16 @@ config MMC_CRYPTO
 	  Enabling this makes it possible for the kernel to use the crypto
 	  capabilities of the MMC device (if present) to perform crypto
 	  operations on data being transferred to/from the device.
+
+config HW_SD_HEALTH_DETECT
+	bool "SD HEALTH DIAG SUPPORT"
+	default y
+	help
+	This is an option to diag sd health status
+
+config HUAWEI_SDCARD_DSM
+	bool "Listen sdcard kernel err"
+	depends on MMC != n
+	default n
+	help
+	   use huawei sdcard log radar

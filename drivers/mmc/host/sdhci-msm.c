@@ -20,12 +20,25 @@
 #include <linux/interrupt.h>
 #include <linux/of.h>
 #include <linux/reset.h>
+#include <linux/clk/qcom.h>
+
+#include <linux/bootdevice.h>
+
 
 #include "sdhci-pltfm.h"
 #include "cqhci.h"
 #include "cqhci-crypto-qti.h"
 #if defined(CONFIG_SDC_QTI)
 #include "../core/core.h"
+#endif
+
+#ifdef CONFIG_SDSIM_MUX
+#include "hwnet/hwril_sim_sd/hwril_sim_sd.h"
+#include <linux/mmc/sdhci_mux_sdsim.h>
+#include <linux/of_gpio.h>
+static bool detect_nm_card_fail = true;
+struct mmc_host *mmc_host_det;
+extern u32 g_sd_sim_detect_status_current;
 #endif
 
 #define CORE_MCI_VERSION		0x50
@@ -383,6 +396,10 @@ struct sdhci_msm_vreg_data {
 	struct sdhci_msm_reg_data *vdd_data;
 	 /* keeps VDD IO regulator info */
 	struct sdhci_msm_reg_data *vdd_io_data;
+#ifdef CONFIG_SDSIM_MUX
+	 /* keeps VDD SIM regulator info */
+	struct sdhci_msm_reg_data *vdd_sim_data;
+#endif
 };
 
 /* Per cpu cluster qos group */
@@ -1828,6 +1845,9 @@ static bool sdhci_msm_populate_pdata(struct device *dev,
 	struct device_node *np = dev->of_node;
 	int ice_clk_table_len;
 	u32 *ice_clk_table = NULL;
+#ifdef CONFIG_SDSIM_MUX
+	int value;
+#endif
 
 	msm_host->vreg_data = devm_kzalloc(dev, sizeof(struct
 						    sdhci_msm_vreg_data),
@@ -1848,7 +1868,27 @@ static bool sdhci_msm_populate_pdata(struct device *dev,
 		dev_err(dev, "failed parsing vdd-io data\n");
 		goto out;
 	}
+#ifdef CONFIG_SDSIM_MUX
+	if (sdhci_msm_dt_parse_vreg_info(dev,
+					 &msm_host->vreg_data->vdd_sim_data,
+					 "vdd-sim")) {
+		dev_err(dev, "failed parsing vdd-sim data\n");
+		goto out;
+	}
 
+	if (of_property_read_u32(np, "sd-sim-mux", &value)) {
+		dev_err(dev, "failed parsing sd-sim-mux data\n");
+		value = 0;
+	}
+	msm_host->mmc->sd_sim_mux = value;
+	msm_host->mmc->sd_sim_gpio_switch = of_get_named_gpio_flags(np, "sd-sim-gpios", 0, NULL);
+	pr_err("sdsim sd_sim_gpio_switch %d\n", msm_host->mmc->sd_sim_gpio_switch);
+	msm_host->mmc->sim_dat_gpio = of_get_named_gpio_flags(np, "sim-dat-gpios", 0, NULL);
+	msm_host->mmc->sim_clk_gpio = of_get_named_gpio_flags(np, "sim-clk-gpios", 0, NULL);
+	msm_host->mmc->sim_rst_gpio = of_get_named_gpio_flags(np, "sim-rst-gpios", 0, NULL);
+	pr_err("sdsim sim gpio pin num %d,%d,%d\n", msm_host->mmc->sim_dat_gpio,
+		msm_host->mmc->sim_clk_gpio,msm_host->mmc->sim_rst_gpio);
+#endif
 	if (of_get_property(np, "qcom,core_3_0v_support", NULL))
 		msm_host->fake_core_3_0v_support = true;
 
@@ -2076,7 +2116,7 @@ out:
 	return ret;
 }
 
-static int sdhci_msm_vreg_set_optimum_mode(struct sdhci_msm_reg_data
+int sdhci_msm_vreg_set_optimum_mode(struct sdhci_msm_reg_data
 						  *vreg, int uA_load)
 {
 	int ret = 0;
@@ -2100,7 +2140,7 @@ static int sdhci_msm_vreg_set_optimum_mode(struct sdhci_msm_reg_data
 	return ret;
 }
 
-static int sdhci_msm_vreg_set_voltage(struct sdhci_msm_reg_data *vreg,
+int sdhci_msm_vreg_set_voltage(struct sdhci_msm_reg_data *vreg,
 					int min_uV, int max_uV)
 {
 	int ret = 0;
@@ -2116,10 +2156,15 @@ static int sdhci_msm_vreg_set_voltage(struct sdhci_msm_reg_data *vreg,
 	return ret;
 }
 
-static int sdhci_msm_vreg_enable(struct sdhci_msm_reg_data *vreg)
+int sdhci_msm_vreg_enable(struct sdhci_msm_reg_data *vreg)
 {
 	int ret = 0;
-
+#ifdef CONFIG_SDSIM_MUX
+	if (!strcmp(vreg->name, "vdd") && detect_nm_card_fail) {
+		pr_err("sdsim check stage can't set vdd(L9c) pwr to 2.95V,detect flag %d", detect_nm_card_fail);
+		return ret;
+	}
+#endif
 	/* Put regulator in HPM (high power mode) */
 	ret = sdhci_msm_vreg_set_optimum_mode(vreg, vreg->hpm_uA);
 	if (ret < 0)
@@ -2142,7 +2187,7 @@ static int sdhci_msm_vreg_enable(struct sdhci_msm_reg_data *vreg)
 	return ret;
 }
 
-static int sdhci_msm_vreg_disable(struct sdhci_msm_reg_data *vreg)
+int sdhci_msm_vreg_disable(struct sdhci_msm_reg_data *vreg)
 {
 	int ret = 0;
 
@@ -2199,6 +2244,25 @@ static int sdhci_msm_setup_vreg(struct sdhci_msm_host *msm_host,
 	if (!enable && vreg_table[1]->is_always_on && !mmc->card)
 		vreg_table[1]->is_always_on = false;
 
+#ifdef CONFIG_SDSIM_MUX
+	if (mmc_card_is_removable(mmc) && (mmc->sd_sim_mux == 1)) {
+		pr_err("sdsim sdhci_msm_setup_vreg enable %d,g_sd_sim_detect_status_current %d\n",
+			enable, g_sd_sim_detect_status_current);
+		if (!enable) {
+			if (g_sd_sim_detect_status_current == SD_SIM_SIM_NORMAL ||
+				g_sd_sim_detect_status_current == SD_SIM_SIM_PASS) {
+				vreg_table[1]->is_always_on = true;
+				pr_err("sdsim vdd-io is_always_on %d\n",vreg_table[1]->is_always_on);
+			} else {
+				vreg_table[1]->is_always_on = false;
+				pr_err("sdsim vdd-io is_always_on %d\n",vreg_table[1]->is_always_on);
+			}
+		} else {
+			vreg_table[1]->is_always_on = false;
+		}
+	}
+#endif
+
 	for (i = 0; i < ARRAY_SIZE(vreg_table); i++) {
 		if (vreg_table[i]) {
 			if (enable)
@@ -2221,6 +2285,9 @@ static int sdhci_msm_vreg_init(struct device *dev,
 	int ret = 0;
 	struct sdhci_msm_vreg_data *curr_slot;
 	struct sdhci_msm_reg_data *curr_vdd_reg, *curr_vdd_io_reg;
+#ifdef CONFIG_SDSIM_MUX
+	struct sdhci_msm_reg_data *curr_vdd_sim_reg;
+#endif
 
 	curr_slot = msm_host->vreg_data;
 	if (!curr_slot)
@@ -2228,6 +2295,9 @@ static int sdhci_msm_vreg_init(struct device *dev,
 
 	curr_vdd_reg = curr_slot->vdd_data;
 	curr_vdd_io_reg = curr_slot->vdd_io_data;
+#ifdef CONFIG_SDSIM_MUX
+	curr_vdd_sim_reg = curr_slot->vdd_sim_data;
+#endif
 
 	if (!is_init)
 		/* Deregister all regulators from regulator framework */
@@ -2237,6 +2307,14 @@ static int sdhci_msm_vreg_init(struct device *dev,
 	 * Get the regulator handle from voltage regulator framework
 	 * and then try to set the voltage level for the regulator
 	 */
+#ifdef CONFIG_SDSIM_MUX
+	if (curr_vdd_sim_reg) {
+		ret = sdhci_msm_vreg_init_reg(dev, curr_vdd_sim_reg);
+		if (ret)
+			goto out;
+	}
+#endif
+
 	if (curr_vdd_reg) {
 		ret = sdhci_msm_vreg_init_reg(dev, curr_vdd_reg);
 		if (ret)
@@ -2334,6 +2412,14 @@ static void sdhci_msm_handle_pwr_irq(struct sdhci_host *host, int irq)
 				msm_offset->core_pwrctl_ctl);
 		return;
 	}
+#ifdef CONFIG_SDSIM_MUX
+	if (mmc_card_is_removable(host->mmc) &&
+		host->mmc->sd_sim_mux && host->mmc->sd_cmd_det_result)
+		detect_nm_card_fail = true;
+	else
+		detect_nm_card_fail = false;
+	pr_err("sdsim result %d detect_nm_card_fail %d\n", host->mmc->sd_cmd_det_result, detect_nm_card_fail);
+#endif
 	/* Handle BUS ON/OFF*/
 	if (irq_status & CORE_PWRCTL_BUS_ON) {
 		ret = sdhci_msm_setup_vreg(msm_host, true, false);
@@ -4171,6 +4257,9 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 	msm_host = sdhci_pltfm_priv(pltfm_host);
 	msm_host->mmc = host->mmc;
 	msm_host->pdev = pdev;
+#ifdef CONFIG_SDSIM_MUX
+	mmc_host_det = host->mmc;
+#endif
 
 	ret = mmc_of_parse(host->mmc);
 	if (ret)
@@ -4211,6 +4300,10 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "DT parsing error\n");
 		goto pltfm_free;
 	}
+#ifdef CONFIG_SDSIM_MUX
+	/* register sdsim nmc detect result func */
+	register_sim_sd_handler(sim_nmc_cmd_handler);
+#endif
 
 	msm_host->regs_restore.is_supported =
 		of_property_read_bool(dev->of_node,
@@ -4402,6 +4495,11 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 	}
 
 	sdhci_msm_set_caps(msm_host);
+#ifdef CONFIG_SDSIM_MUX
+	if (mmc_card_is_removable(msm_host->mmc) &&
+		(msm_host->mmc->sd_sim_mux == 1))
+		msm_host->mmc->caps2 |= MMC_CAP2_NO_PRESCAN_POWERUP;
+#endif
 
 #if defined(CONFIG_SDC_QTI)
 	host->timeout_clk_div = 4;
@@ -4464,6 +4562,9 @@ bus_clk_disable:
 		clk_disable_unprepare(msm_host->bus_clk);
 pltfm_free:
 	sdhci_pltfm_free(pdev);
+
+	set_bootdevice_name(BOOT_DEVICE_EMMC, &pdev->dev);
+
 	return ret;
 }
 

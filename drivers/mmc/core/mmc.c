@@ -13,6 +13,8 @@
 #include <linux/stat.h>
 #include <linux/pm_runtime.h>
 
+#include <linux/bootdevice.h>
+
 #include <linux/mmc/host.h>
 #include <linux/mmc/card.h>
 #include <linux/mmc/mmc.h>
@@ -25,6 +27,9 @@
 #include "quirks.h"
 #include "sd_ops.h"
 #include "pwrseq.h"
+#ifdef CONFIG_SDSIM_MUX
+#include <linux/mmc/sdhci_mux_sdsim.h>
+#endif
 
 #define DEFAULT_CMD6_TIMEOUT_MS	500
 #define MIN_CACHE_EN_TIMEOUT_MS 1600
@@ -649,6 +654,14 @@ static int mmc_decode_ext_csd(struct mmc_card *card, u8 *ext_csd)
 				 card->ext_csd.cmdq_depth);
 		}
 	}
+
+	set_bootdevice_size(BOOT_DEVICE_EMMC, card->ext_csd.sectors);
+	set_bootdevice_pre_eol_info(BOOT_DEVICE_EMMC, card->ext_csd.pre_eol_info);
+	set_bootdevice_life_time_est_typ_a(
+		BOOT_DEVICE_EMMC, card->ext_csd.device_life_time_est_typ_a);
+	set_bootdevice_life_time_est_typ_b(
+		BOOT_DEVICE_EMMC, card->ext_csd.device_life_time_est_typ_b);
+
 out:
 	return err;
 }
@@ -1612,11 +1625,11 @@ static int mmc_scale_high(struct mmc_host *host)
 
 	mmc_set_initial_state(host);
 	err = mmc_select_timing(host->card);
-	if (err) {
+		if (err) {
 		pr_err("%s: %s: select hs400 failed (%d)\n",
-			mmc_hostname(host), __func__, err);
-		return err;
-	}
+				mmc_hostname(host), __func__, err);
+			return err;
+		}
 
 	if (mmc_card_hs200(host->card)) {
 		err = mmc_hs200_tuning(host->card);
@@ -1626,11 +1639,11 @@ static int mmc_scale_high(struct mmc_host *host)
 			return err;
 		}
 		err = mmc_select_hs400(host->card);
-		if (err) {
+	if (err) {
 			pr_err("%s: %s: Select hs400 failed (%d)\n",
-				mmc_hostname(host), __func__, err);
-			return err;
-		}
+			mmc_hostname(host), __func__, err);
+		return err;
+	}
 	}
 	return 0;
 }
@@ -1858,6 +1871,10 @@ static int mmc_init_card(struct mmc_host *host, u32 ocr,
 		if (err)
 			goto free_card;
 	}
+
+	set_bootdevice_cid(BOOT_DEVICE_EMMC, cid);
+	set_bootdevice_product_name(BOOT_DEVICE_EMMC, card->cid.prod_name);
+	set_bootdevice_manfid(BOOT_DEVICE_EMMC, card->cid.manfid);
 
 	/*
 	 * handling only for cards supporting DSR and hosts requesting
@@ -2426,7 +2443,10 @@ static int _mmc_resume(struct mmc_host *host)
 	int err = -EINVAL;
 
 	mmc_claim_host(host);
-
+#ifdef CONFIG_SDSIM_MUX
+	if (mmc_card_is_removable(host) && (host->sd_sim_mux == 1))
+		sim_gpio_setup(host);
+#endif
 #if defined(CONFIG_SDC_QTI)
 	if (!mmc_card_suspended(host->card)) {
 		mmc_release_host(host);

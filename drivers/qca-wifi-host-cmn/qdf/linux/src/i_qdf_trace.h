@@ -401,8 +401,7 @@ static inline void __qdf_bug(void)
  */
 #define QDF_DEBUG_PANIC_FL(func, line, fmt, args...) \
 	do { \
-		pr_err("WLAN Panic @ %s:%d: " fmt "\n", func, line, ##args); \
-		__qdf_bug(); \
+		pr_err("WLAN Panic Modi@ %s:%d: " fmt "\n", func, line, ##args); \
 	} while (false)
 
 #define QDF_BUG(_condition) \

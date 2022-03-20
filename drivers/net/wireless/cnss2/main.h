@@ -578,4 +578,5 @@ int cnss_set_feature_list(struct cnss_plat_data *plat_priv,
 			  enum cnss_feature_v01 feature);
 int cnss_get_feature_list(struct cnss_plat_data *plat_priv,
 			  u64 *feature_list);
+extern int wlan_ssr_trigger_panic(struct subsys_device *subsys_dev);
 #endif /* _CNSS_MAIN_H */

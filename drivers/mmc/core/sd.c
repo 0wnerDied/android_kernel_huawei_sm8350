@@ -261,7 +261,9 @@ static int mmc_read_ssr(struct mmc_card *card)
 		card->raw_ssr[i] = be32_to_cpu(raw_ssr[i]);
 
 	kfree(raw_ssr);
-
+#ifdef CONFIG_HW_SD_HEALTH_DETECT
+	card->ssr.speed_class = (u8)(card->raw_ssr[2] >> 24);
+#endif
 	/*
 	 * UNSTUFF_BITS only works with four u32s so we have to offset the
 	 * bitfield positions accordingly.
@@ -743,7 +745,10 @@ MMC_DEV_ATTR(oemid, "0x%04x\n", card->cid.oemid);
 MMC_DEV_ATTR(serial, "0x%08x\n", card->cid.serial);
 MMC_DEV_ATTR(ocr, "0x%08x\n", card->ocr);
 MMC_DEV_ATTR(rca, "0x%04x\n", card->rca);
-
+#ifdef CONFIG_HW_SD_HEALTH_DETECT
+MMC_DEV_ATTR(speed_class, "0x%08x\n", card->ssr.speed_class);
+MMC_DEV_ATTR(state, "0x%08x\n", card->state);
+#endif
 
 static ssize_t mmc_dsr_show(struct device *dev,
                            struct device_attribute *attr,
@@ -778,6 +783,10 @@ static struct attribute *sd_std_attrs[] = {
 	&dev_attr_ocr.attr,
 	&dev_attr_rca.attr,
 	&dev_attr_dsr.attr,
+#ifdef CONFIG_HW_SD_HEALTH_DETECT
+	&dev_attr_speed_class.attr,
+	&dev_attr_state.attr,
+#endif
 	NULL,
 };
 ATTRIBUTE_GROUPS(sd_std);

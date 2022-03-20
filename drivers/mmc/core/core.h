@@ -87,6 +87,7 @@ int mmc_detect_card_removed(struct mmc_host *host);
 int mmc_attach_mmc(struct mmc_host *host);
 int mmc_attach_sd(struct mmc_host *host);
 int mmc_attach_sdio(struct mmc_host *host);
+void mmc_hw_reset_for_init(struct mmc_host *host);
 
 /* Module parameters */
 extern bool use_spi_crc;

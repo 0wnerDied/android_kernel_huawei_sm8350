@@ -21,6 +21,9 @@
 #include <linux/soc/qcom/pmic_glink.h>
 #include <linux/soc/qcom/battery_charger.h>
 #include "qti_typec_class.h"
+#ifdef CONFIG_HUAWEI_POWER_EMBEDDED_ISOLATION
+#include <huawei_platform/hwpower/common_module/power_glink.h>
+#endif
 
 #define MSG_OWNER_BC			32778
 #define MSG_TYPE_REQ_RESP		1
@@ -252,6 +255,9 @@ struct battery_chg_dev {
 	u32				restrict_fcc_ua;
 	u32				last_fcc_ua;
 	u32				usb_icl_ua;
+#if defined(CONFIG_HUAWEI_POWER_EMBEDDED_ISOLATION)
+	u32				original_battery;
+#endif /* CONFIG_HUAWEI_POWER_EMBEDDED_ISOLATION */
 	u32				connector_type;
 	u32				usb_prev_mode;
 	bool				restrict_chg_en;
@@ -429,8 +435,10 @@ static int get_property_id(struct psy_state *pst,
 		if (pst->map[i] == prop)
 			return i;
 
+#ifndef CONFIG_HUAWEI_POWER_EMBEDDED_ISOLATION
 	pr_err("No property id for property %d in psy %s\n", prop,
 		pst->psy->desc->name);
+#endif /* CONFIG_HUAWEI_POWER_EMBEDDED_ISOLATION */
 
 	return -ENOENT;
 }
@@ -717,7 +725,7 @@ static void battery_chg_update_usb_type_work(struct work_struct *work)
 	    pst->prop[USB_ADAP_TYPE] != POWER_SUPPLY_USB_TYPE_PD)
 		bcdev->usb_icl_ua = 0;
 
-	pr_debug("usb_adap_type: %u\n", pst->prop[USB_ADAP_TYPE]);
+	pr_err("usb_adap_type: %u\n", pst->prop[USB_ADAP_TYPE]);
 
 	switch (pst->prop[USB_ADAP_TYPE]) {
 	case POWER_SUPPLY_USB_TYPE_SDP:
@@ -1126,6 +1134,11 @@ static int battery_psy_get_prop(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CHARGE_CONTROL_LIMIT_MAX:
 		pval->intval = bcdev->num_thermal_levels;
 		break;
+#if defined(CONFIG_HUAWEI_POWER_EMBEDDED_ISOLATION)
+	case POWER_SUPPLY_PROP_CURRENT_NOW:
+		pval->intval = (int)pst->prop[prop_id] / 1000; /* 1000 : ma unit */
+		break;
+#endif /* CONFIG_HUAWEI_POWER_EMBEDDED_ISOLATION */
 	default:
 		pval->intval = pst->prop[prop_id];
 		break;
@@ -1189,9 +1202,13 @@ static enum power_supply_property battery_props[] = {
 	POWER_SUPPLY_PROP_POWER_AVG,
 };
 
+#if defined(CONFIG_HUAWEI_POWER_EMBEDDED_ISOLATION)
+static struct power_supply_desc batt_psy_desc = {
+#else
 static const struct power_supply_desc batt_psy_desc = {
-	.name			= "battery",
-	.type			= POWER_SUPPLY_TYPE_BATTERY,
+#endif /* CONFIG_HUAWEI_POWER_EMBEDDED_ISOLATION */
+	.name = "battery",
+	.type = POWER_SUPPLY_TYPE_BATTERY,
 	.properties		= battery_props,
 	.num_properties		= ARRAY_SIZE(battery_props),
 	.get_property		= battery_psy_get_prop,
@@ -1204,6 +1221,13 @@ static int battery_chg_init_psy(struct battery_chg_dev *bcdev)
 	struct power_supply_config psy_cfg = {};
 	int rc;
 
+	#if defined(CONFIG_HUAWEI_POWER_EMBEDDED_ISOLATION)
+	if (!bcdev->original_battery) {
+		batt_psy_desc.name = "bk_battery";
+		batt_psy_desc.type = POWER_SUPPLY_TYPE_UNKNOWN;
+		pr_info("register bk_battery\n");
+	}
+	#endif /* CONFIG_HUAWEI_POWER_EMBEDDED_ISOLATION */
 	psy_cfg.drv_data = bcdev;
 	psy_cfg.of_node = bcdev->dev->of_node;
 	bcdev->psy_list[PSY_TYPE_BATTERY].psy =
@@ -1724,8 +1748,7 @@ static ssize_t moisture_detection_status_show(struct class *c,
 	if (rc < 0)
 		return rc;
 
-	return scnprintf(buf, PAGE_SIZE, "%d\n",
-			pst->prop[USB_MOISTURE_DET_STS]);
+	return scnprintf(buf, PAGE_SIZE, "%d\n", 0);
 }
 static CLASS_ATTR_RO(moisture_detection_status);
 
@@ -1842,6 +1865,14 @@ static int battery_chg_parse_dt(struct battery_chg_dev *bcdev)
 	int i, rc, len;
 	u32 prev, val;
 
+#if defined(CONFIG_HUAWEI_POWER_EMBEDDED_ISOLATION)
+	rc = of_property_read_u32(node, "original-battery",
+		&bcdev->original_battery);
+	if (rc)
+		bcdev->original_battery = 0;
+	pr_info("bk_battery_support:%u\n", bcdev->original_battery);
+#endif /* CONFIG_HUAWEI_POWER_EMBEDDED_ISOLATION */
+
 	of_property_read_string(node, "qcom,wireless-fw-name",
 				&bcdev->wls_fw_name);
 
@@ -1852,12 +1883,21 @@ static int battery_chg_parse_dt(struct battery_chg_dev *bcdev)
 
 	len = rc;
 
+#ifdef CONFIG_HUAWEI_POWER_EMBEDDED_ISOLATION
+	rc = read_property_id(bcdev, pst, BATT_CHG_CTRL_LIM_MAX);
+	if (rc < 0) {
+		pr_err("Failed to read prop BATT_CHG_CTRL_LIM_MAX, rc=%d\n",
+			rc);
+		pst->prop[BATT_CHG_CTRL_LIM_MAX] = 3600000; /* initial BATT_CHG_CTRL_LIM_MAX */
+	}
+#else
 	rc = read_property_id(bcdev, pst, BATT_CHG_CTRL_LIM_MAX);
 	if (rc < 0) {
 		pr_err("Failed to read prop BATT_CHG_CTRL_LIM_MAX, rc=%d\n",
 			rc);
 		return rc;
 	}
+#endif /* CONFIG_HUAWEI_POWER_EMBEDDED_ISOLATION */
 
 	prev = pst->prop[BATT_CHG_CTRL_LIM_MAX];
 
@@ -2037,6 +2077,7 @@ static int battery_chg_probe(struct platform_device *pdev)
 				rc);
 		return rc;
 	}
+	pr_err("%s glink register ok\n", __func__);
 
 	bcdev->initialized = true;
 	bcdev->reboot_notifier.notifier_call = battery_chg_ship_mode;
@@ -2081,6 +2122,7 @@ static int battery_chg_probe(struct platform_device *pdev)
 	}
 
 	schedule_work(&bcdev->usb_type_work);
+	pr_err("%s ok\n", __func__);
 
 	return 0;
 error:

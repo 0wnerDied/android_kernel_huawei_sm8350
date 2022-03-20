@@ -7,6 +7,8 @@
 obj-$(CONFIG_MTD)		+= mtd.o
 mtd-y				:= mtdcore.o mtdsuper.o mtdconcat.o mtdpart.o mtdchar.o
 
+ccflags-y			+= -march=armv8-a+crypto+crc
+ccflags-y			+= -march=armv8-a+crc -mtune=generic
 obj-y				+= parsers/
 
 # 'Users' - code which presents functionality to userspace.
@@ -22,6 +24,7 @@ obj-$(CONFIG_SM_FTL)		+= sm_ftl.o
 obj-$(CONFIG_MTD_OOPS)		+= mtdoops.o
 obj-$(CONFIG_MTD_SWAP)		+= mtdswap.o
 
+obj-$(CONFIG_HW_NVE)		+= hw_nve.o
 nftl-objs		:= nftlcore.o nftlmount.o
 inftl-objs		:= inftlcore.o inftlmount.o
 

@@ -573,6 +573,7 @@ void __qdf_wake_lock_destroy(qdf_wake_lock_t *lock,
 	__qdf_wake_lock_destroy(lock, __func__, __LINE__)
 
 void qdf_pm_system_wakeup(void);
+void qdf_pm_system_irq_wakeup(unsigned int irq_number);
 
 QDF_STATUS qdf_runtime_pm_get(void);
 QDF_STATUS qdf_runtime_pm_put(void);

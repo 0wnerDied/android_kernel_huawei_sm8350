@@ -18,6 +18,11 @@ config CNSS2_DEBUG
 	  features, enabling kernel panic for certain cases to aid the
 	  debugging, and enabling any other debug mechanisms.
 
+config CNSS2_CALIBRATION
+	tristate "wifi chip driver"
+	---help---
+		qualcomm wifi calibration
+		
 config CNSS2_QMI
 	bool "CNSS2 Platform Driver QMI support"
 	select CNSS_QMI_SVC

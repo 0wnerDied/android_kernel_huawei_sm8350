@@ -92,8 +92,8 @@ int nl_srv_bcast(struct sk_buff *skb, int mcgroup_id, int app_id);
  *
  * Return: Pointer to user specific header/payload
  */
-void *nl80211hdr_put(struct sk_buff *skb, uint32_t portid,
-		     uint32_t seq, int flags, uint8_t cmd);
+//void *nl80211hdr_put(struct sk_buff *skb, uint32_t portid,
+//		     uint32_t seq, int flags, uint8_t cmd);
 #else
 int nl_srv_ucast(struct sk_buff *skb, int dst_pid, int flag);
 int nl_srv_bcast(struct sk_buff *skb);

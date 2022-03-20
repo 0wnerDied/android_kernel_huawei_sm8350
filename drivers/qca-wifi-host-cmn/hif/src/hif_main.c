@@ -52,6 +52,10 @@
 #endif
 #include <linux/cpumask.h>
 
+#if defined(HIF_IPCI) && defined(FEATURE_HAL_DELAYED_REG_WRITE)
+#include <pld_common.h>
+#endif
+
 void hif_dump(struct hif_opaque_softc *hif_ctx, uint8_t cmd_id, bool start)
 {
 	hif_trigger_dump(hif_ctx, cmd_id, start);
@@ -1044,6 +1048,7 @@ QDF_STATUS hif_try_prevent_ep_vote_access(struct hif_opaque_softc *hif_ctx)
 {
 	struct hif_softc *scn = HIF_GET_SOFTC(hif_ctx);
 	uint32_t work_drain_wait_cnt = 0;
+	uint32_t wait_cnt = 0;
 	int work = 0;
 
 	qdf_atomic_set(&scn->dp_ep_vote_access,
@@ -1063,7 +1068,33 @@ QDF_STATUS hif_try_prevent_ep_vote_access(struct hif_opaque_softc *hif_ctx)
 		qdf_sleep(5);
 	}
 
+	while (pld_is_pci_ep_awake(scn->qdf_dev->dev)) {
+		if (++wait_cnt > HIF_EP_WAKE_RESET_WAIT_CNT) {
+			hif_err("Release EP vote is not proceed by Fw");
+			return QDF_STATUS_E_FAULT;
+		}
+		qdf_sleep(5);
+	}
+
 	return QDF_STATUS_SUCCESS;
+}
+
+void hif_set_ep_intermediate_vote_access(struct hif_opaque_softc *hif_ctx)
+{
+	struct hif_softc *scn = HIF_GET_SOFTC(hif_ctx);
+	uint8_t vote_access;
+
+	vote_access = qdf_atomic_read(&scn->ep_vote_access);
+
+	if (vote_access != HIF_EP_VOTE_ACCESS_DISABLE)
+		hif_info("EP vote changed from:%u to intermediate state",
+			 vote_access);
+
+	if (QDF_IS_STATUS_ERROR(hif_try_prevent_ep_vote_access(hif_ctx)))
+		QDF_BUG(0);
+
+	qdf_atomic_set(&scn->ep_vote_access,
+		       HIF_EP_VOTE_INTERMEDIATE_ACCESS);
 }
 
 void hif_allow_ep_vote_access(struct hif_opaque_softc *hif_ctx)
@@ -2035,7 +2066,7 @@ irqreturn_t hif_wake_interrupt_handler(int irq, void *context)
 	if (hif_is_ut_suspended(scn))
 		hif_ut_fw_resume(scn);
 
-	qdf_pm_system_wakeup();
+	qdf_pm_system_irq_wakeup(irq);
 
 	return IRQ_HANDLED;
 }

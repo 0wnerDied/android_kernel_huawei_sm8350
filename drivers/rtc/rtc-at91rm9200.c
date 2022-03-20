@@ -302,7 +302,7 @@ static irqreturn_t at91_rtc_interrupt(int irq, void *dev_id)
 		} else {
 			cached_events |= events;
 			at91_rtc_write_idr(at91_rtc_imr);
-			pm_system_wakeup();
+			pm_system_irq_wakeup(irq);
 		}
 
 		ret = IRQ_HANDLED;

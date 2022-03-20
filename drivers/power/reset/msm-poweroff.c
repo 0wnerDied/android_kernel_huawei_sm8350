@@ -28,6 +28,10 @@
 #include <soc/qcom/watchdog.h>
 #include <soc/qcom/minidump.h>
 
+#ifdef CONFIG_RAINBOW_REASON
+#include <linux/rainbow_reason.h>
+#endif
+
 #define EMERGENCY_DLOAD_MAGIC1    0x322A4F99
 #define EMERGENCY_DLOAD_MAGIC2    0xC67E4350
 #define EMERGENCY_DLOAD_MAGIC3    0x77777777
@@ -411,6 +415,22 @@ static void msm_restart_prepare(const char *cmd)
 	set_dload_mode(download_mode &&
 			(in_panic || restart_mode == RESTART_DLOAD));
 
+	/* If bootfail rb_mreason_set(RB_M_BOOTFAIL)
+	 * else other !panic rb_mreason_set(RB_M_NORMAL)
+	 * rb_mreason_set just set once
+	 */
+#ifdef CONFIG_BOOT_DETECTOR_QCOM
+	if ((cmd != NULL && cmd[0] != '\0') && (!strcmp(cmd, "bootfail"))) {
+		rb_mreason_set(RB_M_BOOTFAIL);
+		rb_sreason_set("upper bootfail");
+	}
+#endif
+
+#ifdef CONFIG_RAINBOW_REASON
+	if (!in_panic)
+		rb_mreason_set(RB_M_NORMAL);
+#endif
+
 	if (qpnp_pon_check_hard_reset_stored()) {
 		/* Set warm reset as true when device is in dload mode */
 		if (get_dload_mode() ||
@@ -421,6 +441,13 @@ static void msm_restart_prepare(const char *cmd)
 		need_warm_reset = (get_dload_mode() ||
 				(cmd != NULL && cmd[0] != '\0'));
 	}
+
+#ifdef CONFIG_BOOT_DETECTOR_QCOM
+	if ((cmd != NULL && cmd[0] != '\0') && (!strcmp(cmd, "bootfail")))
+		need_warm_reset = true;
+
+	pr_info("Reset Type : %s\n", need_warm_reset ? "warm" : "cold");
+#endif
 
 	if (force_warm_reboot)
 		pr_info("Forcing a warm reset of the system\n");
@@ -512,7 +539,10 @@ static int do_msm_restart(struct notifier_block *unused, unsigned long action,
 static void do_msm_poweroff(void)
 {
 	pr_notice("Powering off the SoC\n");
-
+#ifdef CONFIG_RAINBOW_REASON
+	if (!in_panic)
+		rb_mreason_set(RB_M_NORMAL);
+#endif
 	set_dload_mode(0);
 	qpnp_pon_system_pwr_off(PON_POWER_OFF_SHUTDOWN);
 

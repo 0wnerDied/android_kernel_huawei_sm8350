@@ -29,6 +29,9 @@
 #include "slot-gpio.h"
 #include "pwrseq.h"
 #include "sdio_ops.h"
+#ifdef CONFIG_HUAWEI_SDCARD_DSM
+#include <linux/mmc/dsm_sdcard.h>
+#endif
 
 #define cls_dev_to_mmc_host(d)	container_of(d, struct mmc_host, class_dev)
 
@@ -43,6 +46,9 @@ static void mmc_host_classdev_release(struct device *dev)
 {
 	struct mmc_host *host = cls_dev_to_mmc_host(dev);
 	ida_simple_remove(&mmc_host_ida, host->index);
+#ifdef CONFIG_SDSIM_MUX
+	wakeup_source_unregister(host->detect_wake_lock);
+#endif
 	kfree(host);
 }
 
@@ -533,6 +539,14 @@ struct mmc_host *mmc_alloc_host(int extra, struct device *dev)
 	atomic_set(&host->active_reqs, 0);
 #endif
 	init_waitqueue_head(&host->wq);
+#ifdef CONFIG_SDSIM_MUX
+	host->detect_wake_lock = wakeup_source_register(&host->class_dev, "mmc_detect");
+#endif
+
+#ifdef CONFIG_HUAWEI_SDCARD_DSM
+	dsm_sdcard_init();
+#endif
+
 	INIT_DELAYED_WORK(&host->detect, mmc_rescan);
 	INIT_DELAYED_WORK(&host->sdio_irq_work, sdio_irq_work);
 	timer_setup(&host->retune_timer, mmc_retune_timer, 0);
@@ -550,7 +564,9 @@ struct mmc_host *mmc_alloc_host(int extra, struct device *dev)
 
 	host->fixed_drv_type = -EINVAL;
 	host->ios.power_delay_ms = 10;
-
+#ifdef CONFIG_SDSIM_MUX
+	host->sd_cmd_det_result = 1;
+#endif
 	return host;
 }
 

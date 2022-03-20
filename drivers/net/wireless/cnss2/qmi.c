@@ -3,6 +3,7 @@
 
 #include <linux/firmware.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/soc/qcom/qmi.h>
 
 #include "bus.h"
@@ -45,6 +46,9 @@
 #define QMI_WLFW_MAC_READY_TIMEOUT_MS	50
 #define QMI_WLFW_MAC_READY_MAX_RETRY	200
 
+#define DEFAULT_BDF_FILE        "bdwlan.bin"
+#define BDF_FILE                "_bdwlan.bin"
+//end
 #ifdef CONFIG_CNSS2_DEBUG
 static bool ignore_qmi_failure;
 #define CNSS_QMI_ASSERT() CNSS_ASSERT(ignore_qmi_failure)
@@ -510,19 +514,58 @@ out:
 	return ret;
 }
 
+const void *get_wlan_pubfile_id(void)
+{
+    int wifi_parameter_len;
+    struct device_node *dp = NULL;
+    
+#ifdef CONFIG_CNSS2_CALIBRATION
+    struct file *file = NULL;
+    /*tempWlanCal_bdwlan.bin文件用于产线CT、BT拆分工位场景下的校准，该bin的创建、删除均由装备完成。*/
+    char tempWifiCalBinPath[] = "/data/tempWlanCal_bdwlan.bin";
+#endif
+
+    dp = of_find_node_by_path("/huawei_wifi_info");
+    if (!dp) {
+        cnss_pr_err("device is not available!\n");
+        return NULL;
+    } else {
+        cnss_pr_dbg("%s:dp->name:%s,dp->full_name:%s;\n" ,__func__, dp->name, dp->full_name);
+    }
+
+#ifdef CONFIG_CNSS2_CALIBRATION
+    cnss_pr_dbg("Enter CONFIG_CNSS2_CALIBRATION success.\n");
+    file = filp_open(tempWifiCalBinPath, O_RDONLY, 0);
+    if (!IS_ERR(file)) {
+        /*在指定路径下找到了tempWlanCal_bdwlan.bin文件，会尝试加载这个bin，用于产线校准。*/
+        cnss_pr_dbg("Find tempWlanCal_bdwlan.bin success.Try to load tempWlanCal_bdwlan.bin.\n");
+        filp_close(file, NULL);
+        return("tempWlanCal");
+    } else {
+        cnss_pr_dbg("Find tempWlanCal_bdwlan.bin fail.Try to load bin file corresponding to boardid.\n");
+    }
+#endif
+
+    /*在指定路径下没有找到了tempWlanCal_bdwlan.bin文件，会尝试加载该boardID单板实际对应的bin。*/
+    return of_get_property(dp, "wifi,pubfile_id", &wifi_parameter_len);
+}
+//end
+
 static int cnss_get_bdf_file_name(struct cnss_plat_data *plat_priv,
 				  u32 bdf_type, char *filename,
 				  u32 filename_len)
 {
 	char filename_tmp[MAX_FIRMWARE_NAME_LEN];
 	int ret = 0;
-
+	const char *pubfd = NULL;
+	cnss_pr_err("CONFIG_HUAWEI_WIFI_TEMP enter ok.\n");
+//end
 	switch (bdf_type) {
 	case CNSS_BDF_ELF:
 		/* Board ID will be equal or less than 0xFF in GF mask case */
 		if (plat_priv->board_info.board_id == 0xFF) {
 			if (plat_priv->chip_info.chip_id & CHIP_ID_GF_MASK)
-				snprintf(filename_tmp, filename_len,
+			snprintf(filename_tmp, filename_len,
 					 ELF_BDF_FILE_NAME_GF);
 			else
 				snprintf(filename_tmp, filename_len,
@@ -531,9 +574,9 @@ static int cnss_get_bdf_file_name(struct cnss_plat_data *plat_priv,
 			if (plat_priv->chip_info.chip_id & CHIP_ID_GF_MASK)
 				snprintf(filename_tmp, filename_len,
 					 ELF_BDF_FILE_NAME_GF_PREFIX "%02x",
-					 plat_priv->board_info.board_id);
-			else
-				snprintf(filename_tmp, filename_len,
+				 plat_priv->board_info.board_id);
+		else
+			snprintf(filename_tmp, filename_len,
 					 ELF_BDF_FILE_NAME_PREFIX "%02x",
 					 plat_priv->board_info.board_id);
 		} else {
@@ -544,9 +587,18 @@ static int cnss_get_bdf_file_name(struct cnss_plat_data *plat_priv,
 		}
 		break;
 	case CNSS_BDF_BIN:
+		pubfd = get_wlan_pubfile_id();
+		/* retrive bdf file name from capability */
+		if (pubfd == NULL) {
+			cnss_pr_err("get wlan feature pubfd failed, use default bdf file.\n");
+			snprintf(filename, filename_len, DEFAULT_BDF_FILE);
+		} else {
+			snprintf(filename, filename_len, "%s"BDF_FILE, pubfd);
+		}
+#if 0
 		if (plat_priv->board_info.board_id == 0xFF) {
 			if (plat_priv->chip_info.chip_id & CHIP_ID_GF_MASK)
-				snprintf(filename_tmp, filename_len,
+			snprintf(filename_tmp, filename_len,
 					 BIN_BDF_FILE_NAME_GF);
 			else
 				snprintf(filename_tmp, filename_len,
@@ -555,9 +607,9 @@ static int cnss_get_bdf_file_name(struct cnss_plat_data *plat_priv,
 			if (plat_priv->chip_info.chip_id & CHIP_ID_GF_MASK)
 				snprintf(filename_tmp, filename_len,
 					 BIN_BDF_FILE_NAME_GF_PREFIX "%02x",
-					 plat_priv->board_info.board_id);
-			else
-				snprintf(filename_tmp, filename_len,
+				 plat_priv->board_info.board_id);
+		else
+			snprintf(filename_tmp, filename_len,
 					 BIN_BDF_FILE_NAME_PREFIX "%02x",
 					 plat_priv->board_info.board_id);
 		} else {
@@ -566,6 +618,8 @@ static int cnss_get_bdf_file_name(struct cnss_plat_data *plat_priv,
 				 plat_priv->board_info.board_id >> 8 & 0xFF,
 				 plat_priv->board_info.board_id & 0xFF);
 		}
+#endif
+//end
 		break;
 	case CNSS_BDF_REGDB:
 		snprintf(filename_tmp, filename_len, REGDB_FILE_NAME);
@@ -580,8 +634,13 @@ static int cnss_get_bdf_file_name(struct cnss_plat_data *plat_priv,
 		break;
 	}
 
-	if (!ret)
+	if (ret >= 0 && bdf_type != CNSS_BDF_BIN)
 		cnss_bus_add_fw_prefix_name(plat_priv, filename, filename_tmp);
+#if 0
+    if (!ret)
+		cnss_bus_add_fw_prefix_name(plat_priv, filename, filename_tmp);
+#endif
+//end
 
 	return ret;
 }
@@ -621,7 +680,7 @@ int cnss_wlfw_bdf_dnld_send_sync(struct cnss_plat_data *plat_priv,
 						   filename);
 	else
 		ret = firmware_request_nowarn(&fw_entry, filename,
-					      &plat_priv->plat_dev->dev);
+				       &plat_priv->plat_dev->dev);
 
 	if (ret) {
 		cnss_pr_err("Failed to load BDF: %s, ret: %d\n", filename, ret);
@@ -699,7 +758,7 @@ int cnss_wlfw_bdf_dnld_send_sync(struct cnss_plat_data *plat_priv,
 		req->seg_id++;
 	}
 
-	release_firmware(fw_entry);
+		release_firmware(fw_entry);
 
 	/* QCA6490 enable S3E regulator for IPA configuration only */
 	if (resp->host_bdf_data_valid) {
@@ -712,7 +771,7 @@ int cnss_wlfw_bdf_dnld_send_sync(struct cnss_plat_data *plat_priv,
 	return 0;
 
 err_send:
-	release_firmware(fw_entry);
+		release_firmware(fw_entry);
 err_req_fw:
 	if (!(bdf_type == CNSS_BDF_REGDB ||
 	      test_bit(CNSS_IN_REBOOT, &plat_priv->driver_state) ||
@@ -2414,17 +2473,17 @@ static void cnss_wlfw_fw_mem_file_save_ind_cb(struct qmi_handle *qmi_wlfw,
 			cnss_pr_err("Invalid seg len indication\n");
 			goto free_event_data;
 		}
-		for (i = 0; i < ind_msg->mem_seg_len; i++) {
-			event_data->mem_seg[i].addr = ind_msg->mem_seg[i].addr;
-			event_data->mem_seg[i].size = ind_msg->mem_seg[i].size;
-			if (event_data->mem_type != ind_msg->mem_seg[i].type) {
-				cnss_pr_err("FW Mem file save ind cannot have multiple mem types\n");
-				goto free_event_data;
-			}
-			cnss_pr_dbg("seg-%d: addr 0x%llx size 0x%x\n",
-				    i, ind_msg->mem_seg[i].addr,
-				    ind_msg->mem_seg[i].size);
+	for (i = 0; i < ind_msg->mem_seg_len; i++) {
+		event_data->mem_seg[i].addr = ind_msg->mem_seg[i].addr;
+		event_data->mem_seg[i].size = ind_msg->mem_seg[i].size;
+		if (event_data->mem_type != ind_msg->mem_seg[i].type) {
+			cnss_pr_err("FW Mem file save ind cannot have multiple mem types\n");
+			goto free_event_data;
 		}
+		cnss_pr_dbg("seg-%d: addr 0x%llx size 0x%x\n",
+			    i, ind_msg->mem_seg[i].addr,
+			    ind_msg->mem_seg[i].size);
+	}
 	}
 
 	if (ind_msg->file_name_valid)
@@ -2440,15 +2499,15 @@ static void cnss_wlfw_fw_mem_file_save_ind_cb(struct qmi_handle *qmi_wlfw,
 		if (event_data->mem_type == QMI_WLFW_MEM_QDSS_V01) {
 			if (!ind_msg->file_name_valid)
 				strlcpy(event_data->file_name, "qdss_trace_ddr",
-					QMI_WLFW_MAX_STR_LEN_V01 + 1);
+				QMI_WLFW_MAX_STR_LEN_V01 + 1);
 		} else {
 			if (!ind_msg->file_name_valid)
-				strlcpy(event_data->file_name, "fw_mem_dump",
-					QMI_WLFW_MAX_STR_LEN_V01 + 1);
-		}
+			strlcpy(event_data->file_name, "fw_mem_dump",
+				QMI_WLFW_MAX_STR_LEN_V01 + 1);
+	}
 
-		cnss_driver_event_post(plat_priv, CNSS_DRIVER_EVENT_FW_MEM_FILE_SAVE,
-				       0, event_data);
+	cnss_driver_event_post(plat_priv, CNSS_DRIVER_EVENT_FW_MEM_FILE_SAVE,
+			       0, event_data);
 	}
 
 	return;
@@ -2933,8 +2992,8 @@ int cnss_qmi_get_dms_mac(struct cnss_plat_data *plat_priv)
 			cnss_pr_err("NV MAC address is not provisioned");
 			plat_priv->dms.nv_mac_not_prov = 1;
 		} else {
-			cnss_pr_err("QMI_DMS_GET_MAC_ADDRESS_REQ_V01 failed, result: %d, err: %d\n",
-				    resp.resp.result, resp.resp.error);
+		cnss_pr_err("QMI_DMS_GET_MAC_ADDRESS_REQ_V01 failed, result: %d, err: %d\n",
+			    resp.resp.result, resp.resp.error);
 		}
 		ret = -resp.resp.result;
 		goto out;

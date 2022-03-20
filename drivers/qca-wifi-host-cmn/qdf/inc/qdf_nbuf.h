@@ -484,6 +484,10 @@ struct qdf_radiotap_vendor_ns_ath {
 
 #define IPV6_ADDR_STR "%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:"\
 			"%02x%02x:%02x%02x"
+#ifdef CONFIG_HUAWEI_WIFI
+#define HW_IPV6_ADDR_STR "%02x%02x:%02x%02x:**:%02x%02x:%02x%02x:**:"\
+			   "%02x%02x:%02x%02x"
+#endif
 
 /* IPV6 header fields offset values */
 #define IPV6_PKT_LEN_OFFSET           18
