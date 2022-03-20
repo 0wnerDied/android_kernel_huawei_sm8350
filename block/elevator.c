@@ -784,10 +784,16 @@ ssize_t elv_iosched_show(struct request_queue *q, char *name)
 	if (!queue_is_mq(q))
 		return sprintf(name, "none\n");
 
-	if (!q->elevator)
-		len += sprintf(name+len, "[none] ");
-	else
+	if (!q->elevator) {
+#ifdef CONFIG_MAS_BLK
+		if (q->mas_queue_ops && q->mas_queue_ops->mq_iosched_init_fn)
+			len += sprintf(name+len, "[%s] ", q->mas_queue_ops->iosched_name);
+		else
+#endif
+			len += sprintf(name+len, "[none] ");
+	} else {
 		elv = e->type;
+	}
 
 	spin_lock(&elv_list_lock);
 	list_for_each_entry(__e, &elv_list, list) {

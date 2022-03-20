@@ -173,6 +173,12 @@ static void blk_flush_complete_seq(struct request *rq,
 	switch (seq) {
 	case REQ_FSEQ_PREFLUSH:
 	case REQ_FSEQ_POSTFLUSH:
+#ifdef CONFIG_MAS_BLK
+		if (seq == REQ_FSEQ_PREFLUSH)
+			mas_blk_latency_req_check(rq, REQ_PROC_STAGE_FSEQ_PREFLUSH);
+		else
+			mas_blk_latency_req_check(rq, REQ_PROC_STAGE_FSEQ_POSTFLUSH);
+#endif
 		/* queue for flush */
 		if (list_empty(pending))
 			fq->flush_pending_since = jiffies;
@@ -180,11 +186,17 @@ static void blk_flush_complete_seq(struct request *rq,
 		break;
 
 	case REQ_FSEQ_DATA:
+#ifdef CONFIG_MAS_BLK
+		mas_blk_latency_req_check(rq, REQ_PROC_STAGE_FSEQ_DATA);
+#endif
 		list_move_tail(&rq->flush.list, &fq->flush_data_in_flight);
 		blk_flush_queue_rq(rq, true);
 		break;
 
 	case REQ_FSEQ_DONE:
+#ifdef CONFIG_MAS_BLK
+		mas_blk_latency_req_check(rq, REQ_PROC_STAGE_FSEQ_DONE);
+#endif
 		/*
 		 * @rq was previously adjusted by blk_flush_issue() for
 		 * flush sequencing and may already have gone through the
@@ -295,7 +307,9 @@ static void blk_kick_flush(struct request_queue *q, struct blk_flush_queue *fq,
 	fq->flush_pending_idx ^= 1;
 
 	blk_rq_init(q, flush_rq);
-
+#ifdef CONFIG_MAS_BLK
+	mas_blk_latency_req_check(flush_rq, REQ_PROC_STAGE_INIT_FROM_BIO);
+#endif
 	/*
 	 * In case of none scheduler, borrow tag from the first request
 	 * since they can't be in flight at the same time. And acquire
@@ -305,6 +319,9 @@ static void blk_kick_flush(struct request_queue *q, struct blk_flush_queue *fq,
 	 * just for cheating put/get driver tag.
 	 */
 	flush_rq->mq_ctx = first_rq->mq_ctx;
+#ifdef CONFIG_MAS_BLK
+	flush_rq->mas_req.mq_ctx_generate = first_rq->mq_ctx;
+#endif
 	flush_rq->mq_hctx = first_rq->mq_hctx;
 
 	if (!q->elevator) {
@@ -320,6 +337,9 @@ static void blk_kick_flush(struct request_queue *q, struct blk_flush_queue *fq,
 	flush_rq->rq_flags |= RQF_FLUSH_SEQ;
 	flush_rq->rq_disk = first_rq->rq_disk;
 	flush_rq->end_io = flush_end_io;
+#ifdef CONFIG_MAS_BLK
+	flush_rq->cmd_flags |= REQ_SYNC;
+#endif
 
 	blk_flush_queue_rq(flush_rq, false);
 }
@@ -363,6 +383,10 @@ void blk_insert_flush(struct request *rq)
 	unsigned long fflags = q->queue_flags;	/* may change, cache */
 	unsigned int policy = blk_flush_policy(fflags, rq);
 	struct blk_flush_queue *fq = blk_get_flush_queue(q, rq->mq_ctx);
+#ifdef CONFIG_MAS_BLK
+	struct blk_mq_hw_ctx *hctx = rq->mq_hctx;
+	struct blk_mq_ctx *ctx = rq->mq_ctx;
+#endif
 
 	/*
 	 * @policy now records what operations need to be done.  Adjust
@@ -399,7 +423,17 @@ void blk_insert_flush(struct request *rq)
 	 */
 	if ((policy & REQ_FSEQ_DATA) &&
 	    !(policy & (REQ_FSEQ_PREFLUSH | REQ_FSEQ_POSTFLUSH))) {
-		blk_mq_request_bypass_insert(rq, false, false);
+#ifdef CONFIG_MAS_BLK
+		if (hctx->queue->mas_queue_ops &&
+			hctx->queue->mas_queue_ops->mq_req_insert_fn) {
+			spin_lock(&ctx->lock);
+			__blk_mq_insert_request(hctx, rq, true);
+			spin_unlock(&ctx->lock);
+		} else
+#endif
+		{
+			blk_mq_request_bypass_insert(rq, false, false);
+		}
 		return;
 	}
 

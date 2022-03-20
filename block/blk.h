@@ -190,6 +190,15 @@ void blk_account_io_completion(struct request *req, unsigned int bytes);
 void blk_account_io_done(struct request *req, u64 now);
 
 /*
+ * Internal atomic flags for request handling
+ */
+enum rq_atomic_flags {
+	REQ_ATOM_COMPLETE = 0,
+	REQ_ATOM_STARTED,
+	REQ_ATOM_POLL_SLEPT,
+};
+
+/*
  * Internal elevator interface
  */
 #define ELV_ON_HASH(rq) ((rq)->rq_flags & RQF_HASHED)
@@ -304,6 +313,23 @@ static inline struct io_context *create_io_context(gfp_t gfp_mask, int node)
 		create_task_io_context(current, gfp_mask, node);
 	return current->io_context;
 }
+
+
+/*
+ * Internal iosmart interface
+ */
+#ifdef CONFIG_BLK_CGROUP_IOSMART
+extern void blk_iosmart_drain_queue(struct request_queue *q);
+extern int blk_iosmart_init_queue(struct request_queue *q);
+extern void blk_iosmart_exit_queue(struct request_queue *q);
+#else
+static inline void blk_iosmart_drain_queue(struct request_queue *q) { }
+static inline int blk_iosmart_init_queue(struct request_queue *q)
+{
+	return 0;
+}
+static inline void blk_iosmart_exit_queue(struct request_queue *q) { }
+#endif
 
 /*
  * Internal throttling interface

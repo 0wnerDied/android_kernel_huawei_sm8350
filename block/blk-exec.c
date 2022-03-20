@@ -28,6 +28,9 @@ static void blk_end_sync_rq(struct request *rq, blk_status_t error)
 	 * the rq pointer) could be invalid right after this complete()
 	 */
 	complete(waiting);
+#ifdef CONFIG_MAS_BLK
+	mas_blk_latency_req_check(rq, REQ_PROC_STAGE_SCSI_RQ_COMPLETE);
+#endif
 }
 
 /**
@@ -54,6 +57,9 @@ void blk_execute_rq_nowait(struct request_queue *q, struct gendisk *bd_disk,
 
 	rq->rq_disk = bd_disk;
 	rq->end_io = done;
+#ifdef CONFIG_MAS_BLK
+	mas_blk_request_execute_nowait(q, rq, done);
+#endif
 
 	/*
 	 * don't check dying flag for MQ because the request won't
@@ -82,7 +88,9 @@ void blk_execute_rq(struct request_queue *q, struct gendisk *bd_disk,
 
 	rq->end_io_data = &wait;
 	blk_execute_rq_nowait(q, bd_disk, rq, at_head, blk_end_sync_rq);
-
+#ifdef CONFIG_MAS_BLK
+	mas_blk_latency_req_check(rq, REQ_PROC_STAGE_SCSI_RQ_WAIT);
+#endif
 	/* Prevent hang_check timer from firing at us during very long I/O */
 	hang_check = sysctl_hung_task_timeout_secs;
 	if (hang_check)

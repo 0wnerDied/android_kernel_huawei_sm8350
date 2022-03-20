@@ -3,6 +3,9 @@
 #define INT_BLK_MQ_H
 
 #include "blk-stat.h"
+#ifdef CONFIG_MAS_BLK
+#include "mas_blk.h"
+#endif
 #include "blk-mq-tag.h"
 
 struct blk_mq_tag_set;
@@ -54,6 +57,11 @@ struct request *blk_mq_dequeue_from_ctx(struct blk_mq_hw_ctx *hctx,
 void blk_mq_free_rqs(struct blk_mq_tag_set *set, struct blk_mq_tags *tags,
 		     unsigned int hctx_idx);
 void blk_mq_free_rq_map(struct blk_mq_tags *tags);
+#ifdef CONFIG_MAS_UNISTORE_PRESERVE
+int blk_mq_alloc_rq_maps(struct blk_mq_tag_set *set);
+void blk_mq_free_map_and_requests(struct blk_mq_tag_set *set,
+					 unsigned int hctx_idx);
+#endif
 struct blk_mq_tags *blk_mq_alloc_rq_map(struct blk_mq_tag_set *set,
 					unsigned int hctx_idx,
 					unsigned int nr_tags,
@@ -61,6 +69,10 @@ struct blk_mq_tags *blk_mq_alloc_rq_map(struct blk_mq_tag_set *set,
 int blk_mq_alloc_rqs(struct blk_mq_tag_set *set, struct blk_mq_tags *tags,
 		     unsigned int hctx_idx, unsigned int depth);
 
+#ifdef CONFIG_MAS_BLK
+void blk_mq_bio_to_request(struct request *rq, struct bio *bio,
+		unsigned int nr_segs);
+#endif
 /*
  * Internal helpers for request insertion into sw queues
  */
@@ -75,7 +87,10 @@ void blk_mq_insert_requests(struct blk_mq_hw_ctx *hctx, struct blk_mq_ctx *ctx,
 blk_status_t blk_mq_request_issue_directly(struct request *rq, bool last);
 void blk_mq_try_issue_list_directly(struct blk_mq_hw_ctx *hctx,
 				    struct list_head *list);
-
+#ifdef CONFIG_MAS_BLK
+struct request *blk_mq_get_request(struct request_queue *q, struct bio *bio,
+				   struct blk_mq_alloc_data *data);
+#endif
 /*
  * CPU -> queue mappings
  */
@@ -159,6 +174,13 @@ struct blk_mq_alloc_data {
 	/* input parameter */
 	struct request_queue *q;
 	blk_mq_req_flags_t flags;
+#ifdef CONFIG_MAS_BLK
+	unsigned int mas_cmd_flags;
+#ifdef CONFIG_MAS_UNISTORE_PRESERVE
+	struct bio *bio;
+#endif
+	ktime_t wait_tag_start;
+#endif
 	unsigned int shallow_depth;
 	unsigned int cmd_flags;
 

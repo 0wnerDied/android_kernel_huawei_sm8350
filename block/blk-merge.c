@@ -249,8 +249,14 @@ static struct bio *blk_bio_segment_split(struct request_queue *q,
 	struct bio_vec bv, bvprv, *bvprvp = NULL;
 	struct bvec_iter iter;
 	unsigned nsegs = 0, sectors = 0;
-	const unsigned max_sectors = get_max_io_size(q, bio);
+	unsigned max_sectors = get_max_io_size(q, bio);
 	const unsigned max_segs = queue_max_segments(q);
+#ifdef CONFIG_MAS_UNISTORE_PRESERVE
+	unsigned residual_bytes = mas_blk_bio_get_residual_byte(q, bio->bi_iter);
+	bool over_section = mas_blk_bio_check_over_section(q, bio);
+	if (blk_queue_query_unistore_enable(q))
+		max_sectors = 2048; /* set max io size as 1M */
+#endif
 
 	bio_for_each_bvec(bv, bio, iter) {
 		/*
@@ -259,6 +265,17 @@ static struct bio *blk_bio_segment_split(struct request_queue *q,
 		 */
 		if (bvprvp && bvec_gap_to_prev(q, bvprvp, bv.bv_offset))
 			goto split;
+
+#ifdef CONFIG_MAS_UNISTORE_PRESERVE
+		if (over_section && (bv.bv_len >=
+			mas_blk_bio_get_residual_byte(q, iter))) {
+			if (nsegs < queue_max_segments(q))
+				nsegs++;
+			*segs = nsegs;
+
+			return mas_blk_bio_segment_bytes_split(bio, bs, residual_bytes);
+		}
+#endif
 
 		if (nsegs < max_segs &&
 		    sectors + (bv.bv_len >> 9) <= max_sectors &&
@@ -332,6 +349,9 @@ void __blk_queue_split(struct request_queue *q, struct bio **bio,
 		bio_set_flag(*bio, BIO_QUEUE_ENTERED);
 
 		bio_chain(split, *bio);
+#ifdef CONFIG_MAS_BLK
+		mas_blk_bio_queue_split(q, bio, split);
+#endif
 		trace_block_split(q, split, (*bio)->bi_iter.bi_sector);
 		generic_make_request(*bio);
 		*bio = split;
@@ -787,6 +807,10 @@ static struct request *attempt_merge(struct request_queue *q,
 	default:
 		return NULL;
 	}
+#ifdef CONFIG_MAS_BLK
+	if (!mas_blk_bio_merge_allow(req, next->bio))
+		return 0;
+#endif
 
 	/*
 	 * If failfast settings disagree or any of the two is already
@@ -814,8 +838,12 @@ static struct request *attempt_merge(struct request_queue *q,
 
 	req->__data_len += blk_rq_bytes(next);
 
-	if (!blk_discard_mergable(req))
+	if (!blk_discard_mergable(req)) {
+#ifdef CONFIG_MAS_BLK
+		mas_blk_bio_merge_done(q, req, next);
+#endif
 		elv_merge_requests(q, req, next);
+	}
 
 	/*
 	 * 'next' is going away, so update stats accordingly
@@ -871,6 +899,10 @@ bool blk_rq_merge_ok(struct request *rq, struct bio *bio)
 
 	if (req_op(rq) != bio_op(bio))
 		return false;
+#ifdef CONFIG_MAS_BLK
+	if (!mas_blk_bio_merge_allow(rq, bio))
+		return false;
+#endif
 
 	/* different data direction or already started, don't merge */
 	if (bio_data_dir(bio) != rq_data_dir(rq))

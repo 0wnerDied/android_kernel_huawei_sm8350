@@ -2139,6 +2139,10 @@ bool blk_throtl_bio(struct request_queue *q, struct blkcg_gq *blkg,
 	sq = &tg->service_queue;
 
 again:
+#ifdef CONFIG_MAS_UNISTORE_PRESERVE
+	if (blk_queue_query_unistore_enable(q))
+		goto out;
+#endif
 	while (true) {
 		if (tg->last_low_overflow_time[rw] == 0)
 			tg->last_low_overflow_time[rw] = jiffies;

@@ -20,6 +20,9 @@
 #include <linux/blktrace_api.h>
 
 #include "partitions/check.h"
+#ifdef CONFIG_MAS_BLK
+#include "blk.h"
+#endif
 
 #ifdef CONFIG_BLK_DEV_MD
 extern void md_autodetect_dev(dev_t dev);
@@ -502,6 +505,9 @@ rescan:
 		goto out;
 	}
 
+#ifdef CONFIG_MAS_BLK
+	mas_blk_check_partition_done(disk, true);
+#endif
 	/*
 	 * If any partition code tried to read beyond EOD, try
 	 * unlocking native capacity even if partition table is

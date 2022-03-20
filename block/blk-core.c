@@ -39,7 +39,9 @@
 #include <linux/bpf.h>
 #include <linux/psi.h>
 #include <linux/blk-crypto.h>
-
+#ifdef CONFIG_HUAWEI_QOS_BLKIO
+#include <chipset_common/hwqos/hwqos_common.h>
+#endif
 #define CREATE_TRACE_POINTS
 #include <trace/events/block.h>
 
@@ -382,6 +384,9 @@ void blk_cleanup_queue(struct request_queue *q)
 	if (q->elevator)
 		blk_mq_sched_free_requests(q);
 	mutex_unlock(&q->sysfs_lock);
+#ifdef CONFIG_MAS_BLK
+	mas_blk_cleanup_queue(q);
+#endif
 
 	percpu_ref_exit(&q->q_usage_counter);
 
@@ -429,6 +434,10 @@ int blk_queue_enter(struct request_queue *q, blk_mq_req_flags_t flags)
 		if (flags & BLK_MQ_REQ_NOWAIT)
 			return -EBUSY;
 
+#ifdef CONFIG_MAS_UNISTORE_PRESERVE
+		if (blk_queue_query_unistore_enable(q))
+			blk_flush_plug(current);
+#endif
 		/*
 		 * read pair of barrier in blk_freeze_queue_start(),
 		 * we need to order reading __PERCPU_REF_DEAD flag of
@@ -437,7 +446,6 @@ int blk_queue_enter(struct request_queue *q, blk_mq_req_flags_t flags)
 		 * never return if the two reads are reordered.
 		 */
 		smp_rmb();
-
 		wait_event(q->mq_freeze_wq,
 			   (!q->mq_freeze_depth &&
 			    (pm || (blk_pm_request_resume(q),
@@ -501,6 +509,10 @@ struct request_queue *blk_alloc_queue_node(gfp_t gfp_mask, int node_id)
 	if (!q->backing_dev_info)
 		goto fail_split;
 
+#ifdef CONFIG_MAS_BLK
+	q->backing_dev_info->queue = q;
+#endif
+
 	q->stats = blk_alloc_queue_stats();
 	if (!q->stats)
 		goto fail_stats;
@@ -543,6 +555,10 @@ struct request_queue *blk_alloc_queue_node(gfp_t gfp_mask, int node_id)
 
 	if (blkcg_init_queue(q))
 		goto fail_ref;
+
+#ifdef CONFIG_MAS_BLK
+	mas_blk_allocated_queue_init(q);
+#endif
 
 	return q;
 
@@ -749,7 +765,7 @@ static void handle_bad_sector(struct bio *bio, sector_t maxsector)
 
 	pr_info_ratelimited("attempt to access beyond end of device\n"
 			    "%s: rw=%d, want=%llu, limit=%llu\n",
-			    bio_devname(bio, b), bio->bi_opf,
+			bio_devname(bio, b), bio->bi_opf,
 			    bio_end_sector(bio), maxsector);
 }
 
@@ -856,6 +872,9 @@ static inline int blk_partition_remap(struct bio *bio)
 		if (bio_check_eod(bio, part_nr_sects_read(p)))
 			goto out;
 		bio->bi_iter.bi_sector += p->start_sect;
+#ifdef CONFIG_MAS_UNISTORE_PRESERVE
+		mas_blk_partition_remap(bio, p);
+#endif
 		trace_block_bio_remap(bio->bi_disk->queue, bio, part_devt(p),
 				      bio->bi_iter.bi_sector - p->start_sect);
 	}
@@ -1017,9 +1036,29 @@ blk_qc_t generic_make_request(struct bio *bio)
 	 */
 	struct bio_list bio_list_on_stack[2];
 	blk_qc_t ret = BLK_QC_T_NONE;
+#ifdef CONFIG_MAS_BLK
+#ifdef CONFIG_HUAWEI_QOS_BLKIO
+	if (blk_queue_qos_on(bio->bi_disk->queue)) {
+		int qos = get_task_qos(current);
 
+		if (qos > BLKIO_QOS_HIGH) {
+			bio->bi_opf |= REQ_FG;
+			bio->mas_bi_opf |= REQ_VIP;
+		} else if ((qos == BLKIO_QOS_HIGH) ||
+			   (bio->bi_opf & (REQ_META | REQ_PRIO))) {
+			bio->bi_opf |= REQ_FG;
+		}
+	}
+#endif /* CONFIG_HUAWEI_QOS_BLKIO */
+	if (unlikely(mas_blk_generic_make_request_check(bio)))
+		goto out;
+#endif /* CONFIG_MAS_BLK */
 	if (!generic_make_request_checks(bio))
 		goto out;
+
+#ifdef CONFIG_MAS_UNISTORE_PRESERVE
+	mas_blk_check_fg_io(bio);
+#endif
 
 	/*
 	 * We only want one ->make_request_fn to be active at a time, else
@@ -1065,8 +1104,12 @@ blk_qc_t generic_make_request(struct bio *bio)
 			bio_list_on_stack[1] = bio_list_on_stack[0];
 			bio_list_init(&bio_list_on_stack[0]);
 
-			if (!blk_crypto_submit_bio(&bio))
+			if (!blk_crypto_submit_bio(&bio)) {
+#ifdef CONFIG_MAS_BLK
+				mas_blk_generic_make_request(bio);
+#endif
 				ret = q->make_request_fn(q, bio);
+			}
 
 			blk_queue_exit(q);
 
@@ -1259,6 +1302,9 @@ blk_status_t blk_insert_cloned_request(struct request_queue *q, struct request *
 	    should_fail_request(&rq->rq_disk->part0, blk_rq_bytes(rq)))
 		return BLK_STS_IOERR;
 
+#ifdef CONFIG_MAS_BLK
+	mas_blk_insert_cloned_request(q, rq);
+#endif
 	if (blk_queue_io_stat(q))
 		blk_account_io_start(rq, true);
 
@@ -1314,6 +1360,10 @@ EXPORT_SYMBOL_GPL(blk_rq_err_bytes);
 
 void blk_account_io_completion(struct request *req, unsigned int bytes)
 {
+#ifdef CONFIG_MAS_BLK
+	mas_blk_account_io_completion(req, bytes);
+#endif
+
 	if (blk_do_io_stat(req)) {
 		const int sgrp = op_stat_group(req_op(req));
 		struct hd_struct *part;
@@ -1437,6 +1487,10 @@ bool blk_update_request(struct request *req, blk_status_t error,
 		unsigned int nr_bytes)
 {
 	int total_bytes;
+
+#ifdef CONFIG_MAS_BLK
+	mas_blk_request_update(req, error, nr_bytes);
+#endif
 
 	trace_block_rq_complete(req, blk_status_to_errno(error), nr_bytes);
 
@@ -1663,6 +1717,12 @@ int kblockd_schedule_work(struct work_struct *work)
 }
 EXPORT_SYMBOL(kblockd_schedule_work);
 
+int kblockd_schedule_delayed_work(struct delayed_work *dwork, unsigned long delay)
+{
+	return queue_delayed_work(kblockd_workqueue, dwork, delay);
+}
+EXPORT_SYMBOL(kblockd_schedule_delayed_work);
+
 int kblockd_schedule_work_on(int cpu, struct work_struct *work)
 {
 	return queue_work_on(cpu, kblockd_workqueue, work);
@@ -1714,6 +1774,9 @@ void blk_start_plug(struct blk_plug *plug)
 	plug->rq_count = 0;
 	plug->multiple_queues = false;
 
+#ifdef CONFIG_MAS_BLK
+	mas_blk_start_plug(plug);
+#endif
 	/*
 	 * Store ordering should not be needed here, since a potential
 	 * preempt will imply a full memory barrier
@@ -1766,6 +1829,10 @@ EXPORT_SYMBOL(blk_check_plugged);
 
 void blk_flush_plug_list(struct blk_plug *plug, bool from_schedule)
 {
+#ifdef CONFIG_MAS_BLK
+	mas_blk_flush_plug_list(plug, from_schedule);
+#endif
+
 	flush_plug_callbacks(plug, from_schedule);
 
 	if (!list_empty(&plug->mq_list))
@@ -1819,5 +1886,8 @@ int __init blk_dev_init(void)
 	if (blk_crypto_fallback_init() < 0)
 		panic("Failed to init blk-crypto-fallback\n");
 
+#ifdef CONFIG_MAS_BLK
+	mas_blk_dev_init();
+#endif
 	return 0;
 }

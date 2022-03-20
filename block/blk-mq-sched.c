@@ -406,7 +406,13 @@ void blk_mq_sched_insert_request(struct request *rq, bool at_head,
 
 	WARN_ON(e && (rq->tag != -1));
 
+#ifdef CONFIG_MAS_BLK
+	if ((!hctx->queue->mas_queue_ops ||
+	     !hctx->queue->mas_queue_ops->mq_req_insert_fn) &&
+	    blk_mq_sched_bypass_insert(hctx, !!e, rq)) {
+#else
 	if (blk_mq_sched_bypass_insert(hctx, !!e, rq)) {
+#endif
 		/*
 		 * Firstly normal IO request is inserted to scheduler queue or
 		 * sw queue, meantime we add flush request to dispatch queue(

@@ -247,6 +247,9 @@ static void bio_free(struct bio *bio)
 	struct bio_set *bs = bio->bi_pool;
 	void *p;
 
+#ifdef CONFIG_MAS_BLK
+	mas_blk_bio_free(bio);
+#endif
 	bio_uninit(bio);
 
 	if (bs) {
@@ -639,6 +642,9 @@ void __bio_clone_fast(struct bio *bio, struct bio *bio_src)
 	if (bio_flagged(bio_src, BIO_THROTTLED))
 		bio_set_flag(bio, BIO_THROTTLED);
 	bio->bi_opf = bio_src->bi_opf;
+#ifdef CONFIG_MAS_BLK
+	mas_blk_bio_clone_fast(bio, bio_src);
+#endif
 	bio->bi_ioprio = bio_src->bi_ioprio;
 	bio->bi_write_hint = bio_src->bi_write_hint;
 	bio->bi_iter = bio_src->bi_iter;
@@ -694,7 +700,7 @@ static inline bool page_is_mergeable(const struct bio_vec *bv,
 
 	*same_page = ((vec_end_addr & PAGE_MASK) == page_addr);
 	if (*same_page)
-		return true;
+	return true;
 	return (bv->bv_page + bv_end / PAGE_SIZE) == (page + off / PAGE_SIZE);
 }
 
@@ -1837,6 +1843,9 @@ static inline bool bio_remaining_done(struct bio *bio)
  **/
 void bio_endio(struct bio *bio)
 {
+#ifdef CONFIG_MAS_BLK
+	mas_blk_bio_endio(bio);
+#endif
 again:
 	if (!bio_remaining_done(bio))
 		return;
@@ -1905,6 +1914,10 @@ struct bio *bio_split(struct bio *bio, int sectors,
 
 	split->bi_iter.bi_size = sectors << 9;
 
+#ifdef CONFIG_MAS_BLK
+	mas_blk_bio_split_pre(bio, split);
+#endif
+
 	if (bio_integrity(split))
 		bio_integrity_trim(split);
 
@@ -1912,6 +1925,10 @@ struct bio *bio_split(struct bio *bio, int sectors,
 
 	if (bio_flagged(bio, BIO_TRACE_COMPLETION))
 		bio_set_flag(split, BIO_TRACE_COMPLETION);
+
+#ifdef CONFIG_MAS_BLK
+	mas_blk_bio_split_post(bio);
+#endif
 
 	return split;
 }

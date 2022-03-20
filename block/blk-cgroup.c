@@ -184,6 +184,9 @@ static struct blkcg_gq *blkg_alloc(struct blkcg *blkcg, struct request_queue *q,
 		pd->plid = i;
 	}
 
+#ifdef CONFIG_BLK_CGROUP_IOSMART
+	blkg->weight = blkcg->weight;
+#endif
 	return blkg;
 
 err_free:
@@ -1171,6 +1174,9 @@ blkcg_css_alloc(struct cgroup_subsys_state *parent_css)
 			pol->cpd_init_fn(cpd);
 	}
 
+#ifdef CONFIG_BLK_CGROUP_IOSMART
+	blkcg->weight = BLKIO_WEIGHT_DEFAULT;
+#endif
 	spin_lock_init(&blkcg->lock);
 	INIT_RADIX_TREE(&blkcg->blkg_tree, GFP_NOWAIT | __GFP_NOWARN);
 	INIT_HLIST_HEAD(&blkcg->blkg_list);
@@ -1239,6 +1245,14 @@ int blkcg_init_queue(struct request_queue *q)
 		blk_throtl_exit(q);
 		goto err_destroy_all;
 	}
+
+#ifdef CONFIG_BLK_CGROUP_IOSMART
+	ret = blk_iosmart_init_queue(q);
+	if (ret) {
+		blk_throtl_exit(q);
+		goto err_destroy_all;
+	}
+#endif
 	return 0;
 
 err_destroy_all:
@@ -1270,6 +1284,9 @@ void blkcg_drain_queue(struct request_queue *q)
 		return;
 
 	blk_throtl_drain(q);
+#ifdef CONFIG_BLK_CGROUP_IOSMART
+	blk_iosmart_drain_queue(q);
+#endif
 }
 
 /**
@@ -1282,6 +1299,9 @@ void blkcg_exit_queue(struct request_queue *q)
 {
 	blkg_destroy_all(q);
 	blk_throtl_exit(q);
+#ifdef CONFIG_BLK_CGROUP_IOSMART
+	blk_iosmart_exit_queue(q);
+#endif
 }
 
 /*
