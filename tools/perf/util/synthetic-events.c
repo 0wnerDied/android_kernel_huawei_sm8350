@@ -331,7 +331,6 @@ int perf_event__synthesize_mmap_events(struct perf_tool *tool,
 		/* ensure null termination since stack will be reused. */
 		strcpy(execname, "");
 
-		/* 00400000-0040c000 r-xp 00000000 fd:01 41038  /bin/cat */
 		n = sscanf(bf, "%"PRI_lx64"-%"PRI_lx64" %s %"PRI_lx64" %x:%x %u %[^\n]\n",
 		       &event->mmap2.start, &event->mmap2.len, prot,
 		       &event->mmap2.pgoff, &event->mmap2.maj,
