@@ -34,7 +34,6 @@
 #define F2FS_XATTR_INDEX_ADVISE			7
 /* Should be same as EXT4_XATTR_INDEX_ENCRYPTION */
 #define F2FS_XATTR_INDEX_ENCRYPTION		9
-#define F2FS_XATTR_INDEX_ECE_ENCRYPTION		10
 #define F2FS_XATTR_INDEX_VERITY			11
 
 #define F2FS_XATTR_NAME_ENCRYPTION_CONTEXT	"c"
@@ -43,8 +42,7 @@
 struct f2fs_xattr_header {
 	__le32  h_magic;        /* magic number for identification */
 	__le32  h_refcount;     /* reference count */
-	__le32  h_xattr_flags;  /* use 1 element in h_reserved */
-	__u32   h_reserved[3];  /* reserved 3 elements in array */
+	__u32   h_reserved[4];  /* zero right now */
 };
 
 struct f2fs_xattr_entry {
