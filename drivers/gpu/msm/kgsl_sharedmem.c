@@ -136,7 +136,18 @@ imported_mem_show(struct kgsl_process_private *priv,
 			}
 		}
 
-		kgsl_mem_entry_put(entry);
+        /*
+		 * If refcount on mem entry is the last refcount, we will
+		 * call kgsl_mem_entry_destroy and detach it from process
+		 * list. When there is no refcount on the process private,
+		 * we will call kgsl_destroy_process_private to do cleanup.
+		 * During cleanup, we will try to remove the same sysfs
+		 * node which is in use by the current thread and this
+		 * situation will end up in a deadloack.
+		 * To avoid this situation, use a worker to put the refcount
+		 * on mem entry.
+		 */
+		kgsl_mem_entry_put_deferred(entry);
 		spin_lock(&priv->mem_lock);
 	}
 	spin_unlock(&priv->mem_lock);
@@ -202,10 +213,10 @@ static ssize_t mem_entry_sysfs_show(struct kobject *kobj,
 	ssize_t ret;
 
 	/*
-	 * kgsl_process_init_sysfs takes a refcount to the process_private,
-	 * which is put when the kobj is released. This implies that priv will
-	 * not be freed until this function completes, and no further locking
-	 * is needed.
+	 * sysfs_remove_file waits for reads to complete before the node is
+	 * deleted and process private is freed only once kobj is released.
+	 * This implies that priv will not be freed until this function
+	 * completes, and no further locking is needed.
 	 */
 	priv = kobj ? container_of(kobj, struct kgsl_process_private, kobj) :
 			NULL;
@@ -227,12 +238,6 @@ static ssize_t memtype_sysfs_show(struct kobject *kobj,
 	u64 size = 0;
 	int id = 0;
 
-	/*
-	 * kgsl_process_init_sysfs takes a refcount to the process_private,
-	 * which is put when the kobj is released. This implies that priv will
-	 * not be freed until this function completes, and no further locking
-	 * is needed.
-	 */
 	priv = container_of(kobj, struct kgsl_process_private, kobj_memtype);
 	memtype = container_of(attr, struct kgsl_memtype, attr);
 
@@ -253,7 +258,7 @@ static ssize_t memtype_sysfs_show(struct kobject *kobj,
 		if (type == memtype->type)
 			size += memdesc->size;
 
-		kgsl_mem_entry_put(entry);
+		kgsl_mem_entry_put_deferred(entry);
 		spin_lock(&priv->mem_lock);
 	}
 	spin_unlock(&priv->mem_lock);
@@ -261,13 +266,9 @@ static ssize_t memtype_sysfs_show(struct kobject *kobj,
 	return scnprintf(buf, PAGE_SIZE, "%llu\n", size);
 }
 
+/* Dummy release function - we have nothing to do here */
 static void mem_entry_release(struct kobject *kobj)
 {
-	struct kgsl_process_private *priv;
-
-	priv = container_of(kobj, struct kgsl_process_private, kobj);
-	/* Put the refcount we got in kgsl_process_init_sysfs */
-	kgsl_process_private_put(priv);
 }
 
 static const struct sysfs_ops mem_entry_sysfs_ops = {
@@ -328,9 +329,6 @@ void kgsl_process_init_sysfs(struct kgsl_device *device,
 		struct kgsl_process_private *private)
 {
 	int i;
-
-	/* Keep private valid until the sysfs enries are removed. */
-	kgsl_process_private_get(private);
 
 	if (kobject_init_and_add(&private->kobj, &ktype_mem_entry,
 		kgsl_driver.prockobj, "%d", pid_nr(private->pid))) {
@@ -428,6 +426,54 @@ static ssize_t full_cache_threshold_show(struct device *dev,
 			kgsl_driver.full_cache_threshold);
 }
 
+static ssize_t unmapped_single_detail_show(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	int ret = 0;
+	struct kgsl_process_private *tmp = NULL;
+	struct kgsl_process_private *cur_priv = NULL;
+	struct task_struct *ts = NULL;
+	u64 gpumem_total;
+	u64 gpumem_mapped;
+	u64 gpumem_unmapped_pages;
+
+	read_lock(&kgsl_driver.proclist_lock);
+	list_for_each_entry(tmp, &kgsl_driver.process_list, list) {
+		gpumem_total = 0;
+		gpumem_mapped = 0;
+		gpumem_unmapped_pages = 0;
+
+		if (ret >= PAGE_SIZE)
+			break;
+
+		if (kgsl_process_private_get(tmp)) {
+			cur_priv = tmp;
+			gpumem_total = atomic64_read(&cur_priv->stats[0].cur);
+			gpumem_mapped = atomic64_read(&cur_priv->gpumem_mapped);
+			if (gpumem_mapped > gpumem_total) {
+				printk(KERN_INFO "kgsl_unmapped_single: mapped bigger than total!\n"
+					"pid=%ld, mapped=%lld, total=%lld\n",
+					cur_priv->pid, gpumem_mapped, gpumem_total);
+				goto err_put;
+			}
+
+			gpumem_unmapped_pages = (gpumem_total - gpumem_mapped) / PAGE_SIZE;
+			ts = get_pid_task(cur_priv->pid, PIDTYPE_PID);
+			if (ts) {
+				ret += scnprintf(buf + ret, (PAGE_SIZE - ret), "%16s %ld %lld\n",
+					ts->comm, ts->tgid, gpumem_unmapped_pages);
+				put_task_struct(ts);
+			}
+err_put:
+			kgsl_process_private_put(tmp);
+		}
+	}
+	read_unlock(&kgsl_driver.proclist_lock);
+
+	return ret;
+}
+
 static DEVICE_ATTR(vmalloc, 0444, memstat_show, NULL);
 static DEVICE_ATTR(vmalloc_max, 0444, memstat_show, NULL);
 static DEVICE_ATTR(page_alloc, 0444, memstat_show, NULL);
@@ -439,6 +485,7 @@ static DEVICE_ATTR(secure_max, 0444, memstat_show, NULL);
 static DEVICE_ATTR(mapped, 0444, memstat_show, NULL);
 static DEVICE_ATTR(mapped_max, 0444, memstat_show, NULL);
 static DEVICE_ATTR_RW(full_cache_threshold);
+static DEVICE_ATTR_RO(unmapped_single_detail);
 
 static const struct attribute *drv_attr_list[] = {
 	&dev_attr_vmalloc.attr,
@@ -452,6 +499,7 @@ static const struct attribute *drv_attr_list[] = {
 	&dev_attr_mapped.attr,
 	&dev_attr_mapped_max.attr,
 	&dev_attr_full_cache_threshold.attr,
+	&dev_attr_unmapped_single_detail.attr,
 	NULL,
 };
 

@@ -1655,7 +1655,7 @@ static int drm_fb_helper_single_fb_probe(struct drm_fb_helper *fb_helper,
 	return 0;
 }
 
-static void drm_fb_helper_fill_fix(struct fb_info *info, uint32_t pitch,
+void drm_fb_helper_fill_fix(struct fb_info *info, uint32_t pitch,
 				   uint32_t depth)
 {
 	info->fix.type = FB_TYPE_PACKED_PIXELS;
@@ -1672,7 +1672,7 @@ static void drm_fb_helper_fill_fix(struct fb_info *info, uint32_t pitch,
 	info->fix.line_length = pitch;
 }
 
-static void drm_fb_helper_fill_var(struct fb_info *info,
+void drm_fb_helper_fill_var(struct fb_info *info,
 				   struct drm_fb_helper *fb_helper,
 				   uint32_t fb_width, uint32_t fb_height)
 {

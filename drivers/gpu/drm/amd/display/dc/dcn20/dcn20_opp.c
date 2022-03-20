@@ -140,11 +140,7 @@ void opp2_set_disp_pattern_generator(
 			 */
 			dst_color[index] =
 				src_color[index] >> (src_bpc - dst_bpc);
-		/* DPG_COLOUR registers are 16-bit MSB aligned value with bits 3:0 hardwired to ZERO.
-		 * XXXXXXXXXX000000 for 10 bit,
-		 * XXXXXXXX00000000 for 8 bit,
-		 * XXXXXX0000000000 for 6 bits
-		 */
+		
 			dst_color[index] <<= (16 - dst_bpc);
 		}
 

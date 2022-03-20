@@ -5,6 +5,10 @@
 
 #include <linux/devfreq_cooling.h>
 #include <linux/slab.h>
+#ifdef CONFIG_HW_IPA_THERMAL
+#include <linux/thermal.h>
+#include <trace/events/thermal.h>
+#endif
 
 #include "kgsl_bus.h"
 #include "kgsl_device.h"
@@ -122,6 +126,7 @@ void kgsl_pwrscale_update_stats(struct kgsl_device *device)
 
 	if (device->state == KGSL_STATE_ACTIVE) {
 		struct kgsl_power_stats stats;
+		u64 cur_time = jiffies;
 
 		device->ftbl->power_stats(device, &stats);
 		device->pwrscale.accum_stats.busy_time += stats.busy_time;
@@ -129,6 +134,9 @@ void kgsl_pwrscale_update_stats(struct kgsl_device *device)
 		device->pwrscale.accum_stats.ram_wait += stats.ram_wait;
 		pwrctrl->clock_times[pwrctrl->active_pwrlevel] +=
 				stats.busy_time;
+		pwrctrl->time_in_pwrlevel[pwrctrl->active_pwrlevel] +=
+			cur_time - pwrctrl->last_stat_updated;
+		pwrctrl->last_stat_updated = cur_time;
 	}
 }
 
@@ -767,6 +775,8 @@ static void pwrscale_of_ca_aware(struct kgsl_device *device)
 	of_node_put(node);
 }
 
+#include "hw_ipa_gpu.c"
+
 int kgsl_pwrscale_init(struct kgsl_device *device, struct platform_device *pdev,
 		const char *governor)
 {
@@ -868,8 +878,15 @@ int kgsl_pwrscale_init(struct kgsl_device *device, struct platform_device *pdev,
 	}
 
 	pwrscale->devfreqptr = devfreq;
+
+#ifdef CONFIG_HW_IPA_THERMAL
+	ipa_gpu_init();
+	pwrscale->cooling_dev = of_devfreq_cooling_register_power(pdev->dev.of_node,
+		devfreq, &hw_model_ops);
+#else
 	pwrscale->cooling_dev = of_devfreq_cooling_register(pdev->dev.of_node,
 		devfreq);
+#endif
 	if (IS_ERR(pwrscale->cooling_dev))
 		pwrscale->cooling_dev = NULL;
 
@@ -929,8 +946,8 @@ void kgsl_pwrscale_close(struct kgsl_device *device)
 	kgsl_pwrscale_midframe_timer_cancel(device);
 
 	if (pwrscale->devfreq_wq) {
-		flush_workqueue(pwrscale->devfreq_wq);
-		destroy_workqueue(pwrscale->devfreq_wq);
+	flush_workqueue(pwrscale->devfreq_wq);
+	destroy_workqueue(pwrscale->devfreq_wq);
 		pwrscale->devfreq_wq = NULL;
 	}
 

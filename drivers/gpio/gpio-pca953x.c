@@ -69,6 +69,7 @@
 #define PCA_TYPE_MASK		GENMASK(15, 12)
 
 #define PCA_CHIP_TYPE(x)	((x) & PCA_TYPE_MASK)
+#define PCA953X_PINNUM		16
 
 static const struct i2c_device_id pca953x_id[] = {
 	{ "pca6416", 16 | PCA953X_TYPE | PCA_INT, },
@@ -973,6 +974,46 @@ out:
 	return ret;
 }
 
+static void extgpio_state_init(struct pca953x_chip *chip, struct device *dev)
+{
+	int i;
+	int ret;
+	u32 pin_val[PCA953X_PINNUM];
+
+	ret = of_property_read_u32_array(dev->of_node, "init_gpio",
+		pin_val, PCA953X_PINNUM);
+	if (ret) {
+		dev_err(dev, "fail to read pca953x gpio init state\n");
+		return;
+	}
+
+	for (i = 0; i < PCA953X_PINNUM; i++) {
+		if (pin_val[i] == 0) {           /* direction input */
+			ret = pca953x_gpio_direction_input(&chip->gpio_chip, i);
+			if (ret)
+				dev_err(dev, "set pin:%d input err\n", i);
+			else
+				dev_err(dev, "set extgpio:%d input\n", i);
+		}
+
+		if (pin_val[i] == 1) {           /* direction output low */
+			ret = pca953x_gpio_direction_output(&chip->gpio_chip, i, 0);
+			if (ret)
+				dev_err(dev, "set pin:%d output low err\n", i);
+			else
+				dev_err(dev, "set extgpio:%d output low\n", i);
+		}
+
+		if (pin_val[i] == 2) {           /* direction output high */
+			ret = pca953x_gpio_direction_output(&chip->gpio_chip, i, 1);
+			if (ret)
+				dev_err(dev, "set pin%d output high err\n", i);
+			else
+				dev_err(dev, "set extgpio:%d output high\n", i);
+		}
+	}
+}
+
 static const struct of_device_id pca953x_dt_ids[];
 
 static int pca953x_probe(struct i2c_client *client,
@@ -1114,6 +1155,8 @@ static int pca953x_probe(struct i2c_client *client,
 		if (ret < 0)
 			dev_warn(&client->dev, "setup failed, %d\n", ret);
 	}
+
+	extgpio_state_init(chip, &client->dev);
 
 	return 0;
 

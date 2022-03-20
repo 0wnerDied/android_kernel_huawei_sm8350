@@ -9,6 +9,7 @@
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
 #include <linux/thermal.h>
+#include <linux/msm_kgsl.h>
 
 #include "kgsl_device.h"
 #include "kgsl_bus.h"
@@ -291,6 +292,10 @@ static void kgsl_pwrctrl_set_thermal_pwrlevel(struct kgsl_device *device,
 		u32 level)
 {
 	struct kgsl_pwrctrl *pwr = &device->pwrctrl;
+#ifdef CONFIG_HW_IPA_THERMAL
+	int gpu_id;
+	unsigned int ipa_state;
+#endif
 
 	mutex_lock(&device->mutex);
 
@@ -300,6 +305,16 @@ static void kgsl_pwrctrl_set_thermal_pwrlevel(struct kgsl_device *device,
 	pwr->sysfs_thermal_pwrlevel = level;
 	pwr->thermal_pwrlevel = max(pwr->cooling_thermal_pwrlevel, pwr->sysfs_thermal_pwrlevel);
 
+#ifdef CONFIG_HW_IPA_THERMAL
+	gpu_id = ipa_get_actor_id("gpu");
+	if (gpu_id < 0) {
+		pr_err("[Adreno]Failed to get ipa actor id for gpu\n");
+	} else {
+		ipa_state = ipa_state_limit(gpu_id);
+		if (level < ipa_state)
+			level = ipa_state;
+	}
+#endif
 	/* Update the current level using the new limit */
 	kgsl_pwrctrl_pwrlevel_change(device, pwr->active_pwrlevel);
 	mutex_unlock(&device->mutex);
@@ -1875,6 +1890,7 @@ static int _wake(struct kgsl_device *device)
 		kgsl_pwrctrl_clk(device, KGSL_PWRFLAGS_ON, KGSL_STATE_ACTIVE);
 
 		device->ftbl->deassert_gbif_halt(device);
+		pwr->last_stat_updated = jiffies;
 		/*
 		 * No need to turn on/off irq here as it no longer affects
 		 * power collapse
@@ -2255,3 +2271,43 @@ int kgsl_pwrctrl_set_default_gpu_pwrlevel(struct kgsl_device *device)
 	/* Request adjusted DCVS level */
 	return device->ftbl->gpu_clock_set(device, pwr->active_pwrlevel);
 }
+
+int kgsl_gpu_num_freqs(void)
+{
+	struct kgsl_device *device = kgsl_get_device(0);
+
+	if (!device)
+		return -ENODEV;
+
+	return device->pwrctrl.num_pwrlevels;
+}
+EXPORT_SYMBOL(kgsl_gpu_num_freqs);
+
+int kgsl_gpu_stat(struct kgsl_gpu_freq_stat *stats, u32 numfreq)
+{
+	struct kgsl_device *device = kgsl_get_device(0);
+	struct kgsl_pwrctrl *pwr;
+	int i;
+
+	if (!device)
+		return -ENODEV;
+
+	pwr = &device->pwrctrl;
+
+	if (!stats || (numfreq < pwr->num_pwrlevels))
+		return -EINVAL;
+
+	mutex_lock(&device->mutex);
+	kgsl_pwrscale_update_stats(device);
+
+	for (i = 0; i < pwr->num_pwrlevels; i++) {
+		stats[i].freq = pwr->pwrlevels[i].gpu_freq;
+		stats[i].active_time = pwr->clock_times[i];
+		stats[i].idle_time = jiffies_to_usecs(
+			pwr->time_in_pwrlevel[i]) - pwr->clock_times[i];
+	}
+	mutex_unlock(&device->mutex);
+
+	return 0;
+}
+EXPORT_SYMBOL(kgsl_gpu_stat);

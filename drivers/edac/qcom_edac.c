@@ -13,6 +13,7 @@
 
 #include "edac_mc.h"
 #include "edac_device.h"
+#include "cache_dmd_upload.h"
 
 #define EDAC_LLCC                       "qcom_llcc"
 
@@ -313,10 +314,12 @@ llcc_ecc_irq_handler(int irq, void *edev_ctl)
 		if (!ret && (drp_error & SB_ECC_ERROR)) {
 			edac_printk(KERN_CRIT, EDAC_LLCC,
 				    "Single Bit Error detected in Data RAM\n");
+			report_cache_ecc_inirq(smp_processor_id(), DMD_CACHE_LEVEL_SYSCACHE, DMD_CACHE_TYPE_CE);
 			ret = dump_syn_reg(edev_ctl, LLCC_DRAM_CE, i);
 		} else if (!ret && (drp_error & DB_ECC_ERROR)) {
 			edac_printk(KERN_CRIT, EDAC_LLCC,
 				    "Double Bit Error detected in Data RAM\n");
+			report_cache_ecc_inirq(smp_processor_id(), DMD_CACHE_LEVEL_SYSCACHE, DMD_CACHE_TYPE_UE);
 			ret = dump_syn_reg(edev_ctl, LLCC_DRAM_UE, i);
 		}
 		if (!ret)
@@ -329,10 +332,12 @@ llcc_ecc_irq_handler(int irq, void *edev_ctl)
 		if (!ret && (trp_error & SB_ECC_ERROR)) {
 			edac_printk(KERN_CRIT, EDAC_LLCC,
 				    "Single Bit Error detected in Tag RAM\n");
+			report_cache_ecc_inirq(smp_processor_id(), DMD_CACHE_LEVEL_SYSCACHE, DMD_CACHE_TYPE_CE);
 			ret = dump_syn_reg(edev_ctl, LLCC_TRAM_CE, i);
 		} else if (!ret && (trp_error & DB_ECC_ERROR)) {
 			edac_printk(KERN_CRIT, EDAC_LLCC,
 				    "Double Bit Error detected in Tag RAM\n");
+			report_cache_ecc_inirq(smp_processor_id(), DMD_CACHE_LEVEL_SYSCACHE, DMD_CACHE_TYPE_UE);
 			ret = dump_syn_reg(edev_ctl, LLCC_TRAM_UE, i);
 		}
 		if (!ret)

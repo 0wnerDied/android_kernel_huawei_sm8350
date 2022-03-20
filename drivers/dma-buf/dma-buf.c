@@ -25,18 +25,19 @@
 #include <linux/mm.h>
 #include <linux/mount.h>
 #include <linux/pseudo_fs.h>
+#include <linux/sched/clock.h>
 
 #include <uapi/linux/dma-buf.h>
 #include <uapi/linux/magic.h>
 
-static inline int is_dma_buf_file(struct file *);
-
-struct dma_buf_list {
-	struct list_head head;
-	struct mutex lock;
-};
+int is_dma_buf_file(struct file *);
 
 static struct dma_buf_list db_list;
+
+struct dma_buf_list get_dma_buf_list()
+{
+	return db_list;
+}
 
 static char *dmabuffs_dname(struct dentry *dentry, char *buffer, int buflen)
 {
@@ -382,6 +383,42 @@ out_unlock:
 	return ret;
 }
 
+static long dma_buf_ioctl_partial(struct file *file, unsigned long arg)
+{
+	struct dma_buf *dmabuf;
+	struct dma_buf_sync_partial sync;
+	enum dma_data_direction dir;
+	int ret;
+
+	dmabuf = file->private_data;
+	if (copy_from_user(&sync, (void __user *) arg, sizeof(sync)))
+		return -EFAULT;
+
+	if (sync.flags & ~DMA_BUF_SYNC_VALID_FLAGS_MASK)
+		return -EINVAL;
+
+	switch (sync.flags & DMA_BUF_SYNC_RW) {
+	case DMA_BUF_SYNC_READ:
+		dir = DMA_FROM_DEVICE;
+		break;
+	case DMA_BUF_SYNC_WRITE:
+		dir = DMA_TO_DEVICE;
+		break;
+	case DMA_BUF_SYNC_RW:
+		dir = DMA_BIDIRECTIONAL;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	if (sync.flags & DMA_BUF_SYNC_END) {
+		ret = dma_buf_end_cpu_access_partial(dmabuf, dir, sync.offset, sync.size);
+	} else {
+		ret = dma_buf_begin_cpu_access_partial(dmabuf, dir, sync.offset, sync.size);
+	}
+	return ret;
+}
+
 static long dma_buf_ioctl(struct file *file,
 			  unsigned int cmd, unsigned long arg)
 {
@@ -424,7 +461,9 @@ static long dma_buf_ioctl(struct file *file,
 	case DMA_BUF_SET_NAME_A:
 	case DMA_BUF_SET_NAME_B:
 		return dma_buf_set_name(dmabuf, (const char __user *)arg);
-
+	case DMA_BUF_IOCTL_SYNC_PARTIAL: {
+		return dma_buf_ioctl_partial(file, arg);
+	}
 	default:
 		return -ENOTTY;
 	}
@@ -458,7 +497,7 @@ static const struct file_operations dma_buf_fops = {
 /*
  * is_dma_buf_file - Check if struct file* is associated with dma_buf
  */
-static inline int is_dma_buf_file(struct file *file)
+int is_dma_buf_file(struct file *file)
 {
 	return file->f_op == &dma_buf_fops;
 }
@@ -579,6 +618,9 @@ struct dma_buf *dma_buf_export(const struct dma_buf_export_info *exp_info)
 	init_waitqueue_head(&dmabuf->poll);
 	dmabuf->cb_excl.poll = dmabuf->cb_shared.poll = &dmabuf->poll;
 	dmabuf->cb_excl.active = dmabuf->cb_shared.active = 0;
+	dmabuf->timestamp = sched_clock();
+	dmabuf->tgid = task_pid_nr(current->group_leader);
+	dmabuf->pid = task_pid_nr(current);
 
 	if (!resv) {
 		resv = (struct dma_resv *)&dmabuf[1];
@@ -1307,8 +1349,8 @@ static int dma_buf_debug_show(struct seq_file *s, void *unused)
 		return ret;
 
 	seq_puts(s, "\nDma-buf Objects:\n");
-	seq_printf(s, "%-8s\t%-8s\t%-8s\t%-8s\texp_name\t%-8s\n",
-		   "size", "flags", "mode", "count", "ino");
+	seq_printf(s, "%-8s\t%-8s\t%-8s\t%-8s\texp_name\t%-8s\t%-8s\t%-8s\n",
+		   "size", "flags", "mode", "count", "ino", "tgid", "pid");
 
 	list_for_each_entry(buf_obj, &db_list.head, list_node) {
 		ret = mutex_lock_interruptible(&buf_obj->lock);
@@ -1319,13 +1361,17 @@ static int dma_buf_debug_show(struct seq_file *s, void *unused)
 			continue;
 		}
 
-		seq_printf(s, "%08zu\t%08x\t%08x\t%08ld\t%s\t%08lu\t%s\n",
+		seq_printf(s, "%08zu\t%08x\t%08x\t%08ld\t%s\t%08lu"
+						"\t%6d\t%6d\t%s\t%16llu\n",
 				buf_obj->size,
 				buf_obj->file->f_flags, buf_obj->file->f_mode,
 				file_count(buf_obj->file),
 				buf_obj->exp_name,
 				to_msm_dma_buf(buf_obj)->i_ino,
-				buf_obj->name ?: "");
+				buf_obj->tgid,
+				buf_obj->pid,
+				buf_obj->name ?: "",
+				buf_obj->timestamp);
 
 		robj = buf_obj->resv;
 		while (true) {

@@ -129,6 +129,16 @@ config DEVFREQ_GOV_MEMLAT
 	  this uses target specific counters it can conflict with existing profiling
 	  tools.
 
+config DEVFREQ_GOV_MEMLAT_SET_IMMUTABLE_FLAG
+	tristate "export functions to allow freeing of pmu counters"
+	depends on DEVFREQ_GOV_MEMLAT
+	default y
+	help
+	  This leaves limited counters available for other uses in the system
+	  such as profiling in user space using perf tool.
+	  Add and export a function in devfreq memlat governor to remove immutable
+	  flag to allow governor switch, which in turn can free pmu counters.
+
 comment "DEVFREQ Drivers"
 
 config ARM_EXYNOS_BUS_DEVFREQ

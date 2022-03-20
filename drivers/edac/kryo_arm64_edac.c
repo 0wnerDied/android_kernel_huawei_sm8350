@@ -18,6 +18,7 @@
 
 #include "edac_mc.h"
 #include "edac_device.h"
+#include "cache_dmd_upload.h"
 
 #ifdef CONFIG_EDAC_KRYO_ARM64_PANIC_ON_UE
 #define ARM64_ERP_PANIC_ON_UE 1
@@ -332,20 +333,26 @@ static void kryo_parse_l1_l2_cache_error(u64 errxstatus, u64 errxmisc,
 
 	switch (level) {
 	case L1:
-		if (KRYO_ERRXSTATUS_UE(errxstatus))
+		if (KRYO_ERRXSTATUS_UE(errxstatus)) {
 			dump_err_reg(KRYO_L1_UE, level, errxstatus, errxmisc,
 					edev_ctl);
-		else
+			report_cache_ecc_inirq(cpu, DMD_CACHE_LEVEL_L1, DMD_CACHE_TYPE_UE);
+		} else {
 			dump_err_reg(KRYO_L1_CE, level, errxstatus, errxmisc,
 					edev_ctl);
+			report_cache_ecc_inirq(cpu, DMD_CACHE_LEVEL_L1, DMD_CACHE_TYPE_CE);
+		}
 		break;
 	case L2:
-		if (KRYO_ERRXSTATUS_UE(errxstatus))
+		if (KRYO_ERRXSTATUS_UE(errxstatus)) {
 			dump_err_reg(KRYO_L2_UE, level, errxstatus, errxmisc,
 					edev_ctl);
-		else
+			report_cache_ecc_inirq(cpu, DMD_CACHE_LEVEL_L2, DMD_CACHE_TYPE_UE);
+		} else {
 			dump_err_reg(KRYO_L2_CE, level, errxstatus, errxmisc,
 					edev_ctl);
+			report_cache_ecc_inirq(cpu, DMD_CACHE_LEVEL_L2, DMD_CACHE_TYPE_CE);
+		}
 		break;
 	default:
 		edac_printk(KERN_CRIT, EDAC_CPU, "Unknown KRYO_ERRXMISC_LVL value\n");
@@ -410,10 +417,12 @@ static void kryo_check_l3_scu_error(struct edac_device_ctl_info *edev_ctl)
 		}
 		if (KRYO_ERRXSTATUS_UE(errxstatus)) {
 			edac_printk(KERN_CRIT, EDAC_CPU, "Detected L3 uncorrectable error\n");
+			report_cache_ecc_inirq(smp_processor_id(), DMD_CACHE_LEVEL_L3, DMD_CACHE_TYPE_UE);
 			dump_err_reg(KRYO_L3_UE, L3, errxstatus, errxmisc,
 				edev_ctl);
 		} else {
 			edac_printk(KERN_CRIT, EDAC_CPU, "Detected L3 correctable error\n");
+			report_cache_ecc_inirq(smp_processor_id(), DMD_CACHE_LEVEL_L3, DMD_CACHE_TYPE_CE);
 			dump_err_reg(KRYO_L3_CE, L3, errxstatus, errxmisc,
 				edev_ctl);
 		}

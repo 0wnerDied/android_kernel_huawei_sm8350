@@ -20,8 +20,8 @@
 #include <soc/qcom/qseecomi.h>
 #include <linux/qtee_shmbridge.h>
 
-/* QSEE_LOG_BUF_SIZE = 32K */
-#define QSEE_LOG_BUF_SIZE 0x8000
+/* QSEE_LOG_BUF_SIZE = 1M */
+#define QSEE_LOG_BUF_SIZE 0x100000
 
 /* enlarged qsee log buf size is 128K by default */
 #define QSEE_LOG_BUF_SIZE_V2 0x20000
@@ -175,6 +175,12 @@ struct tzdbg_log_pos_t {
 struct tzdbg_log_pos_v2_t {
 	uint32_t wrap;
 	uint32_t offset;
+};
+
+struct tzdbg_reader_t {
+	int							*tz_id;
+	struct tzdbg_log_pos_t		log_pos;
+	struct tzdbg_log_pos_v2_t	log_pos_v2;
 };
 
  /*
@@ -1030,17 +1036,14 @@ static int _disp_hyp_log_stats(size_t count)
 			log_len, count, TZDBG_HYP_LOG);
 }
 
-static int _disp_qsee_log_stats(size_t count)
+static int _disp_qsee_log_stats(size_t count, struct tzdbg_reader_t *reader)
 {
-	static struct tzdbg_log_pos_t log_start = {0};
-	static struct tzdbg_log_pos_v2_t log_start_v2 = {0};
-
 	if (!tzdbg.is_enlarged_buf)
-		return _disp_log_stats(g_qsee_log, &log_start,
+		return _disp_log_stats(g_qsee_log, &(reader->log_pos),
 			QSEE_LOG_BUF_SIZE - sizeof(struct tzdbg_log_pos_t),
 			count, TZDBG_QSEE_LOG);
 
-	return _disp_log_stats_v2(g_qsee_log_v2, &log_start_v2,
+	return _disp_log_stats_v2(g_qsee_log_v2, &(reader->log_pos_v2),
 		QSEE_LOG_BUF_SIZE_V2 - sizeof(struct tzdbg_log_pos_v2_t),
 		count, TZDBG_QSEE_LOG);
 }
@@ -1084,8 +1087,9 @@ static int _disp_hyp_general_stats(size_t count)
 static ssize_t tzdbgfs_read_unencrypted(struct file *file, char __user *buf,
 	size_t count, loff_t *offp)
 {
+	struct tzdbg_reader_t *reader = file->private_data;
 	int len = 0;
-	int tz_id = *(int *)(file->private_data);
+	int tz_id = *(reader->tz_id);
 
 	if (tz_id == TZDBG_BOOT || tz_id == TZDBG_RESET ||
 		tz_id == TZDBG_INTERRUPT || tz_id == TZDBG_GENERAL ||
@@ -1124,7 +1128,7 @@ static ssize_t tzdbgfs_read_unencrypted(struct file *file, char __user *buf,
 		}
 		break;
 	case TZDBG_QSEE_LOG:
-		len = _disp_qsee_log_stats(count);
+		len = _disp_qsee_log_stats(count, reader);
 		*offp = 0;
 		break;
 	case TZDBG_HYP_GENERAL:
@@ -1198,10 +1202,40 @@ static ssize_t tzdbgfs_read(struct file *file, char __user *buf,
 		return tzdbgfs_read_encrypted(file, buf, count, offp);
 }
 
+static int tzdbgfs_open(struct inode *inode, struct file *file)
+{
+	struct tzdbg_reader_t *reader = NULL;
+
+	reader = kmalloc(sizeof(*reader), GFP_KERNEL);
+	if (ZERO_OR_NULL_PTR((unsigned long)(uintptr_t)reader))
+		return -ENOMEM;
+
+	reader->tz_id = inode->i_private;
+	reader->log_pos.wrap = 0;
+	reader->log_pos.offset = 0;
+	reader->log_pos_v2.wrap = 0;
+	reader->log_pos_v2.offset = 0;
+	file->private_data = reader;
+	return 0;
+}
+
+static int tzdbgfs_release(struct inode *inode, struct file *file)
+{
+	struct tzdbg_reader_t *reader = file->private_data;
+
+	if (reader == NULL)
+		return -1;
+
+	kfree(reader);
+
+	return 0;
+}
+
 static const struct file_operations tzdbg_fops = {
 	.owner   = THIS_MODULE,
 	.read    = tzdbgfs_read,
-	.open    = simple_open,
+	.open    = tzdbgfs_open,
+	.release = tzdbgfs_release,
 };
 
 /*

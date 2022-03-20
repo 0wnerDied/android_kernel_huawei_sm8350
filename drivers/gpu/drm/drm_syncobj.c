@@ -530,8 +530,6 @@ int drm_syncobj_get_fd(struct drm_syncobj *syncobj, int *p_fd)
 		put_unused_fd(fd);
 		return PTR_ERR(file);
 	}
-
-	drm_syncobj_get(syncobj);
 	fd_install(fd, file);
 
 	*p_fd = fd;

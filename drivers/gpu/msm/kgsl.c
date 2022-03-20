@@ -17,6 +17,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/security.h>
 #include <linux/sort.h>
+#include <linux/msm_kgsl.h>
 #include <soc/qcom/boot_stats.h>
 
 #include "kgsl_compat.h"
@@ -236,13 +237,28 @@ const char *kgsl_context_type(int type)
 	return "ANY";
 }
 
-/* Scheduled by kgsl_mem_entry_put_deferred() */
-static void _deferred_put(struct work_struct *work)
+/* Scheduled by kgsl_mem_entry_destroy_deferred() */
+static void _deferred_destroy(struct work_struct *work)
 {
 	struct kgsl_mem_entry *entry =
 		container_of(work, struct kgsl_mem_entry, work);
 
-	kgsl_mem_entry_put(entry);
+	kgsl_mem_entry_destroy(&entry->refcount);
+}
+
+static void kgsl_mem_entry_destroy_deferred(struct kref *kref)
+{
+	struct kgsl_mem_entry *entry =
+		container_of(kref, struct kgsl_mem_entry, refcount);
+
+	INIT_WORK(&entry->work, _deferred_destroy);
+	queue_work(kgsl_driver.mem_workqueue, &entry->work);
+}
+
+void kgsl_mem_entry_put_deferred(struct kgsl_mem_entry *entry)
+{
+	if (entry)
+		kref_put(&entry->refcount, kgsl_mem_entry_destroy_deferred);
 }
 
 static struct kgsl_mem_entry *kgsl_mem_entry_create(void)
@@ -735,8 +751,7 @@ void kgsl_context_detach(struct kgsl_context *context)
 	/* Remove the event group from the list */
 	kgsl_del_event_group(device, &context->events);
 
-	kgsl_sync_timeline_put(context->ktimeline);
-
+	kgsl_sync_timeline_detach(context->ktimeline);
 	kgsl_context_put(context);
 }
 
@@ -754,6 +769,8 @@ kgsl_context_destroy(struct kref *kref)
 	 * may still be executing commands
 	 */
 	BUG_ON(!kgsl_context_detached(context));
+
+	kgsl_sync_timeline_put(context->ktimeline);
 
 	write_lock(&device->context_lock);
 	if (context->id != KGSL_CONTEXT_INVALID) {
@@ -778,7 +795,6 @@ kgsl_context_destroy(struct kref *kref)
 		context->id = KGSL_CONTEXT_INVALID;
 	}
 	write_unlock(&device->context_lock);
-	kgsl_sync_timeline_destroy(context);
 	kgsl_process_private_put(context->proc_priv);
 
 	device->ftbl->drawctxt_destroy(context);
@@ -847,11 +863,25 @@ static void kgsl_destroy_process_private(struct kref *kref)
 	struct kgsl_process_private *private = container_of(kref,
 			struct kgsl_process_private, refcount);
 
+	mutex_lock(&kgsl_driver.process_mutex);
+	debugfs_remove_recursive(private->debug_root);
+	kgsl_process_uninit_sysfs(private);
+
+	/* When using global pagetables, do not detach global pagetable */
+	if (private->pagetable->name != KGSL_MMU_GLOBAL_PT)
+		kgsl_mmu_detach_pagetable(private->pagetable);
+
+	/* Remove the process struct from the master list */
+	write_lock(&kgsl_driver.proclist_lock);
+	list_del(&private->list);
+	write_unlock(&kgsl_driver.proclist_lock);
+	mutex_unlock(&kgsl_driver.process_mutex);
+
 	put_pid(private->pid);
 	idr_destroy(&private->mem_idr);
 	idr_destroy(&private->syncsource_idr);
 
-	/* When using global pagetables, do not detach global pagetable */
+	/* When using global pagetables, do not put global pagetable */
 	if (private->pagetable->name != KGSL_MMU_GLOBAL_PT)
 		kgsl_mmu_putpagetable(private->pagetable);
 
@@ -940,7 +970,14 @@ static struct kgsl_process_private *kgsl_process_private_new(
 
 		kfree(private);
 		private = ERR_PTR(err);
+		return private;
 	}
+
+	kgsl_process_init_sysfs(device, private);
+	kgsl_process_init_debugfs(private);
+	write_lock(&kgsl_driver.proclist_lock);
+	list_add(&private->list, &kgsl_driver.process_list);
+	write_unlock(&kgsl_driver.proclist_lock);
 
 	return private;
 }
@@ -986,26 +1023,14 @@ static void kgsl_process_private_close(struct kgsl_device_private *dev_priv,
 	}
 
 	/*
-	 * If this is the last file on the process take down the debug
-	 * directories and garbage collect any outstanding resources
+	 * If this is the last file on the process garbage collect
+	 * any outstanding resources
 	 */
 
 	process_release_memory(private);
 
 	/* Release all syncsource objects from process private */
 	kgsl_syncsource_process_release_syncsources(private);
-
-	debugfs_remove_recursive(private->debug_root);
-	kgsl_process_uninit_sysfs(private);
-
-	/* When using global pagetables, do not detach global pagetable */
-	if (private->pagetable->name != KGSL_MMU_GLOBAL_PT)
-		kgsl_mmu_detach_pagetable(private->pagetable);
-
-	/* Remove the process struct from the master list */
-	write_lock(&kgsl_driver.proclist_lock);
-	list_del(&private->list);
-	write_unlock(&kgsl_driver.proclist_lock);
 
 	mutex_unlock(&kgsl_driver.process_mutex);
 
@@ -1024,24 +1049,30 @@ static struct kgsl_process_private *kgsl_process_private_open(
 	if (IS_ERR(private))
 		goto done;
 
-	/*
-	 * If this is a new process create the debug directories and add it to
-	 * the process list
-	 */
-
-	if (private->fd_count++ == 0) {
-		kgsl_process_init_sysfs(device, private);
-		kgsl_process_init_debugfs(private);
-
-		write_lock(&kgsl_driver.proclist_lock);
-		list_add(&private->list, &kgsl_driver.process_list);
-		write_unlock(&kgsl_driver.proclist_lock);
-	}
+	private->fd_count++;
 
 done:
 	mutex_unlock(&kgsl_driver.process_mutex);
 	return private;
 }
+
+int kgsl_gpu_frame_count(pid_t pid, u64 *frame_count)
+{
+	struct kgsl_process_private *p;
+
+	if (!frame_count)
+		return -EINVAL;
+
+	p = kgsl_process_private_find(pid);
+	if (!p)
+		return -ENOENT;
+
+	*frame_count = atomic64_read(&p->frame_count);
+	kgsl_process_private_put(p);
+
+	return 0;
+}
+EXPORT_SYMBOL(kgsl_gpu_frame_count);
 
 static int kgsl_close_device(struct kgsl_device *device)
 {
@@ -2269,8 +2300,7 @@ static bool gpuobj_free_fence_func(void *priv)
 			entry->memdesc.gpuaddr, entry->memdesc.size,
 			entry->memdesc.flags);
 
-	INIT_WORK(&entry->work, _deferred_put);
-	queue_work(kgsl_driver.mem_workqueue, &entry->work);
+	kgsl_mem_entry_put_deferred(entry);
 	return true;
 }
 
@@ -3003,9 +3033,20 @@ void kgsl_get_egl_counts(struct kgsl_mem_entry *entry,
 	}
 	spin_unlock(&kgsl_dmabuf_lock);
 }
+
+unsigned long kgsl_get_dmabuf_inode_number(struct kgsl_mem_entry *entry)
+{
+	struct kgsl_dma_buf_meta *meta = entry->priv_data;
+
+	return meta ? file_inode(meta->dmabuf->file)->i_ino : 0;
+}
 #else
 void kgsl_get_egl_counts(struct kgsl_mem_entry *entry,
 		int *egl_surface_count, int *egl_image_count)
+{
+}
+
+unsigned long kgsl_get_dmabuf_inode_number(struct kgsl_mem_entry *entry)
 {
 }
 #endif

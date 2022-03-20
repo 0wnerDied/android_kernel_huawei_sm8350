@@ -19,6 +19,9 @@
 
 #include "../../devfreq/governor.h"
 #include "msm_adreno_devfreq.h"
+#ifdef CONFIG_HUAWEI_GPU_OPP_STATS
+#include <huawei_platform/gpu_stats/gpu_stats.h>
+#endif
 
 static DEFINE_SPINLOCK(tz_lock);
 static DEFINE_SPINLOCK(sample_lock);
@@ -412,6 +415,11 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 			priv->bin.busy_time, context_count, priv);
 	}
 
+#ifdef CONFIG_HUAWEI_GPU_OPP_STATS
+	hw_gpu_update_opp_cost(priv->bin.total_time,
+			       priv->bin.busy_time,
+			       level);
+#endif
 	priv->bin.total_time = 0;
 	priv->bin.busy_time = 0;
 
@@ -508,6 +516,10 @@ static int tz_start(struct devfreq *devfreq)
 	for (i = 0; adreno_tz_attr_list[i] != NULL; i++)
 		device_create_file(&devfreq->dev, adreno_tz_attr_list[i]);
 
+#ifdef CONFIG_HUAWEI_GPU_OPP_STATS
+	hw_gpu_init_opp_cost(devfreq);
+#endif
+
 	return kgsl_devfreq_add_notifier(devfreq->dev.parent, &priv->nb);
 }
 
@@ -526,6 +538,9 @@ static int tz_stop(struct devfreq *devfreq)
 	/* leaving the governor and cleaning the pointer to private data */
 	devfreq->data = NULL;
 	partner_gpu_profile = NULL;
+#ifdef CONFIG_HUAWEI_GPU_OPP_STATS
+	hw_gpu_close_opp_cost();
+#endif
 	return 0;
 }
 
