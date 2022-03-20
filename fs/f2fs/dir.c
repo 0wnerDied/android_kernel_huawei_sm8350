@@ -9,12 +9,20 @@
 #include <linux/fs.h>
 #include <linux/f2fs_fs.h>
 #include <linux/sched/signal.h>
+#ifdef CONFIG_UNICODE
 #include <linux/unicode.h>
+#endif
 #include "f2fs.h"
 #include "node.h"
 #include "acl.h"
 #include "xattr.h"
 #include <trace/events/f2fs.h>
+#ifdef CONFIG_SDP_ENCRYPTION
+#include "sdp.h"
+#endif
+#ifdef CONFIG_HWDPS
+#include <huawei_platform/hwdps/hwdps_fs_hooks.h>
+#endif
 
 static unsigned long dir_blocks(struct inode *inode)
 {
@@ -112,7 +120,11 @@ static int __f2fs_setup_filename(const struct inode *dir,
 #ifdef CONFIG_FS_ENCRYPTION
 	fname->crypto_buf = crypt_name->crypto_buf;
 #endif
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0))
 	if (crypt_name->is_ciphertext_name) {
+#else
+	if (IS_ENCRYPTED(dir) && !crypt_name->disk_name.name) {
+#endif
 		/* hash was decoded from the no-key name */
 		fname->hash = cpu_to_le32(crypt_name->hash);
 	} else {
@@ -145,6 +157,7 @@ int f2fs_setup_filename(struct inode *dir, const struct qstr *iname,
 	return __f2fs_setup_filename(dir, &crypt_name, fname);
 }
 
+#if ((LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 82)) || defined(CONFIG_HAS_FSCRYPT_PATCH))
 /*
  * Prepare to look up @dentry in @dir.  This is similar to
  * fscrypt_prepare_lookup(), but this also handles computing the casefolded name
@@ -163,6 +176,7 @@ int f2fs_prepare_lookup(struct inode *dir, struct dentry *dentry,
 
 	return __f2fs_setup_filename(dir, &crypt_name, fname);
 }
+#endif
 
 void f2fs_free_filename(struct f2fs_filename *fname)
 {
@@ -244,7 +258,7 @@ static bool f2fs_match_ci_name(const struct inode *dir, const struct qstr *name,
 	if (res < 0) {
 		/*
 		 * In strict mode, ignore invalid names.  In non-strict mode,
-		 * fall back to treating them as opaque byte sequences.
++		 * fall back to treating them as opaque byte sequences.
 		 */
 		if (sb_has_enc_strict_mode(sb) || name->len != entry.len)
 			res = 1;
@@ -263,13 +277,13 @@ static inline bool f2fs_match_name(const struct inode *dir,
 {
 	struct fscrypt_name f;
 
-#ifdef CONFIG_UNICODE
+ #ifdef CONFIG_UNICODE
 	if (fname->cf_name.name) {
 		struct qstr cf = FSTR_TO_QSTR(&fname->cf_name);
-
 		return f2fs_match_ci_name(dir, &cf, de_name, de_name_len);
 	}
 #endif
+
 	f.usr_fname = fname->usr_fname;
 	f.disk_name = fname->disk_name;
 #ifdef CONFIG_FS_ENCRYPTION
@@ -380,15 +394,16 @@ struct f2fs_dir_entry *__f2fs_find_entry(struct inode *dir,
 	unsigned int max_depth;
 	unsigned int level;
 
-	*res_page = NULL;
-
 	if (f2fs_has_inline_dentry(dir)) {
+		*res_page = NULL;
 		de = f2fs_find_in_inline_dir(dir, fname, res_page);
 		goto out;
 	}
 
-	if (npages == 0)
+	if (npages == 0) {
+		*res_page = NULL;
 		goto out;
+	}
 
 	max_depth = F2FS_I(dir)->i_current_depth;
 	if (unlikely(max_depth > MAX_DIR_HASH_DEPTH)) {
@@ -399,6 +414,7 @@ struct f2fs_dir_entry *__f2fs_find_entry(struct inode *dir,
 	}
 
 	for (level = 0; level < max_depth; level++) {
+		*res_page = NULL;
 		de = find_in_level(dir, level, fname, res_page);
 		if (de || IS_ERR(*res_page))
 			break;
@@ -499,14 +515,16 @@ static void init_dent_inode(struct inode *dir, struct inode *inode,
 		 * roll-forward recovery of the dentry (i.e., make fsync'ing the
 		 * file force a checkpoint) by setting LOST_PINO.
 		 */
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0))
 		if (IS_CASEFOLDED(dir)) {
 			if (fname->disk_name.len + sizeof(f2fs_hash_t) <=
-			    F2FS_NAME_LEN)
+					F2FS_NAME_LEN)
 				put_unaligned(fname->hash, (f2fs_hash_t *)
-					&ri->i_name[fname->disk_name.len]);
+						&ri->i_name[fname->disk_name.len]);
 			else
 				file_lost_pino(inode);
 		}
+#endif
 	}
 	set_page_dirty(ipage);
 }
@@ -548,7 +566,8 @@ static int make_empty_dir(struct inode *inode,
 	return 0;
 }
 
-struct page *f2fs_init_inode_metadata(struct inode *inode, struct inode *dir,
+struct page *f2fs_init_inode_metadata(struct inode *inode,
+			const struct dentry *dentry, struct inode *dir,
 			const struct f2fs_filename *fname, struct page *dpage)
 {
 	struct page *page;
@@ -583,6 +602,19 @@ struct page *f2fs_init_inode_metadata(struct inode *inode, struct inode *dir,
 			err = fscrypt_inherit_context(dir, inode, page, false);
 			if (err)
 				goto put_error;
+#ifdef CONFIG_HWDPS
+			err = hwdps_inherit_context(dir, inode, dentry, page,
+				dpage);
+			if (err != 0) {
+				err = -EINVAL;
+				goto put_error;
+			}
+#endif
+#ifdef CONFIG_SDP_ENCRYPTION
+			err = f2fs_sdp_crypt_inherit(dir, inode, dpage, page);
+			if (err != 0)
+				goto put_error;
+#endif
 		}
 	} else {
 		page = f2fs_get_node_page(F2FS_I_SB(dir), inode->i_ino);
@@ -691,6 +723,7 @@ void f2fs_update_dentry(nid_t ino, umode_t mode, struct f2fs_dentry_ptr *d,
 }
 
 int f2fs_add_regular_entry(struct inode *dir, const struct f2fs_filename *fname,
+			   const struct dentry *dentry,
 			   struct inode *inode, nid_t ino, umode_t mode)
 {
 	unsigned int bit_pos;
@@ -754,7 +787,7 @@ add_dentry:
 
 	if (inode) {
 		down_write(&F2FS_I(inode)->i_sem);
-		page = f2fs_init_inode_metadata(inode, dir, fname, NULL);
+		page = f2fs_init_inode_metadata(inode, dentry, dir, fname, NULL);
 		if (IS_ERR(page)) {
 			err = PTR_ERR(page);
 			goto fail;
@@ -788,14 +821,16 @@ fail:
 }
 
 int f2fs_add_dentry(struct inode *dir, const struct f2fs_filename *fname,
+		    const struct dentry *dentry,
 		    struct inode *inode, nid_t ino, umode_t mode)
 {
 	int err = -EAGAIN;
 
+
 	if (f2fs_has_inline_dentry(dir))
-		err = f2fs_add_inline_entry(dir, fname, inode, ino, mode);
+		err = f2fs_add_inline_entry(dir, fname, dentry, inode, ino, mode);
 	if (err == -EAGAIN)
-		err = f2fs_add_regular_entry(dir, fname, inode, ino, mode);
+		err = f2fs_add_regular_entry(dir, fname, dentry, inode, ino, mode);
 
 	f2fs_update_time(F2FS_I_SB(dir), REQ_TIME);
 	return err;
@@ -805,8 +840,9 @@ int f2fs_add_dentry(struct inode *dir, const struct f2fs_filename *fname,
  * Caller should grab and release a rwsem by calling f2fs_lock_op() and
  * f2fs_unlock_op().
  */
-int f2fs_do_add_link(struct inode *dir, const struct qstr *name,
-				struct inode *inode, nid_t ino, umode_t mode)
+int f2fs_do_add_link(struct inode *dir, const struct dentry *dentry,
+			const struct qstr *name,
+			struct inode *inode, nid_t ino, umode_t mode)
 {
 	struct f2fs_filename fname;
 	struct page *page = NULL;
@@ -834,19 +870,20 @@ int f2fs_do_add_link(struct inode *dir, const struct qstr *name,
 	} else if (IS_ERR(page)) {
 		err = PTR_ERR(page);
 	} else {
-		err = f2fs_add_dentry(dir, &fname, inode, ino, mode);
+		err = f2fs_add_dentry(dir, &fname, dentry, inode, ino, mode);
 	}
 	f2fs_free_filename(&fname);
 	return err;
 }
 
-int f2fs_do_tmpfile(struct inode *inode, struct inode *dir)
+int f2fs_do_tmpfile(struct inode *inode, const struct dentry *dentry,
+			struct inode *dir)
 {
 	struct page *page;
 	int err = 0;
 
 	down_write(&F2FS_I(inode)->i_sem);
-	page = f2fs_init_inode_metadata(inode, dir, NULL, NULL);
+	page = f2fs_init_inode_metadata(inode, dentry, dir, NULL, NULL);
 	if (IS_ERR(page)) {
 		err = PTR_ERR(page);
 		goto fail;
@@ -1017,8 +1054,9 @@ int f2fs_fill_dentries(struct dir_context *ctx, struct f2fs_dentry_ptr *d,
 		if (unlikely(bit_pos > d->max ||
 				le16_to_cpu(de->name_len) > F2FS_NAME_LEN)) {
 			f2fs_warn(sbi, "%s: corrupted namelen=%d, run fsck to fix.",
-				  __func__, le16_to_cpu(de->name_len));
+				__func__, le16_to_cpu(de->name_len));
 			set_sbi_flag(sbi, SBI_NEED_FSCK);
+			f2fs_set_need_fsck_report();
 			err = -EFSCORRUPTED;
 			goto out;
 		}
@@ -1128,10 +1166,22 @@ out:
 
 static int f2fs_dir_open(struct inode *inode, struct file *filp)
 {
+#ifdef CONFIG_MAS_ORDER_PRESERVE
+	filp->f_fsync_flag = 0;
+#endif
+
 	if (IS_ENCRYPTED(inode))
 		return fscrypt_get_encryption_info(inode) ? -EACCES : 0;
 	return 0;
 }
+
+#ifdef CONFIG_MAS_ORDER_PRESERVE
+static int f2fs_dir_flush(struct file *file, fl_owner_t id)
+{
+       f2fs_flush_wait_fsync(file);
+       return 0;
+}
+#endif
 
 const struct file_operations f2fs_dir_operations = {
 	.llseek		= generic_file_llseek,
@@ -1139,6 +1189,10 @@ const struct file_operations f2fs_dir_operations = {
 	.iterate_shared	= f2fs_readdir,
 	.fsync		= f2fs_sync_file,
 	.open		= f2fs_dir_open,
+#ifdef CONFIG_MAS_ORDER_PRESERVE
+	.flush		= f2fs_dir_flush,
+#endif
+
 	.unlocked_ioctl	= f2fs_ioctl,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl   = f2fs_compat_ioctl,

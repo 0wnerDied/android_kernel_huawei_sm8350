@@ -160,7 +160,7 @@ int f2fs_convert_inline_page(struct dnode_of_data *dn, struct page *page)
 		f2fs_put_dnode(dn);
 		set_sbi_flag(fio.sbi, SBI_NEED_FSCK);
 		f2fs_warn(fio.sbi, "%s: corrupted inline inode ino=%lx, i_addr[0]:0x%x, run fsck to fix.",
-			  __func__, dn->inode->i_ino, dn->data_blkaddr);
+			__func__, dn->inode->i_ino, dn->data_blkaddr);
 		return -EFSCORRUPTED;
 	}
 
@@ -207,6 +207,10 @@ int f2fs_convert_inline_inode(struct inode *inode)
 	if (!f2fs_has_inline_data(inode))
 		return 0;
 
+	err = f2fs_dquot_initialize(inode);
+	if (err)
+		return err;
+
 	page = f2fs_grab_cache_page(inode->i_mapping, 0, false);
 	if (!page)
 		return -ENOMEM;
@@ -235,13 +239,15 @@ out:
 	return err;
 }
 
-int f2fs_write_inline_data(struct inode *inode, struct page *page)
+int f2fs_write_inline_data_ex(struct inode *inode, struct page *page,
+			bool quick_write)
 {
 	void *src_addr, *dst_addr;
 	struct dnode_of_data dn;
 	int err;
 
 	set_new_dnode(&dn, inode, NULL, NULL, 0);
+	dn.mem_control = quick_write ? 1 : 0;
 	err = f2fs_get_dnode_of_data(&dn, 0, LOOKUP_NODE);
 	if (err)
 		return err;
@@ -270,7 +276,7 @@ int f2fs_write_inline_data(struct inode *inode, struct page *page)
 	return 0;
 }
 
-int f2fs_recover_inline_data(struct inode *inode, struct page *npage)
+bool f2fs_recover_inline_data(struct inode *inode, struct page *npage)
 {
 	struct f2fs_sb_info *sbi = F2FS_I_SB(inode);
 	struct f2fs_inode *ri = NULL;
@@ -292,8 +298,7 @@ int f2fs_recover_inline_data(struct inode *inode, struct page *npage)
 			ri && (ri->i_inline & F2FS_INLINE_DATA)) {
 process_inline:
 		ipage = f2fs_get_node_page(sbi, inode->i_ino);
-		if (IS_ERR(ipage))
-			return PTR_ERR(ipage);
+		f2fs_bug_on(sbi, IS_ERR(ipage));
 
 		f2fs_wait_on_page_writeback(ipage, NODE, true, true);
 
@@ -306,25 +311,21 @@ process_inline:
 
 		set_page_dirty(ipage);
 		f2fs_put_page(ipage, 1);
-		return 1;
+		return true;
 	}
 
 	if (f2fs_has_inline_data(inode)) {
 		ipage = f2fs_get_node_page(sbi, inode->i_ino);
-		if (IS_ERR(ipage))
-			return PTR_ERR(ipage);
+		f2fs_bug_on(sbi, IS_ERR(ipage));
 		f2fs_truncate_inline_inode(inode, ipage, 0);
 		clear_inode_flag(inode, FI_INLINE_DATA);
 		f2fs_put_page(ipage, 1);
 	} else if (ri && (ri->i_inline & F2FS_INLINE_DATA)) {
-		int ret;
-
-		ret = f2fs_truncate_blocks(inode, 0, false);
-		if (ret)
-			return ret;
+		if (f2fs_truncate_blocks(inode, 0, false))
+			return false;
 		goto process_inline;
 	}
-	return 0;
+	return false;
 }
 
 struct f2fs_dir_entry *f2fs_find_in_inline_dir(struct inode *dir,
@@ -403,7 +404,7 @@ static int f2fs_move_inline_dirents(struct inode *dir, struct page *ipage,
 		f2fs_put_dnode(&dn);
 		set_sbi_flag(F2FS_P_SB(page), SBI_NEED_FSCK);
 		f2fs_warn(F2FS_P_SB(page), "%s: corrupted inline inode ino=%lx, i_addr[0]:0x%x, run fsck to fix.",
-			  __func__, dir->i_ino, dn.data_blkaddr);
+			__func__, dir->i_ino, dn.data_blkaddr);
 		err = -EFSCORRUPTED;
 		goto out;
 	}
@@ -479,6 +480,7 @@ static int f2fs_add_inline_entries(struct inode *dir, void *inline_dentry)
 			continue;
 		}
 
+
 		/*
 		 * We only need the disk_name and hash to move the dentry.
 		 * We don't need the original or casefolded filenames.
@@ -491,7 +493,7 @@ static int f2fs_add_inline_entries(struct inode *dir, void *inline_dentry)
 		ino = le32_to_cpu(de->ino);
 		fake_mode = f2fs_get_de_type(de) << S_SHIFT;
 
-		err = f2fs_add_regular_entry(dir, &fname, NULL, ino, fake_mode);
+		err = f2fs_add_regular_entry(dir, &fname, NULL, NULL, ino, fake_mode);
 		if (err)
 			goto punch_dentry_pages;
 
@@ -591,7 +593,6 @@ int f2fs_try_convert_inline_dir(struct inode *dir, struct dentry *dentry)
 		f2fs_put_page(ipage, 1);
 		goto out_fname;
 	}
-
 	inline_dentry = inline_data_addr(dir, ipage);
 
 	err = do_convert_inline_dir(dir, ipage, inline_dentry);
@@ -605,6 +606,7 @@ out:
 }
 
 int f2fs_add_inline_entry(struct inode *dir, const struct f2fs_filename *fname,
+			  const struct dentry *dentry,
 			  struct inode *inode, nid_t ino, umode_t mode)
 {
 	struct f2fs_sb_info *sbi = F2FS_I_SB(dir);
@@ -634,7 +636,7 @@ int f2fs_add_inline_entry(struct inode *dir, const struct f2fs_filename *fname,
 
 	if (inode) {
 		down_write(&F2FS_I(inode)->i_sem);
-		page = f2fs_init_inode_metadata(inode, dir, fname, ipage);
+		page = f2fs_init_inode_metadata(inode, dentry, dir, fname, ipage);
 		if (IS_ERR(page)) {
 			err = PTR_ERR(page);
 			goto fail;

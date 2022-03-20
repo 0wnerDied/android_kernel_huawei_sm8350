@@ -77,12 +77,12 @@ static struct fsync_inode_entry *add_fsync_inode(struct f2fs_sb_info *sbi,
 	if (IS_ERR(inode))
 		return ERR_CAST(inode);
 
-	err = dquot_initialize(inode);
+	err = f2fs_dquot_initialize(inode);
 	if (err)
 		goto err_out;
 
 	if (quota_inode) {
-		err = dquot_alloc_inode(inode);
+		err = f2fs_dquot_alloc_inode(inode);
 		if (err)
 			goto err_out;
 	}
@@ -108,12 +108,19 @@ static void del_fsync_inode(struct fsync_inode_entry *entry, int drop)
 	kmem_cache_free(fsync_entry_slab, entry);
 }
 
+static void destroy_fsync_dnodes(struct list_head *head, int drop)
+{
+	struct fsync_inode_entry *entry, *tmp;
+
+	list_for_each_entry_safe(entry, tmp, head, list)
+		del_fsync_inode(entry, drop);
+}
+
 static int init_recovered_filename(const struct inode *dir,
 				   struct f2fs_inode *raw_inode,
 				   struct f2fs_filename *fname,
 				   struct qstr *usr_fname)
 {
-	int err;
 
 	memset(fname, 0, sizeof(*fname));
 	fname->disk_name.len = le32_to_cpu(raw_inode->i_namelen);
@@ -128,6 +135,7 @@ static int init_recovered_filename(const struct inode *dir,
 		fname->usr_fname = usr_fname;
 	}
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0))
 	/* Compute the hash of the filename */
 	if (IS_ENCRYPTED(dir) && IS_CASEFOLDED(dir)) {
 		/*
@@ -139,7 +147,7 @@ static int init_recovered_filename(const struct inode *dir,
 		fname->hash = get_unaligned((f2fs_hash_t *)
 				&raw_inode->i_name[fname->disk_name.len]);
 	} else if (IS_CASEFOLDED(dir)) {
-		err = f2fs_init_casefolded_name(dir, fname);
+		int err = f2fs_init_casefolded_name(dir, fname);
 		if (err)
 			return err;
 		f2fs_hash_filename(dir, fname);
@@ -148,9 +156,9 @@ static int init_recovered_filename(const struct inode *dir,
 		kfree(fname->cf_name.name);
 		fname->cf_name.name = NULL;
 #endif
-	} else {
+	} else
+#endif
 		f2fs_hash_filename(dir, fname);
-	}
 	return 0;
 }
 
@@ -198,7 +206,7 @@ retry:
 			goto out_put;
 		}
 
-		err = dquot_initialize(einode);
+		err = f2fs_dquot_initialize(einode);
 		if (err) {
 			iput(einode);
 			goto out_put;
@@ -215,7 +223,7 @@ retry:
 	} else if (IS_ERR(page)) {
 		err = PTR_ERR(page);
 	} else {
-		err = f2fs_add_dentry(dir, &fname, inode,
+		err = f2fs_add_dentry(dir, &fname, NULL, inode,
 					inode->i_ino, inode->i_mode);
 	}
 	if (err == -ENOMEM)
@@ -364,6 +372,18 @@ static int find_fsync_dnodes(struct f2fs_sb_info *sbi, struct list_head *head,
 			break;
 		}
 
+		if (PageChecked(page)) {
+			f2fs_err(sbi, "Abandon looped node block list");
+			destroy_fsync_dnodes(head, 1);
+			break;
+		}
+
+		/*
+		 * it's not needed to clear PG_checked flag in temp page since
+		 * we will truncate all those pages in the end of recovery.
+		 */
+		SetPageChecked(page);
+
 		if (!is_recoverable_dnode(page)) {
 			f2fs_put_page(page, 1);
 			break;
@@ -425,14 +445,6 @@ next:
 		f2fs_ra_meta_pages_cond(sbi, blkaddr);
 	}
 	return err;
-}
-
-static void destroy_fsync_dnodes(struct list_head *head, int drop)
-{
-	struct fsync_inode_entry *entry, *tmp;
-
-	list_for_each_entry_safe(entry, tmp, head, list)
-		del_fsync_inode(entry, drop);
 }
 
 static int check_index_in_prev_nodes(struct f2fs_sb_info *sbi,
@@ -502,7 +514,7 @@ got_it:
 		if (IS_ERR(inode))
 			return PTR_ERR(inode);
 
-		ret = dquot_initialize(inode);
+		ret = f2fs_dquot_initialize(inode);
 		if (ret) {
 			iput(inode);
 			return ret;
@@ -554,9 +566,7 @@ static int do_recover_data(struct f2fs_sb_info *sbi, struct inode *inode,
 
 	/* step 1: recover xattr */
 	if (IS_INODE(page)) {
-		err = f2fs_recover_inline_xattr(inode, page);
-		if (err)
-			goto out;
+		f2fs_recover_inline_xattr(inode, page);
 	} else if (f2fs_has_xattr_block(ofs_of_node(page))) {
 		err = f2fs_recover_xattr_data(inode, page);
 		if (!err)
@@ -565,12 +575,8 @@ static int do_recover_data(struct f2fs_sb_info *sbi, struct inode *inode,
 	}
 
 	/* step 2: recover inline data */
-	err = f2fs_recover_inline_data(inode, page);
-	if (err) {
-		if (err == 1)
-			err = 0;
+	if (f2fs_recover_inline_data(inode, page))
 		goto out;
-	}
 
 	/* step 3: recover data indices */
 	start = f2fs_start_bidx_of_node(ofs_of_node(page), inode);
@@ -597,8 +603,8 @@ retry_dn:
 
 	if (ofs_of_node(dn.node_page) != ofs_of_node(page)) {
 		f2fs_warn(sbi, "Inconsistent ofs_of_node, ino:%lu, ofs:%u, %u",
-			  inode->i_ino, ofs_of_node(dn.node_page),
-			  ofs_of_node(page));
+			inode->i_ino, ofs_of_node(dn.node_page),
+			ofs_of_node(page));
 		err = -EFSCORRUPTED;
 		goto err;
 	}
@@ -609,13 +615,13 @@ retry_dn:
 		src = f2fs_data_blkaddr(&dn);
 		dest = data_blkaddr(dn.inode, page, dn.ofs_in_node);
 
-		if (__is_valid_data_blkaddr(src) &&
+		if (__is_valid_data_blkaddr(sbi, src) &&
 			!f2fs_is_valid_blkaddr(sbi, src, META_POR)) {
 			err = -EFSCORRUPTED;
 			goto err;
 		}
 
-		if (__is_valid_data_blkaddr(dest) &&
+		if (__is_valid_data_blkaddr(sbi, dest) &&
 			!f2fs_is_valid_blkaddr(sbi, dest, META_POR)) {
 			err = -EFSCORRUPTED;
 			goto err;

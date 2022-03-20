@@ -44,7 +44,11 @@ static void xattr_free(struct f2fs_sb_info *sbi, void *xattr_addr,
 
 static int f2fs_xattr_generic_get(const struct xattr_handler *handler,
 		struct dentry *unused, struct inode *inode,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0))
 		const char *name, void *buffer, size_t size, int flags)
+#else
+		const char *name, void *buffer, size_t size)
+#endif
 {
 	struct f2fs_sb_info *sbi = F2FS_SB(inode->i_sb);
 
@@ -99,7 +103,11 @@ static bool f2fs_xattr_trusted_list(struct dentry *dentry)
 
 static int f2fs_xattr_advise_get(const struct xattr_handler *handler,
 		struct dentry *unused, struct inode *inode,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0))
 		const char *name, void *buffer, size_t size, int flags)
+#else
+		const char *name, void *buffer, size_t size)
+#endif
 {
 	if (buffer)
 		*((char *)buffer) = F2FS_I(inode)->i_advise;
@@ -223,8 +231,8 @@ static inline const struct xattr_handler *f2fs_xattr_handler(int index)
 }
 
 static struct f2fs_xattr_entry *__find_xattr(void *base_addr,
-				void *last_base_addr, int index,
-				size_t len, const char *name)
+					void *last_base_addr, int index,
+					size_t len, const char *name)
 {
 	struct f2fs_xattr_entry *entry;
 
@@ -583,7 +591,7 @@ ssize_t f2fs_listxattr(struct dentry *dentry, char *buffer, size_t buffer_size)
 		if ((void *)(entry) + sizeof(__u32) > last_base_addr ||
 			(void *)XATTR_NEXT_ENTRY(entry) > last_base_addr) {
 			f2fs_err(F2FS_I_SB(inode), "inode (%lu) has corrupted xattr",
-						inode->i_ino);
+					inode->i_ino);
 			set_sbi_flag(F2FS_I_SB(inode), SBI_NEED_FSCK);
 			error = -EFSCORRUPTED;
 			goto cleanup;
@@ -627,6 +635,7 @@ static int __f2fs_setxattr(struct inode *inode, int index,
 			const char *name, const void *value, size_t size,
 			struct page *ipage, int flags)
 {
+	struct f2fs_sb_info *sbi = F2FS_I_SB(inode);
 	struct f2fs_xattr_entry *here, *last;
 	void *base_addr, *last_base_addr;
 	int found, newsize;
@@ -744,8 +753,11 @@ static int __f2fs_setxattr(struct inode *inode, int index,
 		clear_inode_flag(inode, FI_ACL_MODE);
 	}
 	if (index == F2FS_XATTR_INDEX_ENCRYPTION &&
-			!strcmp(name, F2FS_XATTR_NAME_ENCRYPTION_CONTEXT))
+			!strcmp(name, F2FS_XATTR_NAME_ENCRYPTION_CONTEXT)) {
 		f2fs_set_encrypted_inode(inode);
+		if (test_opt(sbi, INLINE_ENCRYPT))
+			f2fs_set_inline_encrypted_inode(inode);
+	}
 	f2fs_mark_inode_dirty_sync(inode, true);
 	if (!error && S_ISDIR(inode->i_mode))
 		set_sbi_flag(F2FS_I_SB(inode), SBI_NEED_CP);
@@ -763,10 +775,11 @@ int f2fs_setxattr(struct inode *inode, int index, const char *name,
 
 	if (unlikely(f2fs_cp_error(sbi)))
 		return -EIO;
+
 	if (!f2fs_is_checkpoint_ready(sbi))
 		return -ENOSPC;
 
-	err = dquot_initialize(inode);
+	err = f2fs_dquot_initialize(inode);
 	if (err)
 		return err;
 

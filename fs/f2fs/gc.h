@@ -5,6 +5,11 @@
  * Copyright (c) 2012 Samsung Electronics Co., Ltd.
  *             http://www.samsung.com/
  */
+#include <linux/ratelimit.h>
+
+#define F2FS_GC_DSM_INTERVAL      (200 * HZ)
+#define F2FS_GC_DSM_BURST         2
+
 #define GC_THREAD_MIN_WB_PAGES		1	/*
 						 * a threshold to determine
 						 * whether IO subsystem is idle
@@ -22,18 +27,12 @@
 /* Search max. number of dirty segments to select a victim segment */
 #define DEF_MAX_VICTIM_SEARCH 4096 /* covers 8GB */
 
-struct f2fs_gc_kthread {
-	struct task_struct *f2fs_gc_task;
-	wait_queue_head_t gc_wait_queue_head;
-
-	/* for gc sleep time */
-	unsigned int urgent_sleep_time;
-	unsigned int min_sleep_time;
-	unsigned int max_sleep_time;
-	unsigned int no_gc_sleep_time;
-
-	/* for changing gc mode */
-	unsigned int gc_wake;
+/* GC preferences */
+enum {
+	GC_LIFETIME = 0,
+	GC_BALANCE,
+	GC_PERF,
+	GC_FRAG
 };
 
 struct gc_inode_list {
