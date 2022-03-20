@@ -13,6 +13,8 @@
 #include <linux/usb/phy.h>
 #include <linux/jiffies.h>
 
+#include "dp_aux_switch.h"
+#include "dp_source_switch.h"
 #include "sde_connector.h"
 
 #include "msm_drv.h"
@@ -66,6 +68,9 @@ enum dp_display_states {
 	DP_STATE_SRC_PWRDN              = BIT(10),
 	DP_STATE_TUI_ACTIVE             = BIT(11),
 };
+
+#define MAX_DIFF_SOURCE_H_SIZE     1920
+#define MAX_DIFF_SOURCE_V_SIZE     1080
 
 static char *dp_display_state_name(enum dp_display_states state)
 {
@@ -198,6 +203,7 @@ struct dp_display_private {
 	u32 tot_dsc_blks_in_use;
 
 	bool process_hpd_connect;
+	bool same_mode;
 
 	struct notifier_block usb_nb;
 };
@@ -1060,7 +1066,7 @@ static int dp_display_host_ready(struct dp_display_private *dp)
 	if (!dp_display_state_is(DP_STATE_INITIALIZED)) {
 		rc = dp_display_host_init(dp);
 		if (rc) {
-			dp_display_state_show("[not initialized]");
+		dp_display_state_show("[not initialized]");
 			return rc;
 		}
 	}
@@ -1369,6 +1375,7 @@ static int dp_display_usbpd_configure_cb(struct device *dev)
 
 	dp_display_state_remove(DP_STATE_ABORTED);
 	dp_display_state_add(DP_STATE_CONFIGURED);
+	dp_aux_switch_enable(true);
 
 	rc = dp_display_host_init(dp);
 	if (rc) {
@@ -1561,6 +1568,8 @@ static int dp_display_usbpd_disconnect_cb(struct device *dev)
 	dp_display_host_deinit(dp);
 	dp_display_state_remove(DP_STATE_CONFIGURED);
 	mutex_unlock(&dp->session_lock);
+
+	dp_aux_switch_enable(false);
 
 	if (!dp->debug->sim_mode && !dp->parser->no_aux_switch
 	    && !dp->parser->gpio_aux_switch)
@@ -2885,6 +2894,13 @@ static enum drm_mode_status dp_display_validate_mode(
 	if (!use_default)
 		goto end;
 
+	dp->same_mode = get_current_dp_source_mode();
+	if (!dp->same_mode) {
+		if (mode->hdisplay > MAX_DIFF_SOURCE_H_SIZE ||
+			mode->vdisplay > MAX_DIFF_SOURCE_V_SIZE)
+			goto end;
+	}
+
 	if (debug->debug_en && (mode->hdisplay != debug->hdisplay ||
 			mode->vdisplay != debug->vdisplay ||
 			mode->vrefresh != debug->vrefresh ||
@@ -3550,6 +3566,34 @@ static void dp_display_wakeup_phy_layer(struct dp_display *dp_display,
 		hpd->wakeup_phy(hpd, wakeup);
 }
 
+int dp_display_switch_source(void)
+{
+	struct dp_display_private *dp = container_of(g_dp_display,
+		struct dp_display_private, dp_display);
+
+	if (!dp) {
+		DP_ERR("dp not found\n");
+		return -ENODEV;
+	}
+
+	if (dp->same_mode == get_current_dp_source_mode()) {
+		DP_INFO("don't switch source when the dest mode is same as current\n");
+		return 0;
+	}
+
+	if ((dp->panel->pinfo.h_active <= MAX_DIFF_SOURCE_H_SIZE) &&
+		(dp->panel->pinfo.v_active <= MAX_DIFF_SOURCE_V_SIZE)) {
+		DP_INFO("don't need to switch source\n");
+		return 0;
+	}
+
+	DP_INFO("%s\n", __func__);
+	dp_display_disconnect_sync(dp);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(dp_display_switch_source);
+
 static int dp_display_probe(struct platform_device *pdev)
 {
 	int rc = 0;
@@ -3572,6 +3616,7 @@ static int dp_display_probe(struct platform_device *pdev)
 
 	dp->pdev = pdev;
 	dp->name = "drm_dp";
+	dp->same_mode = true;
 
 	memset(&dp->mst, 0, sizeof(dp->mst));
 

@@ -42,6 +42,7 @@
 #include "sde_hw_qdss.h"
 #include "sde_encoder_dce.h"
 #include "sde_vm.h"
+#include "lcd_kit_displayengine.h"
 
 #define SDE_DEBUG_ENC(e, fmt, ...) SDE_DEBUG("enc%d " fmt,\
 		(e) ? (e)->base.base.id : -1, ##__VA_ARGS__)
@@ -267,13 +268,11 @@ static int _sde_encoder_wait_timeout(int32_t drm_id, int32_t hw_id,
 	return rc;
 }
 
-bool sde_encoder_is_primary_display(struct drm_encoder *drm_enc)
+u32 sde_encoder_get_display_type(struct drm_encoder *drm_enc)
 {
 	struct sde_encoder_virt *sde_enc = to_sde_encoder_virt(drm_enc);
 
-	return sde_enc &&
-		(sde_enc->disp_info.display_type ==
-		SDE_CONNECTOR_PRIMARY);
+	return sde_enc ? sde_enc->disp_info.display_type : 0;
 }
 
 bool sde_encoder_is_dsi_display(struct drm_encoder *drm_enc)
@@ -809,6 +808,7 @@ void sde_encoder_set_clone_mode(struct drm_encoder *drm_enc,
 			SDE_DEBUG("enc:%d phys state:%d\n", DRMID(drm_enc), phys->enable_state);
 		}
 	}
+	sde_crtc_state->cwb_enc_mask = 0;
 }
 
 static int _sde_encoder_atomic_check_phys_enc(struct sde_encoder_virt *sde_enc,
@@ -916,6 +916,11 @@ static int _sde_encoder_atomic_check_reserve(struct drm_encoder *drm_enc,
 			ret = -EINVAL;
 			return ret;
 		}
+		/* Skip RM allocation for Primary during CWB usecase */
+		if (!crtc_state->mode_changed && !crtc_state->active_changed &&
+			crtc_state->connectors_changed && (conn_state->crtc ==
+			conn_state->connector->state->crtc))
+		goto skip_reserve;
 
 		/* Reserve dynamic resources, indicating atomic_check phase */
 		ret = sde_rm_reserve(&sde_kms->rm, drm_enc, crtc_state,
@@ -926,7 +931,7 @@ static int _sde_encoder_atomic_check_reserve(struct drm_encoder *drm_enc,
 				ret);
 			return ret;
 		}
-
+		skip_reserve:
 		/**
 		 * Update connector state with the topology selected for the
 		 * resource set validated. Reset the topology if we are
@@ -1948,7 +1953,8 @@ static int _sde_encoder_rc_idle(struct drm_encoder *drm_enc,
 		goto end;
 	} else if (sde_crtc_frame_pending(sde_enc->crtc) ||
 			sde_crtc->kickoff_in_progress ||
-			sde_enc->delay_kickoff) {
+			sde_enc->delay_kickoff ||
+			display_engine_brightness_is_fingerprint_hbm_enabled()) {
 		SDE_DEBUG_ENC(sde_enc, "skip idle entry");
 		SDE_EVT32(DRMID(drm_enc), sw_event, sde_enc->rc_state,
 			sde_crtc_frame_pending(sde_enc->crtc),
@@ -2272,9 +2278,9 @@ static int sde_encoder_virt_modeset_rc(struct drm_encoder *drm_enc,
 
 	if (pre_modeset) {
 		intf_mode = sde_encoder_get_intf_mode(drm_enc);
-		if (msm_is_mode_seamless_dms(adj_mode) ||
-				(msm_is_mode_seamless_dyn_clk(adj_mode) &&
-				 is_cmd_mode)) {
+		if ((msm_is_mode_seamless_dms(adj_mode) ||
+				msm_is_mode_seamless_dyn_clk(adj_mode)) &&
+				is_cmd_mode) {
 			/* restore resource state before releasing them */
 			ret = sde_encoder_resource_control(drm_enc,
 					SDE_ENC_RC_EVENT_PRE_MODESET);
@@ -2298,9 +2304,9 @@ static int sde_encoder_virt_modeset_rc(struct drm_encoder *drm_enc,
 					adj_mode);
 		}
 	} else {
-		if (msm_is_mode_seamless_dms(adj_mode) ||
-				(msm_is_mode_seamless_dyn_clk(adj_mode) &&
-				is_cmd_mode))
+		if ((msm_is_mode_seamless_dms(adj_mode) ||
+				msm_is_mode_seamless_dyn_clk(adj_mode)) &&
+				is_cmd_mode)
 			sde_encoder_resource_control(&sde_enc->base,
 					SDE_ENC_RC_EVENT_POST_MODESET);
 		else if (msm_is_mode_seamless_poms(adj_mode))

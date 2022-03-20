@@ -49,6 +49,8 @@
 #include "msm_mmu.h"
 #include "sde_wb.h"
 #include "sde_dbg.h"
+#include "lcd_kit_drm_panel.h"
+#include "lcd_kit_displayengine.h"
 
 /*
  * MSM driver version:
@@ -82,20 +84,6 @@
 			(ktime_compare_safe(exp_ktime, cur_ktime) > 0));\
 	} while (0)
 
-static void msm_fb_output_poll_changed(struct drm_device *dev)
-{
-	struct msm_drm_private *priv = NULL;
-
-	if (!dev) {
-		DRM_ERROR("output_poll_changed failed, invalid input\n");
-		return;
-	}
-
-	priv = dev->dev_private;
-
-	if (priv->fbdev)
-		drm_fb_helper_hotplug_event(priv->fbdev);
-}
 
 /**
  * msm_atomic_helper_check - validate state object
@@ -128,7 +116,7 @@ int msm_atomic_check(struct drm_device *dev,
 
 static const struct drm_mode_config_funcs mode_config_funcs = {
 	.fb_create = msm_framebuffer_create,
-	.output_poll_changed = msm_fb_output_poll_changed,
+	.output_poll_changed = NULL,
 	.atomic_check = msm_atomic_check,
 	.atomic_commit = msm_atomic_commit,
 	.atomic_state_alloc = msm_atomic_state_alloc,
@@ -907,7 +895,9 @@ static int msm_drm_component_init(struct device *dev)
 #endif
 
 	/* create drm client only when fbdev is not supported */
+#ifndef CONFIG_LCD_KIT_DRIVER
 	if (!priv->fbdev) {
+#endif
 		ret = drm_client_init(ddev, &kms->client, "kms_client", NULL);
 		if (ret) {
 			DRM_ERROR("failed to init kms_client: %d\n", ret);
@@ -916,8 +906,9 @@ static int msm_drm_component_init(struct device *dev)
 		}
 
 		drm_client_register(&kms->client);
+#ifndef CONFIG_LCD_KIT_DRIVER
 	}
-
+#endif
 	ret = sde_dbg_debugfs_register(dev);
 	if (ret) {
 		dev_err(dev, "failed to reg sde dbg debugfs: %d\n", ret);
@@ -1054,6 +1045,7 @@ static void msm_lastclose(struct drm_device *dev)
 		DRM_INFO("wait for crtc mask 0x%x failed, commit anyway...\n",
 				priv->pending_crtcs);
 
+#ifndef CONFIG_LCD_KIT_DRIVER
 	if (priv->fbdev) {
 		rc = drm_fb_helper_restore_fbdev_mode_unlocked(priv->fbdev);
 		if (rc)
@@ -1063,6 +1055,13 @@ static void msm_lastclose(struct drm_device *dev)
 		if (rc)
 			DRM_ERROR("client modeset commit failed: %d\n", rc);
 	}
+#else
+	if (kms && kms->client.dev) {
+		rc = drm_client_modeset_commit_force(&kms->client);
+		if (rc)
+			DRM_ERROR("client modeset commit failed: %d\n", rc);
+	}
+#endif
 
 	/* wait again, before kms driver does it's lastclose commit */
 	msm_wait_event_timeout(priv->pending_crtcs_event, !priv->pending_crtcs,
@@ -1691,6 +1690,9 @@ static const struct drm_ioctl_desc msm_ioctls[] = {
 			DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(MSM_DISPLAY_HINT, msm_ioctl_display_hint_ops,
 			DRM_UNLOCKED),
+	DRM_IOCTL_DEF_DRV(HBM_MODE_SET_PARAM, panel_drm_hbm_set, DRM_UNLOCKED),
+	DRM_IOCTL_DEF_DRV(DISPLAY_ENGINE_GET, display_engine_get_param, DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(DISPLAY_ENGINE_SET, display_engine_set_param, DRM_UNLOCKED),
 };
 
 static const struct vm_operations_struct vm_ops = {

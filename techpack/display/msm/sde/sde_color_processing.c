@@ -18,6 +18,7 @@
 #include "sde_core_irq.h"
 #include "dsi_panel.h"
 #include "sde_hw_color_proc_common_v4.h"
+#include "lcd_kit_displayengine.h"
 
 struct sde_cp_node {
 	u32 property_id;
@@ -437,8 +438,8 @@ static int set_dspp_hist_ctrl_feature(struct sde_hw_dspp *hw_dspp,
 	if (!hw_dspp || !hw_dspp->ops.setup_histogram) {
 		ret = -EINVAL;
 	} else {
-		feature_enabled = hw_cfg->payload &&
-			*((u64 *)hw_cfg->payload) != 0;
+		feature_enabled = display_engine_hist_is_enable() ||
+			(hw_cfg->payload && *((u64 *)hw_cfg->payload) != 0);
 		hw_dspp->ops.setup_histogram(hw_dspp, &feature_enabled);
 	}
 	return ret;
@@ -1545,6 +1546,35 @@ static int sde_cp_crtc_checkfeature(struct sde_cp_node *prop_node,
 	return ret;
 }
 
+static void check_and_apply_hist_ctrl(u32 feature, int index, int ret,
+	struct sde_hw_cp_cfg *hw_cfg, struct sde_crtc *sde_crtc)
+{
+	static u64 hist_last_payload;
+
+	if (index <= 0 || !sde_crtc->num_mixers) {
+		DRM_WARN("index=%d num_mixers=%u", index, sde_crtc->num_mixers);
+		return;
+	}
+
+	if (feature == SDE_CP_CRTC_DSPP_HIST_CTRL && hw_cfg->payload && !ret) {
+		if (index == 1) {
+			hist_last_payload = *((u64 *)hw_cfg->payload);
+		} else {
+			DRM_WARN("Skip payload=%llu of mixer=%d, hist_last_payload=%llu",
+				*((u64 *)hw_cfg->payload), index - 1, hist_last_payload);
+		}
+	}
+
+	if (display_engine_hist_is_enable_change()) {
+		struct sde_hw_cp_cfg hist_cfg = *hw_cfg;
+
+		hist_cfg.payload = &hist_last_payload;
+		DRM_INFO("call set_dspp_hist_ctrl_feature() payload=%llu de_hist_enable=%d",
+			hist_last_payload, display_engine_hist_is_enable());
+		set_dspp_hist_ctrl_feature(sde_crtc->mixers[0].hw_dspp, &hist_cfg, sde_crtc);
+	}
+}
+
 static void sde_cp_crtc_setfeature(struct sde_cp_node *prop_node,
 				   struct sde_crtc *sde_crtc)
 {
@@ -1593,6 +1623,7 @@ static void sde_cp_crtc_setfeature(struct sde_cp_node *prop_node,
 			if (ret)
 				break;
 		}
+		check_and_apply_hist_ctrl(prop_node->feature, i, ret, &hw_cfg, sde_crtc);
 
 		if (ret) {
 			DRM_ERROR("failed to %s feature %d\n",
@@ -2266,6 +2297,63 @@ int sde_cp_crtc_set_property(struct drm_crtc *crtc,
 		sde_cp_update_list(prop_node, sde_crtc, true);
 	}
 exit:
+	mutex_unlock(&sde_crtc->crtc_cp_lock);
+	return ret;
+}
+
+int sde_cp_crtc_update_pcc(struct drm_crtc *crtc)
+{
+	struct sde_cp_node *prop_node = NULL;
+	struct sde_crtc *sde_crtc = NULL;
+	int ret = 0;
+	int i = 0;
+	int dspp_cnt = 0;
+	u8 found = 0;
+
+	if (!crtc) {
+		DRM_ERROR("invalid crtc %pK\n", crtc);
+		return -EINVAL;
+	}
+
+	sde_crtc = to_sde_crtc(crtc);
+	if (!sde_crtc) {
+		DRM_ERROR("invalid sde_crtc %pK\n", sde_crtc);
+		return -EINVAL;
+	}
+	DRM_INFO("%s +\n", __func__);
+	mutex_lock(&sde_crtc->crtc_cp_lock);
+	list_for_each_entry(prop_node, &sde_crtc->feature_list, feature_list) {
+		if (prop_node->feature == SDE_CP_CRTC_DSPP_PCC) {
+			found = 1;
+			break;
+		}
+	}
+
+	if (!found) {
+		ret = -ENOENT;
+		goto exit;
+	}
+	for (i = 0; i < sde_crtc->num_mixers; i++) {
+		if (sde_crtc->mixers[i].hw_dspp)
+			dspp_cnt++;
+	}
+
+	if (prop_node->is_dspp_feature && dspp_cnt < sde_crtc->num_mixers) {
+		DRM_ERROR("invalid dspp cnt %d mixer cnt %d\n", dspp_cnt,
+			sde_crtc->num_mixers);
+		ret = -EINVAL;
+		goto exit;
+	}
+
+	/* remove the property from dirty list */
+	list_del_init(&prop_node->dirty_list);
+	/* remove the property from active list */
+	list_del_init(&prop_node->active_list);
+	/* Mark the feature as dirty */
+	sde_cp_update_list(prop_node, sde_crtc, true);
+
+exit:
+	DRM_INFO("%s -\n", __func__);
 	mutex_unlock(&sde_crtc->crtc_cp_lock);
 	return ret;
 }

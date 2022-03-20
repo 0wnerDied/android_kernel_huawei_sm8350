@@ -138,6 +138,7 @@ struct dp_display {
 int dp_display_get_num_of_displays(void);
 int dp_display_get_displays(void **displays, int count);
 int dp_display_get_num_of_streams(void);
+int dp_display_switch_source(void);
 #else
 static inline int dp_display_get_num_of_displays(void)
 {
@@ -153,6 +154,10 @@ static inline int dp_display_get_num_of_streams(void)
 }
 static inline int dp_connector_update_pps(struct drm_connector *connector,
 		char *pps_cmd, void *display)
+{
+	return 0;
+}
+static inline int dp_display_switch_source(void)
 {
 	return 0;
 }

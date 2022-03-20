@@ -102,6 +102,16 @@ enum sde_crtc_vm_req {
 };
 
 /**
+ * enum sde_crtc_fingerprint_state: states of fingerprint
+ * @FINGERPRINT_OFF: off
+ * @FINGERPRINT_ON: on
+ */
+enum sde_crtc_fingerprint_state {
+	FINGERPRINT_OFF,
+	FINGERPRINT_ON,
+};
+
+/**
  * @connectors    : Currently associated drm connectors for retire event
  * @num_connectors: Number of associated drm connectors for retire event
  * @list:	event list
@@ -945,10 +955,9 @@ void sde_crtc_static_cache_read_kickoff(struct drm_crtc *crtc);
  *				of primary connector
  * @crtc: Pointer to DRM crtc object
  * @connector: Pointer to DRM connector object of WB in CWB case
- * @crtc_state:	Pointer to DRM crtc state
  */
 int sde_crtc_get_num_datapath(struct drm_crtc *crtc,
-	struct drm_connector *connector, struct drm_crtc_state *crtc_state);
+		struct drm_connector *connector, struct drm_crtc_state *crtc_state);
 
 /**
  * sde_crtc_reset_sw_state - reset dirty proerties on crtc and

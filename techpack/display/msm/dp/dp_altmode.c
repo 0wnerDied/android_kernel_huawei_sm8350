@@ -11,6 +11,7 @@
 #include <linux/soc/qcom/altmode-glink.h>
 #include <linux/usb/dwc3-msm.h>
 #include <linux/usb/pd_vdo.h>
+#include <chipset_common/hwpower/common_module/power_event_ne.h>
 
 #include "dp_altmode.h"
 #include "dp_debug.h"
@@ -110,6 +111,7 @@ static void dp_altmode_send_pan_ack(struct altmode_client *amclient,
 static int dp_altmode_notify(void *priv, void *data, size_t len)
 {
 	int rc = 0;
+	int connected = 0;
 	struct dp_altmode_private *altmode =
 			(struct dp_altmode_private *) priv;
 	u8 port_index, dp_data, orientation;
@@ -150,8 +152,10 @@ static int dp_altmode_notify(void *priv, void *data, size_t len)
 			altmode->connected = false;
 			altmode->dp_altmode.base.alt_mode_cfg_done = false;
 			altmode->dp_altmode.base.orientation = ORIENTATION_NONE;
-			if (altmode->dp_cb && altmode->dp_cb->disconnect)
+			if (altmode->dp_cb && altmode->dp_cb->disconnect) {
 				altmode->dp_cb->disconnect(altmode->dev);
+				power_event_bnc_notify(POWER_BNT_HW_USB, POWER_NE_HW_DP_STATE, &connected);
+			}
 		}
 		goto ack;
 	}
@@ -181,11 +185,14 @@ static int dp_altmode_notify(void *priv, void *data, size_t len)
 
 		rc = dp_altmode_release_ss_lanes(altmode,
 				altmode->dp_altmode.base.multi_func);
-		if (rc)
-			goto ack;
+			if (rc)
+				goto ack;
 
-		if (altmode->dp_cb && altmode->dp_cb->configure)
+		if (altmode->dp_cb && altmode->dp_cb->configure) {
 			altmode->dp_cb->configure(altmode->dev);
+			connected = 1;
+			power_event_bnc_notify(POWER_BNT_HW_USB, POWER_NE_HW_DP_STATE, &connected);
+		}
 		goto ack;
 	}
 

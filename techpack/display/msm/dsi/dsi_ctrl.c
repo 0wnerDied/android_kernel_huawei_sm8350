@@ -2947,6 +2947,7 @@ static void _dsi_ctrl_destroy_isr(struct dsi_ctrl *dsi_ctrl)
 		devm_free_irq(&dsi_ctrl->pdev->dev,
 				dsi_ctrl->irq_info.irq_num, dsi_ctrl);
 		dsi_ctrl->irq_info.irq_num = -1;
+		dsi_ctrl->irq_info.irq_stat_mask = 0;
 	}
 }
 
@@ -3391,12 +3392,27 @@ int dsi_ctrl_cmd_transfer(struct dsi_ctrl *dsi_ctrl,
 			  u32 *flags)
 {
 	int rc = 0;
+#ifdef CONFIG_LCD_KIT_DRIVER
+	int i = 0;
+	char temp;
+#endif
 
 	if (!dsi_ctrl || !msg) {
 		DSI_CTRL_ERR(dsi_ctrl, "Invalid params\n");
 		return -EINVAL;
 	}
-
+#ifdef CONFIG_LCD_KIT_DRIVER
+	DSI_DEBUG("channel = 0x%x\n", msg->channel);
+	DSI_DEBUG("type = 0x%x\n", msg->type);
+	DSI_DEBUG("flags = 0x%x\n", msg->flags);
+	DSI_DEBUG("ctrl = 0x%x\n", msg->ctrl);
+	DSI_DEBUG("wait_ms = 0x%x\n", msg->wait_ms);
+	DSI_DEBUG("tx_len = 0x%x\n", msg->tx_len);
+	for (; i < msg->tx_len; i++) {
+		temp = ((char *)(msg->tx_buf))[i];
+		DSI_DEBUG("tx_buf[%d] = 0x%x\n", i, temp);
+	}
+#endif
 	mutex_lock(&dsi_ctrl->ctrl_lock);
 
 	rc = dsi_ctrl_check_state(dsi_ctrl, DSI_CTRL_OP_CMD_TX, 0x0);

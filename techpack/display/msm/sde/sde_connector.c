@@ -19,9 +19,14 @@
 #include "sde_rm.h"
 #include "sde_vm.h"
 #include <drm/drm_probe_helper.h>
+#include "lcd_kit_displayengine.h"
 
 #define BL_NODE_NAME_SIZE 32
 #define HDR10_PLUS_VSIF_TYPE_CODE      0x81
+#ifdef CONFIG_LCD_KIT_DRIVER
+extern unsigned int esd_recovery_backlight_status;
+extern unsigned int esd_recovery_level;
+#endif
 
 /* Autorefresh will occur after FRAME_CNT frames. Large values are unlikely */
 #define AUTOREFRESH_MAX_FRAME_CNT 6
@@ -96,9 +101,11 @@ static int sde_backlight_device_update_status(struct backlight_device *bd)
 	struct sde_connector *c_conn = bl_get_data(bd);
 	int bl_lvl;
 	struct drm_event event;
+	struct drm_event brightness_info_event;
 	int rc = 0;
 	struct sde_kms *sde_kms;
 	struct sde_vm_ops *vm_ops;
+	struct brightness_info brightness_info_to_als;
 
 	sde_kms = _sde_connector_get_kms(&c_conn->base);
 	if (!sde_kms) {
@@ -150,6 +157,16 @@ static int sde_backlight_device_update_status(struct backlight_device *bd)
 		rc = c_conn->ops.set_backlight(&c_conn->base,
 				c_conn->display, bl_lvl);
 		c_conn->unset_bl_level = 0;
+
+		brightness_info_event.type = DRM_EVENT_BRIGHTNESS_INFO;
+		brightness_info_event.length = sizeof(struct brightness_info);
+		brightness_info_to_als.mipi_level =
+			display_engine_brightness_get_mipi_level();
+		brightness_info_to_als.bl_level = brightness;
+		brightness_info_to_als.brightness_mode =
+			display_engine_brightness_get_mode_in_use();
+		msm_mode_object_event_notify(&c_conn->base.base,
+			c_conn->base.dev, &brightness_info_event, (u8 *)&brightness_info_to_als);
 	}
 
 done:
@@ -211,7 +228,12 @@ static int sde_backlight_setup(struct sde_connector *c_conn,
 	props.type = BACKLIGHT_RAW;
 	props.power = FB_BLANK_UNBLANK;
 	props.max_brightness = bl_config->brightness_max_level;
+#ifdef CONFIG_LCD_KIT_DRIVER
+	props.brightness = bl_config->bl_default_level;
+#else
 	props.brightness = bl_config->brightness_max_level;
+#endif
+	props.display_count = display_count;
 	snprintf(bl_node_name, BL_NODE_NAME_SIZE, "panel%u-backlight",
 							display_count);
 	c_conn->bl_device = backlight_device_register(bl_node_name, dev->dev,
@@ -422,7 +444,7 @@ static void sde_connector_get_avail_res_info(struct drm_connector *conn,
 }
 
 int sde_connector_get_lm_cnt_from_topology(struct drm_connector *conn,
-		const struct drm_display_mode *drm_mode)
+  const struct drm_display_mode *drm_mode)
 {
 	struct sde_connector *c_conn;
 
@@ -434,6 +456,7 @@ int sde_connector_get_lm_cnt_from_topology(struct drm_connector *conn,
 
 	return c_conn->ops.get_num_lm_from_mode(c_conn->display, drm_mode);
 }
+
 
 int sde_connector_get_mode_info(struct drm_connector *conn,
 		const struct drm_display_mode *drm_mode,
@@ -952,6 +975,7 @@ void sde_connector_helper_bridge_disable(struct drm_connector *connector)
 	if (!sde_in_trusted_vm(sde_kms) && c_conn->bl_device) {
 		c_conn->bl_device->props.power = FB_BLANK_POWERDOWN;
 		c_conn->bl_device->props.state |= BL_CORE_FBBLANK;
+		c_conn->bl_device->props.brightness = 0;
 		backlight_update_status(c_conn->bl_device);
 	}
 
@@ -988,6 +1012,10 @@ void sde_connector_helper_bridge_enable(struct drm_connector *connector)
 	if (!sde_in_trusted_vm(sde_kms) && c_conn->bl_device) {
 		c_conn->bl_device->props.power = FB_BLANK_UNBLANK;
 		c_conn->bl_device->props.state &= ~BL_CORE_FBBLANK;
+#ifdef CONFIG_LCD_KIT_DRIVER
+		if (esd_recovery_backlight_status)
+			c_conn->bl_device->props.brightness = esd_recovery_level;
+#endif
 		backlight_update_status(c_conn->bl_device);
 	}
 	c_conn->panel_dead = false;
@@ -1833,7 +1861,7 @@ static int _sde_connector_lm_preference(struct sde_connector *sde_conn,
 		return -EINVAL;
 	}
 
-	sde_hw_mixer_set_preference(sde_kms->catalog, num_lm, disp_type);
+	sde_conn->lm_mask = sde_hw_mixer_set_preference(sde_kms->catalog, num_lm, disp_type);
 
 	return ret;
 }
@@ -2408,7 +2436,7 @@ static int sde_connector_atomic_check(struct drm_connector *connector,
 	return 0;
 }
 
-static void _sde_connector_report_panel_dead(struct sde_connector *conn,
+void _sde_connector_report_panel_dead(struct sde_connector *conn,
 	bool skip_pre_kickoff)
 {
 	struct drm_event event;
@@ -2477,6 +2505,33 @@ int sde_connector_esd_status(struct drm_connector *conn)
 	return ret;
 }
 
+#ifdef CONFIG_LCD_KIT_DRIVER
+#define AOD_EXIT_MIN_TIME 67
+static void lcd_delay_lp_to_on(void *display)
+{
+	ktime_t cur_timestamp;
+	unsigned int diff_ms;
+	struct dsi_display *dsi_display = NULL;
+
+	dsi_display = display;
+	if (dsi_display == NULL) {
+		SDE_ERROR("dsi_display is null\n");
+		return;
+	}
+	if (dsi_display->panel->power_mode != SDE_MODE_DPMS_ON)
+		return;
+	cur_timestamp = ktime_get();
+	diff_ms = (ktime_to_us(cur_timestamp) -
+		ktime_to_us(dsi_display->lp_to_on_time)) / 1000; /* us to ms */
+	if (diff_ms < AOD_EXIT_MIN_TIME) {
+		SDE_INFO("lp to on sleep %ums\n", AOD_EXIT_MIN_TIME - diff_ms);
+		msleep(AOD_EXIT_MIN_TIME - diff_ms);
+	}
+	SDE_INFO("cur_timestamp is %lld,lp_to_on_time is %lld,diff_ms is %u\n",
+		cur_timestamp, dsi_display->lp_to_on_time, diff_ms);
+}
+#endif
+
 static void sde_connector_check_status_work(struct work_struct *work)
 {
 	struct sde_connector *conn;
@@ -2499,7 +2554,9 @@ static void sde_connector_check_status_work(struct work_struct *work)
 		mutex_unlock(&conn->lock);
 		return;
 	}
-
+#ifdef CONFIG_LCD_KIT_DRIVER
+	lcd_delay_lp_to_on(conn->display);
+#endif
 	rc = conn->ops.check_status(&conn->base, conn->display, false);
 	mutex_unlock(&conn->lock);
 
@@ -3051,6 +3108,9 @@ int sde_connector_register_custom_event(struct sde_kms *kms,
 	case DRM_EVENT_SYS_BACKLIGHT:
 		ret = 0;
 		break;
+	case DRM_EVENT_BRIGHTNESS_INFO:
+		ret = 0;
+		break;
 	case DRM_EVENT_PANEL_DEAD:
 		ret = 0;
 		break;
@@ -3076,6 +3136,7 @@ int sde_connector_event_notify(struct drm_connector *connector, uint32_t type,
 
 	switch (type) {
 	case DRM_EVENT_SYS_BACKLIGHT:
+	case DRM_EVENT_BRIGHTNESS_INFO:
 	case DRM_EVENT_PANEL_DEAD:
 	case DRM_EVENT_SDE_HW_RECOVERY:
 		ret = 0;

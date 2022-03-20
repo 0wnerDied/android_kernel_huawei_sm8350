@@ -119,6 +119,13 @@ extern "C" {
 #define SDE_DRM_SEC_NON_SEC            0
 #define SDE_DRM_SEC_ONLY               1
 
+
+struct brightness_info {
+	unsigned int mipi_level;
+	int bl_level;
+	unsigned int brightness_mode;
+};
+
 /**
  * struct sde_drm_pix_ext_v1 - version 1 of pixel ext structure
  * @num_ext_pxls_lr: Number of total horizontal pixels
@@ -668,6 +675,7 @@ struct drm_msm_display_hint {
 #define DRM_EVENT_LTM_HIST 0X80000008
 #define DRM_EVENT_LTM_WB_PB 0X80000009
 #define DRM_EVENT_LTM_OFF 0X8000000A
+#define DRM_EVENT_BRIGHTNESS_INFO 0X80000100 /* send brightness data to ambient light */
 
 /* display hint flags*/
 #define DRM_MSM_DISPLAY_EARLY_WAKEUP_HINT         0x01

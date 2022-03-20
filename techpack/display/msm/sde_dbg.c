@@ -1570,9 +1570,13 @@ static ssize_t sde_evtlog_dump_read(struct file *file, char __user *buff,
 static ssize_t sde_evtlog_dump_write(struct file *file,
 	const char __user *user_buf, size_t count, loff_t *ppos)
 {
+#ifdef CONFIG_LCD_KIT_DRIVER
+	_sde_dump_array(NULL, 0, false, "dump_debugfs",true, true, true, true,
+		false);
+#else
 	_sde_dump_array(NULL, 0, sde_dbg_base.panic_on_err, "dump_debugfs",
 		true, true, true, true, false);
-
+#endif
 	return count;
 }
 

@@ -34,6 +34,7 @@
  * @DSI_CTRL_CMD_ASYNC_WAIT: Command flag to indicate that the wait for done
  *			for this command is asynchronous and must be queued.
  */
+#define DSI_CTRL_CMD_WRITE            0xFFFE
 #define DSI_CTRL_CMD_READ             0x1
 #define DSI_CTRL_CMD_BROADCAST        0x2
 #define DSI_CTRL_CMD_BROADCAST_MASTER 0x4

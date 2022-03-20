@@ -13,6 +13,10 @@
 #include "sde_trace.h"
 #include "sde_dbg.h"
 
+#ifdef CONFIG_LCD_KIT_DRIVER
+#include "lcd_kit_drm_panel.h"
+#endif
+
 #define to_dsi_bridge(x)     container_of((x), struct dsi_bridge, base)
 #define to_dsi_state(x)      container_of((x), struct dsi_connector_state, base)
 
@@ -248,6 +252,10 @@ static void dsi_bridge_enable(struct drm_bridge *bridge)
 
 	if (display)
 		display->enabled = true;
+
+#ifdef CONFIG_LCD_KIT_DRIVER
+	lcd_kit_panel_post_enable(display);
+#endif
 
 	if (display && display->drm_conn) {
 		sde_connector_helper_bridge_enable(display->drm_conn);

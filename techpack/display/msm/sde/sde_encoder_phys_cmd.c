@@ -9,6 +9,7 @@
 #include "sde_core_irq.h"
 #include "sde_formats.h"
 #include "sde_trace.h"
+#include "lcd_kit_displayengine.h"
 
 #define SDE_DEBUG_CMDENC(e, fmt, ...) SDE_DEBUG("enc%d intf%d " fmt, \
 		(e) && (e)->base.parent ? \
@@ -276,6 +277,8 @@ static void sde_encoder_phys_cmd_te_rd_ptr_irq(void *arg, int irq_idx)
 
 	atomic_add_unless(&cmd_enc->pending_vblank_cnt, -1, 0);
 	wake_up_all(&cmd_enc->pending_vblank_wq);
+	display_engine_brightness_handle_vblank(
+		te_timestamp ? te_timestamp->timestamp : ktime_get());
 	SDE_ATRACE_END("rd_ptr_irq");
 }
 

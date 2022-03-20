@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2016-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  */
 
 #ifndef _SDE_COLOR_PROCESSING_H
@@ -226,4 +226,11 @@ void sde_cp_crtc_enable(struct drm_crtc *crtc);
  * @crtc:  Pointer to drm_crtc.
  */
 void sde_cp_crtc_disable(struct drm_crtc *crtc);
+
+/**
+ * sde_cp_crtc_update_pcc(): mark pcc as dirty in order to update it in next commit.
+ * @crtc: Pointer to drm_crtc.
+ */
+int sde_cp_crtc_update_pcc(struct drm_crtc *crtc);
+
 #endif /*_SDE_COLOR_PROCESSING_H */

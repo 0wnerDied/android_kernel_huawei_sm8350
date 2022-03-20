@@ -12,6 +12,10 @@
 #include "sde_hwio.h"
 #include "sde_hw_lm.h"
 #include "sde_dbg.h"
+#include "lcd_kit_displayengine.h"
+#ifdef CONFIG_HW_MM_POLICY
+#include <chipset_common/linux/mm_policy.h>
+#endif
 
 /* Reserve space of 128 words for LUT dma payload set-up */
 #define REG_DMA_HEADERS_BUFFER_SZ (sizeof(u32) * 128)
@@ -260,6 +264,22 @@ static int reg_dma_sspp_check(struct sde_hw_pipe *ctx, void *cfg,
 		enum sde_sspp_multirect_index idx);
 static int reg_dma_ltm_check(struct sde_hw_dspp *ctx, void *cfg,
 		enum sde_reg_dma_features feature);
+
+#ifdef CONFIG_HW_MM_POLICY
+static atomic_long_t g_bufptr = ATOMIC_LONG_INIT(0);
+
+static inline u16 *get_display_buffer(u32 size, bool force)
+{
+	u16 *buf = force ? (u16 *)atomic_long_xchg(&g_bufptr, 0) : NULL;
+	return buf ? buf : kzalloc(size, GFP_KERNEL);
+}
+
+static inline u16 *put_display_buffer(u16 *buf, bool force)
+{
+	return force ? (u16 *)atomic_long_xchg(&g_bufptr,
+	    (long)(uintptr_t)buf) : buf;
+}
+#endif
 
 static int reg_dma_buf_init(struct sde_reg_dma_buffer **buf, u32 size)
 {
@@ -1300,6 +1320,7 @@ void reg_dmav1_setup_dspp_pcc_common(struct sde_hw_dspp *ctx, void *cfg)
 	int rc, i = 0;
 	u32 reg = 0;
 	u32 num_of_mixers, blk = 0;
+	u32 alpha = ALPHA_DEFAULT;
 
 	rc = reg_dma_dspp_check(ctx, cfg, PCC);
 	if (rc)
@@ -1344,6 +1365,7 @@ void reg_dmav1_setup_dspp_pcc_common(struct sde_hw_dspp *ctx, void *cfg)
 	if (!data)
 		return;
 
+	alpha = display_engine_brightness_get_mapped_alpha();
 	for (i = 0; i < PCC_NUM_PLANES; i++) {
 		switch (i) {
 		case 0:
@@ -1369,14 +1391,15 @@ void reg_dmav1_setup_dspp_pcc_common(struct sde_hw_dspp *ctx, void *cfg)
 			goto exit;
 		}
 
-		data[i] = coeffs->c;
-		data[i + 3] = coeffs->r;
-		data[i + 6] = coeffs->g;
-		data[i + 9] = coeffs->b;
-		data[i + 12] = coeffs->rg;
-		data[i + 15] = coeffs->rb;
-		data[i + 18] = coeffs->gb;
-		data[i + 21] = coeffs->rgb;
+		/* Following magic numbers are shifts for pcc registers */
+		data[i] = coeffs->c * alpha / ALPHA_DEFAULT;
+		data[i + 3] = coeffs->r * alpha / ALPHA_DEFAULT;
+		data[i + 6] = coeffs->g * alpha / ALPHA_DEFAULT;
+		data[i + 9] = coeffs->b * alpha / ALPHA_DEFAULT;
+		data[i + 12] = coeffs->rg * alpha / ALPHA_DEFAULT;
+		data[i + 15] = coeffs->rb * alpha / ALPHA_DEFAULT;
+		data[i + 18] = coeffs->gb * alpha / ALPHA_DEFAULT;
+		data[i + 21] = coeffs->rgb * alpha / ALPHA_DEFAULT;
 	}
 
 	REG_DMA_SETUP_OPS(dma_write_cfg,
@@ -4223,6 +4246,9 @@ void reg_dmav2_setup_dspp_3d_gamutv43(struct sde_hw_dspp *ctx, void *cfg)
 	u32 op_mode, scale_offset, scale_tbl_offset, transfer_size_bytes;
 	u16 *data;
 	u32 scale_off[GAMUT_3D_SCALE_OFF_TBL_NUM][GAMUT_3D_SCALE_OFF_SZ];
+#ifdef CONFIG_HW_MM_POLICY
+	bool has_cache = mm_policy_display_cache_enabled();
+#endif
 
 	rc = reg_dma_dspp_check(ctx, cfg, GAMUT);
 	if (rc)
@@ -4287,7 +4313,11 @@ void reg_dmav2_setup_dspp_3d_gamutv43(struct sde_hw_dspp *ctx, void *cfg)
 	if (len % transfer_size_bytes)
 		len = len + (transfer_size_bytes - len % transfer_size_bytes);
 
+#ifdef CONFIG_HW_MM_POLICY
+	data = get_display_buffer(len, has_cache);
+#else
 	data = kzalloc(len, GFP_KERNEL);
+#endif
 	if (!data)
 		return;
 
@@ -4363,6 +4393,9 @@ void reg_dmav2_setup_dspp_3d_gamutv43(struct sde_hw_dspp *ctx, void *cfg)
 	_perform_sbdma_kickoff(ctx, hw_cfg, dma_ops, blk, GAMUT);
 
 exit:
+#ifdef CONFIG_HW_MM_POLICY
+	data = put_display_buffer(data, has_cache);
+#endif
 	kfree(data);
 }
 
@@ -4375,7 +4408,9 @@ void reg_dmav2_setup_vig_gamutv61(struct sde_hw_pipe *ctx, void *cfg)
 	struct sde_reg_dma_kickoff_cfg kick_off;
 	int rc;
 	enum sde_sspp_multirect_index idx = SDE_SSPP_RECT_0;
-
+#ifdef CONFIG_HW_MM_POLICY
+	bool has_cache = mm_policy_display_cache_enabled();
+#endif
 	u32 gamut_base = ctx->cap->sblk->gamut_blk.base - REG_DMA_VIG_SWI_DIFF;
 	u32 i, j, k = 0, len, table_select = 0;
 	u32 op_mode, scale_offset, scale_tbl_offset, transfer_size_bytes;
@@ -4441,7 +4476,11 @@ void reg_dmav2_setup_vig_gamutv61(struct sde_hw_pipe *ctx, void *cfg)
 	if (len % transfer_size_bytes)
 		len = len + (transfer_size_bytes - len % transfer_size_bytes);
 
+#ifdef CONFIG_HW_MM_POLICY
+	data = get_display_buffer(len, has_cache);
+#else
 	data = kzalloc(len, GFP_KERNEL);
+#endif
 	if (!data)
 		return;
 
@@ -4506,6 +4545,9 @@ void reg_dmav2_setup_vig_gamutv61(struct sde_hw_pipe *ctx, void *cfg)
 		DRM_ERROR("failed to kick off ret %d\n", rc);
 
 exit:
+#ifdef CONFIG_HW_MM_POLICY
+	data = put_display_buffer(data, has_cache);
+#endif
 	kfree(data);
 }
 

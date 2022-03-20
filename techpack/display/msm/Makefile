@@ -4,6 +4,14 @@ ccflags-y += -I$(srctree)/techpack/display/msm/sde
 ccflags-y += -I$(srctree)/techpack/display/rotator
 ccflags-y += -I$(srctree)/techpack/display/hdcp
 ccflags-y += -I$(srctree)/drivers/clk/qcom/
+ccflags-y += -I$(srctree)/drivers/dp
+
+ifeq ($(CONFIG_LCD_KIT_DRIVER),y)
+ccflags-y += -I$(srctree)/drivers/devkit/lcdkit/lcdkit3.0/kernel/qcom/common/include
+ccflags-y += -I$(srctree)/drivers/devkit/lcdkit/lcdkit3.0/kernel/qcom/include
+ccflags-y += -I$(srctree)/drivers/devkit/lcdkit/lcdkit3.0/kernel/qcom/adapt
+ccflags-y += -I$(srctree)/drivers/devkit/lcdkit/lcdkit3.0/kernel/common/displayengine/include
+endif
 
 msm_drm-$(CONFIG_DRM_MSM_DP) += dp/dp_altmode.o \
 	dp/dp_parser.o \

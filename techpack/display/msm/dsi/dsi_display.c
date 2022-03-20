@@ -7,6 +7,14 @@
 #include <linux/of.h>
 #include <linux/of_gpio.h>
 #include <linux/err.h>
+#include <linux/fs.h>
+#include <linux/uaccess.h>
+#ifdef CONFIG_HUAWEI_DSM
+#include <dsm/dsm_pub.h>
+#endif
+#ifdef CONFIG_HUAWEI_DUBAI
+#include <huawei_platform/log/hwlog_kernel.h>
+#endif
 
 #include "msm_drv.h"
 #include "sde_connector.h"
@@ -20,6 +28,18 @@
 #include "dsi_pwr.h"
 #include "sde_dbg.h"
 #include "dsi_parser.h"
+#ifdef CONFIG_LCD_KIT_DRIVER
+#define GPIO_CHECK_TIMES 3
+#define DSI_WRITE_SUCC 1
+#define CMD_WRITE 1
+#define CMD_READ  0
+#include "lcd_kit_drm_panel.h"
+#include "lcd_kit_core.h"
+#endif
+#ifdef CONFIG_HUAWEI_DSM
+extern struct dsm_client *lcd_dclient;
+int recovery_count = 0;
+#endif
 
 #define to_dsi_display(x) container_of(x, struct dsi_display, host)
 #define INT_BASE_10 10
@@ -35,10 +55,21 @@
 #define MAX_TE_SOURCE_ID  2
 
 #define SEC_PANEL_NAME_MAX_LEN  256
+#define LCD_FREQ_PATH  "/sys/class/sensors/ps_sensor/send_lcdfreq_req"
+#define FREQ_BUF_MAX 20
+#define FREQ_OFF 0
+#define FREQ_AOD 30
 
 u8 dbgfs_tx_cmd_buf[SZ_4K];
 static char dsi_display_primary[MAX_CMDLINE_PARAM_LEN];
 static char dsi_display_secondary[MAX_CMDLINE_PARAM_LEN];
+#ifdef CONFIG_LCD_KIT_DRIVER
+unsigned int esd_recovery_status = 0;
+unsigned int esd_recovery_backlight_status = 0;
+#endif
+
+static void write_data_to_node(int data);
+
 static struct dsi_display_boot_param boot_displays[MAX_DSI_ACTIVE_DISPLAY] = {
 	{.boot_param = dsi_display_primary},
 	{.boot_param = dsi_display_secondary},
@@ -258,7 +289,7 @@ error:
 	return rc;
 }
 
-static int dsi_display_cmd_engine_enable(struct dsi_display *display)
+int dsi_display_cmd_engine_enable(struct dsi_display *display)
 {
 	int rc = 0;
 	int i;
@@ -306,7 +337,7 @@ done:
 	return rc;
 }
 
-static int dsi_display_cmd_engine_disable(struct dsi_display *display)
+int dsi_display_cmd_engine_disable(struct dsi_display *display)
 {
 	int rc = 0;
 	int i;
@@ -500,7 +531,7 @@ error:
 }
 
 /* Allocate memory for cmd dma tx buffer */
-static int dsi_host_alloc_cmd_tx_buffer(struct dsi_display *display)
+int dsi_host_alloc_cmd_tx_buffer(struct dsi_display *display)
 {
 	int rc = 0, cnt = 0;
 	struct dsi_display_ctrl *display_ctrl;
@@ -577,6 +608,33 @@ error:
 	return rc;
 }
 
+#ifdef CONFIG_HUAWEI_DSM
+static void dsm_client_record_esd_err(uint32_t err_no, struct dsi_panel *panel,
+	char read_value, char expect_value)
+{
+	if (lcd_dclient && !dsm_client_ocuppy(lcd_dclient)) {
+		dsm_client_record(lcd_dclient,
+			"lcd esd check error: %s panel:read_value=0x%x,expect_value=0x%x\n",
+			panel->type,
+			read_value,
+			expect_value);
+		dsm_client_notify(lcd_dclient, err_no);
+	}
+}
+
+static void dsm_client_record_gpio_esd_err(uint32_t err_no,
+	char read_value, char expect_value)
+{
+	if (lcd_dclient && !dsm_client_ocuppy(lcd_dclient)) {
+		dsm_client_record(lcd_dclient,
+			"lcd esd gpio status error:read_value=0x%x,expect_value=0x%x\n",
+			read_value,
+			expect_value);
+		dsm_client_notify(lcd_dclient, err_no);
+	}
+}
+#endif
+
 static bool dsi_display_validate_reg_read(struct dsi_panel *panel)
 {
 	int i, j = 0;
@@ -600,16 +658,35 @@ static bool dsi_display_validate_reg_read(struct dsi_panel *panel)
 
 	for (j = 0; j < config->groups; ++j) {
 		for (i = 0; i < len; ++i) {
+			DSI_INFO("%s panel:esd_reg[%d] value is 0x%x\n",
+				panel->type, i, config->return_buf[i]);
+#ifdef CONFIG_LCD_KIT_DRIVER
+			if (panel->power_mode != SDE_MODE_DPMS_ON && panel->power_mode != SDE_MODE_DPMS_OFF) {
+				DSI_INFO("Not in on mode\n");
+				continue;
+			}
+#endif
 			if (config->return_buf[i] !=
 				config->status_value[group + i]) {
-				DRM_ERROR("mismatch: 0x%x\n",
+				DSI_ERR("mismatch: 0x%x\n",
 						config->return_buf[i]);
+#ifdef CONFIG_HUAWEI_DSM
+				recovery_count++;
+				DSI_ERR("esd recovery_count = %d\n", recovery_count);
+				dsm_client_record_esd_err(DSM_LCD_ESD_STATUS_ERROR_NO,
+					panel, config->return_buf[i],
+					config->status_value[group + i]);
+#endif
 				break;
 			}
 		}
 
-		if (i == len)
+		if (i == len) {
+#ifdef CONFIG_HUAWEI_DSM
+			recovery_count = 0;
+#endif
 			return true;
+		}
 		group += len;
 	}
 
@@ -653,6 +730,41 @@ static void dsi_display_parse_te_data(struct dsi_display *display)
 	display->te_source = val;
 }
 
+#ifdef CONFIG_LCD_KIT_DRIVER
+static int dsi_display_cmd_is_write(struct dsi_cmd_desc *cmd)
+{
+	int ret;
+
+	if (cmd == NULL) {
+		DSI_ERR("cmd is NULL!\n");
+		return -EINVAL;
+	}
+
+	switch (cmd->msg.type) {
+	case DTYPE_GEN_WRITE:
+	case DTYPE_GEN_WRITE1:
+	case DTYPE_GEN_WRITE2:
+	case DTYPE_GEN_LWRITE:
+	case DTYPE_DCS_WRITE:
+	case DTYPE_DCS_WRITE1:
+	case DTYPE_DCS_LWRITE:
+	case DTYPE_DSC_LWRITE:
+		ret = CMD_WRITE;
+		break;
+	case DTYPE_GEN_READ:
+	case DTYPE_GEN_READ1:
+	case DTYPE_GEN_READ2:
+	case DTYPE_DCS_READ:
+		ret = CMD_READ;
+		break;
+	default:
+		ret = CMD_WRITE;
+		break;
+	}
+	return ret;
+}
+#endif
+
 static int dsi_display_read_status(struct dsi_display_ctrl *ctrl,
 		struct dsi_panel *panel)
 {
@@ -695,12 +807,36 @@ static int dsi_display_read_status(struct dsi_display_ctrl *ctrl,
 			cmds[i].msg.flags |= MIPI_DSI_MSG_USE_LPM;
 		cmds[i].msg.rx_buf = config->status_buf;
 		cmds[i].msg.rx_len = config->status_cmds_rlen[i];
+#ifdef CONFIG_LCD_KIT_DRIVER
+		if (dsi_display_cmd_is_write(&cmds[i]))
+			flags &= DSI_CTRL_CMD_WRITE;
+		else
+			flags |= DSI_CTRL_CMD_READ;
+#endif
 		rc = dsi_ctrl_cmd_transfer(ctrl->ctrl, &cmds[i].msg, &flags);
+#ifdef CONFIG_LCD_KIT_DRIVER
+		if (!dsi_display_cmd_is_write(&cmds[i])) { // read succ return read len
+			if (rc <= 0) {
+				DSI_ERR("rx cmd transfer failed rc=%d\n", rc);
+				return rc;
+			}
+		} else { // write succ return 0
+			if (rc < 0) {
+				DSI_ERR("tx cmd transfer failed rc=%d\n", rc);
+				return rc;
+			} else {
+				/* current func return 0 or minus val means need reset panel
+				 * but we dont want reset panel when write succ return 0
+				 * so, transfer write rc to 1 to avoid unexpected reset */
+				rc = DSI_WRITE_SUCC;
+			}
+		}
+#else
 		if (rc <= 0) {
 			DSI_ERR("rx cmd transfer failed rc=%d\n", rc);
 			return rc;
 		}
-
+#endif
 		memcpy(config->return_buf + start,
 			config->status_buf, lenp[i]);
 		start += lenp[i];
@@ -733,14 +869,70 @@ exit:
 	return rc;
 }
 
+int dsi_display_gpio_status(u32 gpio_num, const char *gpio_name, u32 gpio_normal_value)
+{
+	int value_gpio;
+	int rc;
+
+	rc = gpio_request(gpio_num, gpio_name);
+	if (rc) {
+		DSI_ERR("esd_detect_gpio[%d] request fail!\n", gpio_num);
+		return -EINVAL;
+	}
+
+	rc = gpio_direction_input(gpio_num);
+	if (rc) {
+		gpio_free(gpio_num);
+		DSI_ERR("esd_detect_gpio[%d] direction set fail!\n", gpio_num);
+		return -EINVAL;
+	}
+
+	value_gpio = gpio_get_value(gpio_num);
+	gpio_free(gpio_num);
+	DSI_INFO("gpio_num:%d value:%d\n", gpio_num, value_gpio);
+
+	if (value_gpio != gpio_normal_value) {
+#ifdef CONFIG_HUAWEI_DSM
+		dsm_client_record_gpio_esd_err(DSM_LCD_ESD_STATUS_ERROR_NO,
+			value_gpio,
+			gpio_normal_value);
+#endif
+		rc = -EINVAL;
+		return rc;
+	}
+	return rc;
+}
+
+int dsi_display_gpio_validate_status(struct dsi_display *display)
+{
+	int rc;
+	struct drm_panel_esd_config *config = NULL;
+
+	config = &(display->panel->esd_config);
+
+	rc = dsi_display_gpio_status(config->esd_gpio_num0, "gpio0", config->gpio_normal_value0);
+	if (rc < 0) {
+		DSI_ERR("gpio0 status failed, rc=%d\n", rc);
+		return -EPERM;
+	}
+	return rc;
+}
+
 static int dsi_display_status_reg_read(struct dsi_display *display)
 {
 	int rc = 0, i;
 	struct dsi_display_ctrl *m_ctrl, *ctrl;
+	struct drm_panel_esd_config *config = NULL;
+
+#ifdef CONFIG_LCD_KIT_DRIVER
+	int check_times = 0;
+	struct ts_kit_ops *ts_ops = NULL;
+#endif
 
 	DSI_DEBUG(" ++\n");
 
 	m_ctrl = &display->ctrl[display->cmd_master_idx];
+	config = &(display->panel->esd_config);
 
 	if (display->tx_cmd_buf == NULL) {
 		rc = dsi_host_alloc_cmd_tx_buffer(display);
@@ -756,10 +948,46 @@ static int dsi_display_status_reg_read(struct dsi_display *display)
 		return -EPERM;
 	}
 
+#ifdef CONFIG_LCD_KIT_DRIVER
+	if (config->gpio_detect_support) {
+		while (check_times < GPIO_CHECK_TIMES) {
+			rc = dsi_display_gpio_validate_status(display);
+			if (!rc)
+				break;
+			check_times++ ;
+		}
+
+		if (check_times >= GPIO_CHECK_TIMES) {
+			DSI_INFO("gpio status failed, rc=%d\n", rc);
+			if (config->tp_esd_event) {
+				ts_ops = ts_kit_get_ops();
+				if (ts_ops && ts_ops->send_esd_event) {
+					rc = ts_ops->send_esd_event(GPIO_CHECK_TIMES);
+					if (rc)
+						DSI_ERR("ts_ops->send_esd_event failed\n");
+				}
+			}
+			esd_recovery_status = 1;
+			goto exit;
+		}
+	}
+#endif
+
 	rc = dsi_display_validate_status(m_ctrl, display->panel);
 	if (rc <= 0) {
 		DSI_ERR("[%s] read status failed on master,rc=%d\n",
 		       display->name, rc);
+		if (config->tp_esd_event) {
+			ts_ops = ts_kit_get_ops();
+			if (ts_ops && ts_ops->send_esd_event) {
+				rc = ts_ops->send_esd_event(GPIO_CHECK_TIMES);
+				if (rc)
+					DSI_ERR("ts_ops->send_esd_event failed\n");
+			}
+		}
+#ifdef CONFIG_LCD_KIT_DRIVER
+		esd_recovery_status = 1;
+#endif
 		goto exit;
 	}
 
@@ -793,6 +1021,23 @@ static int dsi_display_status_bta_request(struct dsi_display *display)
 
 	return rc;
 }
+static void report_te_timeout_err(struct dsi_display *display,
+	int esd_te_timeout)
+{
+#if defined CONFIG_HUAWEI_DSM
+	int8_t record_buf[DMD_RECORD_BUF_LEN] = {'\0'};
+	int32_t recordtime = 0;
+	int32_t ret;
+
+	ret = snprintf(record_buf, DMD_RECORD_BUF_LEN,
+		"%s panel te time out, value = %d\n",
+		display->display_type, esd_te_timeout);
+	if (ret < 0)
+		LCD_KIT_ERR("snprintf happened error!\n");
+	(void)lcd_dsm_client_record(lcd_kit_get_lcd_dsm_client(), record_buf,
+		DSM_LCD_TE_TIME_OUT_ERROR_NO, REC_DMD_NO_LIMIT, &recordtime);
+#endif
+}
 
 static int dsi_display_status_check_te(struct dsi_display *display,
 		int rechecks)
@@ -810,6 +1055,7 @@ static int dsi_display_status_check_te(struct dsi_display *display,
 		if (!wait_for_completion_timeout(&display->esd_te_gate,
 					esd_te_timeout)) {
 			DSI_ERR("TE check failed\n");
+			report_te_timeout_err(display, esd_te_timeout);
 			dsi_display_change_te_irq_status(display, false);
 			return -EINVAL;
 		}
@@ -841,7 +1087,12 @@ int dsi_display_check_status(struct drm_connector *connector, void *display,
 		DSI_DEBUG("Panel not initialized\n");
 		goto release_panel_lock;
 	}
-
+#ifdef CONFIG_LCD_KIT_DRIVER
+	if (panel->power_mode != SDE_MODE_DPMS_ON && panel->power_mode != SDE_MODE_DPMS_OFF) {
+		DSI_INFO("Not in on mode\n");
+		goto release_panel_lock;
+	}
+#endif
 	/* Prevent another ESD check,when ESD recovery is underway */
 	if (atomic_read(&panel->esd_recovery_pending))
 		goto release_panel_lock;
@@ -1238,13 +1489,28 @@ int dsi_display_set_power(struct drm_connector *connector,
 		int power_mode, void *disp)
 {
 	struct dsi_display *display = disp;
+#ifdef CONFIG_LCD_KIT_DRIVER
+	struct lcd_kit_disp_info *d_info = NULL;
+	u32 panel_id = PRIMARY_PANEL;
+#endif
 	int rc = 0;
 
 	if (!display || !display->panel) {
 		DSI_ERR("invalid display/panel\n");
 		return -EINVAL;
 	}
-
+#ifdef CONFIG_LCD_KIT_DRIVER
+	if (!strcmp(display->panel->type, "primary"))
+		panel_id = PRIMARY_PANEL;
+	else if (!strcmp(display->panel->type, "secondary"))
+		panel_id = SECONDARY_PANEL;
+	d_info = lcd_kit_get_disp_info(panel_id);
+	DSI_INFO("Power mode is %d", power_mode);
+	if (power_mode == SDE_MODE_DPMS_OFF && panel_id == PRIMARY_PANEL) {
+		DSI_INFO("Power mode is SDE_MODE_DPMS_OFF");
+		write_data_to_node(FREQ_OFF);
+	}
+#endif
 	switch (power_mode) {
 	case SDE_MODE_DPMS_LP1:
 		rc = dsi_panel_set_lp1(display->panel);
@@ -1263,11 +1529,27 @@ int dsi_display_set_power(struct drm_connector *connector,
 	}
 
 	SDE_EVT32(display->panel->power_mode, power_mode, rc);
-	DSI_DEBUG("Power mode transition from %d to %d %s",
+	DSI_INFO("Power mode transition from %d to %d %s",
 			display->panel->power_mode, power_mode,
 			rc ? "failed" : "successful");
 	if (!rc)
 		display->panel->power_mode = power_mode;
+#ifdef CONFIG_LCD_KIT_DRIVER
+	if (display->panel->power_mode == SDE_MODE_DPMS_ON) {
+		display->lp_to_on_time = ktime_get();
+		DSI_INFO("lp_to_on_time is %lld\n",
+			display->lp_to_on_time);
+		if (panel_id == PRIMARY_PANEL)
+			write_data_to_node(d_info->fps.current_fps);
+	}
+#endif
+	if (display->panel->power_mode == SDE_MODE_DPMS_LP1) {
+		#ifdef CONFIG_LCD_KIT_DRIVER
+		if (panel_id == PRIMARY_PANEL)
+			write_data_to_node(FREQ_AOD);
+		complete_all(&aod_lp1_done);
+		#endif
+	}
 
 	return rc;
 }
@@ -4127,6 +4409,10 @@ static int dsi_display_res_init(struct dsi_display *display)
 	int rc = 0;
 	int i;
 	struct dsi_display_ctrl *ctrl;
+#ifdef CONFIG_LCD_KIT_DRIVER
+	struct qcom_panel_info *panel_info = NULL;
+	u32 panel_id = PRIMARY_PANEL;
+#endif
 
 	display_for_each_ctrl(i, display) {
 		ctrl = &display->ctrl[i];
@@ -4160,6 +4446,16 @@ static int dsi_display_res_init(struct dsi_display *display)
 		display->panel = NULL;
 		goto error_ctrl_put;
 	}
+
+#ifdef CONFIG_LCD_KIT_DRIVER
+	if (!strcmp(display->panel->type, "primary"))
+		panel_id = PRIMARY_PANEL;
+	else if (!strcmp(display->panel->type, "secondary"))
+		panel_id = SECONDARY_PANEL;
+	panel_info = lcm_get_panel_info(panel_id);
+	if (panel_info != NULL)
+		panel_info->display = display;
+#endif
 
 	display_for_each_ctrl(i, display) {
 		struct msm_dsi_phy *phy = display->ctrl[i].phy;
@@ -5803,6 +6099,7 @@ static int dsi_display_init(struct dsi_display *display)
 	 * dsi probe is complete.
 	 */
 	if (display->panel) {
+#ifndef CONFIG_LCD_KIT_DRIVER
 		rc = dsi_pwr_enable_regulator(&display->panel->power_info,
 								true);
 		if (rc) {
@@ -5810,6 +6107,7 @@ static int dsi_display_init(struct dsi_display *display)
 					display->panel->name, rc);
 			return rc;
 		}
+#endif
 	}
 
 	rc = component_add(&pdev->dev, &dsi_display_comp_ops);
@@ -7272,6 +7570,27 @@ error:
 	return rc;
 }
 
+static void write_data_to_node(int data)
+{
+	struct file *fp = NULL;
+	mm_segment_t fs;
+	loff_t pos;
+	char buf[FREQ_BUF_MAX] = {0};
+
+	fp = filp_open(LCD_FREQ_PATH, O_RDWR, 0644);
+	if (IS_ERR(fp)) {
+		DSI_ERR("file open error\n");
+		return;
+	}
+	fs = get_fs();
+	set_fs(KERNEL_DS);
+	sprintf(buf, "%d", data);
+	pos = 0;
+	vfs_write(fp, buf, sizeof(buf), &pos);
+	filp_close(fp, NULL);
+	set_fs(fs);
+}
+
 int dsi_display_set_mode(struct dsi_display *display,
 			 struct dsi_display_mode *mode,
 			 u32 flags)
@@ -7279,6 +7598,8 @@ int dsi_display_set_mode(struct dsi_display *display,
 	int rc = 0;
 	struct dsi_display_mode adj_mode;
 	struct dsi_mode_info timing;
+	struct lcd_kit_disp_info *d_info = NULL;
+	u32 panel_id = PRIMARY_PANEL;
 
 	if (!display || !mode || !display->panel) {
 		DSI_ERR("Invalid params\n");
@@ -7287,8 +7608,13 @@ int dsi_display_set_mode(struct dsi_display *display,
 
 	mutex_lock(&display->display_lock);
 
+	if (!strcmp(display->panel->type, "primary"))
+		panel_id = PRIMARY_PANEL;
+	else if (!strcmp(display->panel->type, "secondary"))
+		panel_id = SECONDARY_PANEL;
 	adj_mode = *mode;
 	timing = adj_mode.timing;
+	d_info = lcd_kit_get_disp_info(panel_id);
 	adjust_timing_by_ctrl_count(display, &adj_mode);
 
 	if (!display->panel->cur_mode) {
@@ -7323,6 +7649,17 @@ int dsi_display_set_mode(struct dsi_display *display,
 			timing.h_active, timing.v_active, timing.refresh_rate);
 
 	memcpy(display->panel->cur_mode, &adj_mode, sizeof(adj_mode));
+#ifdef CONFIG_HUAWEI_DUBAI
+	/* report when lcd fresh rate change */
+	HWDUBAI_LOGE("DUBAI_TAG_EPS_LCD_FREQ", "sourcerate=%d targetrate=%d",
+		d_info->fps.current_fps, timing.refresh_rate);
+#endif
+	if (d_info != NULL) {
+		d_info->fps.current_fps = timing.refresh_rate;
+		if (display->panel->power_mode == SDE_MODE_DPMS_ON &&
+			panel_id == PRIMARY_PANEL)
+			write_data_to_node(timing.refresh_rate);
+	}
 error:
 	mutex_unlock(&display->display_lock);
 	return rc;
@@ -7744,7 +8081,11 @@ int dsi_display_prepare(struct dsi_display *display)
 		 * pre prepare since the regulator vote is already
 		 * taken care in splash resource init
 		 */
+#ifdef CONFIG_LCD_KIT_DRIVER
+		rc = lcd_kit_panel_pre_prepare(display->panel);
+#else
 		rc = dsi_panel_pre_prepare(display->panel);
+#endif
 		if (rc) {
 			DSI_ERR("[%s] panel pre-prepare failed, rc=%d\n",
 					display->name, rc);
@@ -7831,7 +8172,11 @@ int dsi_display_prepare(struct dsi_display *display)
 		}
 
 		if (!(mode->dsi_mode_flags & DSI_MODE_FLAG_POMS)) {
+#ifdef CONFIG_LCD_KIT_DRIVER
+			rc = lcd_kit_panel_prepare(display->panel);
+#else
 			rc = dsi_panel_prepare(display->panel);
+#endif
 			if (rc) {
 				DSI_ERR("[%s] panel prepare failed, rc=%d\n",
 						display->name, rc);
@@ -7854,7 +8199,11 @@ error_ctrl_clk_off:
 	(void)dsi_display_clk_ctrl(display->dsi_clk_handle,
 			DSI_CORE_CLK, DSI_CLK_OFF);
 error_panel_post_unprep:
+#ifdef CONFIG_LCD_KIT_DRIVER
+	(void)lcd_kit_panel_post_unprepare(display->panel);
+#else
 	(void)dsi_panel_post_unprepare(display->panel);
+#endif
 error:
 	mutex_unlock(&display->display_lock);
 	SDE_EVT32(SDE_EVTLOG_FUNC_EXIT);
@@ -8183,7 +8532,15 @@ int dsi_display_enable(struct dsi_display *display)
 		}
 	} else if (!(display->panel->cur_mode->dsi_mode_flags &
 			DSI_MODE_FLAG_POMS)){
+#ifdef CONFIG_LCD_KIT_DRIVER
+		rc = lcd_kit_panel_enable(display->panel);
+		if (esd_recovery_status) {
+			esd_recovery_backlight_status = 1;
+			esd_recovery_status = 0;
+		}
+#else
 		rc = dsi_panel_enable(display->panel);
+#endif
 		if (rc) {
 			DSI_ERR("[%s] failed to enable DSI panel, rc=%d\n",
 			       display->name, rc);
@@ -8237,7 +8594,11 @@ int dsi_display_enable(struct dsi_display *display)
 	goto error;
 
 error_disable_panel:
+#ifdef CONFIG_LCD_KIT_DRIVER
+	(void)lcd_kit_panel_disable(display->panel);
+#else
 	(void)dsi_panel_disable(display->panel);
+#endif
 error:
 	mutex_unlock(&display->display_lock);
 	SDE_EVT32(SDE_EVTLOG_FUNC_EXIT);
@@ -8319,7 +8680,14 @@ int dsi_display_pre_disable(struct dsi_display *display)
 			dsi_panel_pre_mode_switch_to_cmd(display->panel);
 		}
 	} else {
+#ifdef CONFIG_LCD_KIT_DRIVER
+		if (display->panel->tp_suspend_before_lcd)
+			rc = lcd_kit_panel_pre_disable(display->panel);
+		else
+			rc = dsi_panel_pre_disable(display->panel);
+#else
 		rc = dsi_panel_pre_disable(display->panel);
+#endif
 		if (rc)
 			DSI_ERR("[%s] panel pre-disable failed, rc=%d\n",
 				display->name, rc);
@@ -8418,7 +8786,11 @@ int dsi_display_disable(struct dsi_display *display)
 	}
 
 	if (!display->poms_pending && !is_skip_op_required(display)) {
+#ifdef CONFIG_LCD_KIT_DRIVER
+		rc =lcd_kit_panel_disable(display->panel);
+#else
 		rc = dsi_panel_disable(display->panel);
+#endif
 		if (rc)
 			DSI_ERR("[%s] failed to disable DSI panel, rc=%d\n",
 				display->name, rc);
@@ -8507,7 +8879,11 @@ int dsi_display_unprepare(struct dsi_display *display)
 		DSI_ERR("[%s] display wake up failed, rc=%d\n",
 		       display->name, rc);
 	if (!display->poms_pending && !is_skip_op_required(display)) {
+#ifdef CONFIG_LCD_KIT_DRIVER
+		rc = lcd_kit_panel_unprepare(display->panel);
+#else
 		rc = dsi_panel_unprepare(display->panel);
+#endif
 		if (rc)
 			DSI_ERR("[%s] panel unprepare failed, rc=%d\n",
 			       display->name, rc);
@@ -8563,7 +8939,11 @@ int dsi_display_unprepare(struct dsi_display *display)
 	dsi_display_ctrl_isr_configure(display, false);
 
 	if (!display->poms_pending && !is_skip_op_required(display)) {
+#ifdef CONFIG_LCD_KIT_DRIVER
+		rc = lcd_kit_panel_post_unprepare(display->panel);
+#else
 		rc = dsi_panel_post_unprepare(display->panel);
+#endif
 		if (rc)
 			DSI_ERR("[%s] panel post-unprepare failed, rc=%d\n",
 			       display->name, rc);

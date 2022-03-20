@@ -65,7 +65,7 @@ static inline bool _msm_seamless_for_crtc(struct drm_device *dev,
 
 			if (kms && kms->funcs && kms->funcs->check_for_splash)
 				splash_en = kms->funcs->check_for_splash(kms,
-							crtc_state->crtc);
+					crtc_state->crtc);
 
 			if (MULTIPLE_CONN_DETECTED(conn_cnt) && !splash_en)
 				return true;
