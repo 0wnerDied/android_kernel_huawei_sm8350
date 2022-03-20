@@ -64,7 +64,7 @@ case "$REQUIRED_DEFCONFIG" in
 		;&	# Intentional fallthrough
 	${PLATFORM_NAME}-qgki_defconfig )
 		# DEBUG_FS fragment.
-		FINAL_DEFCONFIG_BLEND+=" $QCOM_DEBUG_FS_FRAG"
+	#	FINAL_DEFCONFIG_BLEND+=" $QCOM_DEBUG_FS_FRAG"
 
 		FINAL_DEFCONFIG_BLEND+=" $QCOM_QGKI_FRAG"
 		${SCRIPTS_ROOT}/fragment_allyesconfig.sh $QCOM_GKI_FRAG $QCOM_GKI_ALLYES_FRAG
