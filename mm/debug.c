@@ -29,6 +29,23 @@ const char *migrate_reason_names[MR_TYPES] = {
 
 const struct trace_print_flags pageflag_names[] = {
 	__def_pageflag_names,
+#ifdef CONFIG_MM_PAGE_TRACE
+	{1UL << PG_lslub,                  "lslub"          },
+	{1UL << PG_vmalloc,                "vmalloc"        },
+	{1UL << PG_skb,                    "skb"            },
+	{1UL << PG_ion,                    "ion"            },
+	{1UL << PG_zspage,                 "zspage"         },
+	{1UL << PG_drv,                    "drv"            },
+#endif
+#if defined(CONFIG_TASK_PROTECT_LRU) || defined(CONFIG_MEMCG_PROTECT_LRU)
+	{1UL << PG_protect, "protect"},
+#endif
+#ifdef CONFIG_HMFS_FS
+	{1UL << PG_cpdata,                 "cpdata"         },
+#endif
+#ifdef CONFIG_MAS_UNISTORE_PRESERVE
+	{1UL << PG_cached,                 "unistore"       },
+#endif
 	{0, NULL}
 };
 

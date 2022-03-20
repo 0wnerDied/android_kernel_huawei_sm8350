@@ -23,6 +23,9 @@
 #include <linux/freezer.h>
 #include <linux/page_owner.h>
 #include <linux/psi.h>
+#ifdef CONFIG_FCMA
+#include <linux/fcma.h>
+#endif
 #include "internal.h"
 
 #ifdef CONFIG_COMPACTION
@@ -545,6 +548,12 @@ static unsigned long isolate_freepages_block(struct compact_control *cc,
 	bool locked = false;
 	unsigned long blockpfn = *start_pfn;
 	unsigned int order;
+#ifdef CONFIG_FCMA
+	int cluster = SWAP_CLUSTER_MAX;
+
+	if (cc->fcma)
+		cluster = fcma_cluster_max;
+#endif
 
 	/* Strict mode is for isolation, speed is secondary */
 	if (strict)
@@ -562,7 +571,11 @@ static unsigned long isolate_freepages_block(struct compact_control *cc,
 		 * contention, to give chance to IRQs. Abort if fatal signal
 		 * pending or async compaction detects need_resched()
 		 */
+#ifdef CONFIG_FCMA
+		if (!(blockpfn % cluster)
+#else
 		if (!(blockpfn % SWAP_CLUSTER_MAX)
+#endif
 		    && compact_unlock_should_abort(&cc->zone->lock, flags,
 								&locked, cc))
 			break;
@@ -793,6 +806,12 @@ isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn,
 	unsigned long next_skip_pfn = 0;
 	bool skip_updated = false;
 
+#ifdef CONFIG_FCMA
+	int cluster = SWAP_CLUSTER_MAX;
+
+	if (cc->fcma)
+		cluster = fcma_cluster_max;
+#endif
 	/*
 	 * Ensure that there are not too many pages isolated from the LRU
 	 * list by either parallel reclaimers or compaction. If there are,
@@ -846,7 +865,11 @@ isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn,
 		 * contention, to give chance to IRQs. Abort completely if
 		 * a fatal signal is pending.
 		 */
+#ifdef CONFIG_FCMA
+		if (!(low_pfn % cluster)
+#else
 		if (!(low_pfn % SWAP_CLUSTER_MAX)
+#endif
 		    && compact_unlock_should_abort(&pgdat->lru_lock,
 					    flags, &locked, cc)) {
 			low_pfn = 0;
@@ -999,11 +1022,19 @@ isolate_success:
 		 * or a lock is contended. For contention, isolate quickly to
 		 * potentially remove one source of contention.
 		 */
+#ifdef CONFIG_FCMA
+		if (cc->nr_migratepages == cluster &&
+		    !cc->rescan && !cc->contended) {
+			++low_pfn;
+			break;
+		}
+#else
 		if (cc->nr_migratepages == COMPACT_CLUSTER_MAX &&
 		    !cc->rescan && !cc->contended) {
 			++low_pfn;
 			break;
 		}
+#endif
 
 		continue;
 isolate_fail:
@@ -1086,6 +1117,12 @@ isolate_migratepages_range(struct compact_control *cc, unsigned long start_pfn,
 							unsigned long end_pfn)
 {
 	unsigned long pfn, block_start_pfn, block_end_pfn;
+#ifdef CONFIG_FCMA
+	int cluster = COMPACT_CLUSTER_MAX;
+
+	if (cc->fcma)
+		cluster = fcma_cluster_max;
+#endif
 
 	/* Scan block by block. First and last block may be incomplete */
 	pfn = start_pfn;
@@ -1110,7 +1147,11 @@ isolate_migratepages_range(struct compact_control *cc, unsigned long start_pfn,
 		if (!pfn)
 			break;
 
+#ifdef CONFIG_FCMA
+		if (cc->nr_migratepages == cluster)
+#else
 		if (cc->nr_migratepages == COMPACT_CLUSTER_MAX)
+#endif
 			break;
 	}
 
@@ -1153,6 +1194,11 @@ static bool suitable_migration_target(struct compact_control *cc,
 		if (page_order_unsafe(page) >= pageblock_order)
 			return false;
 	}
+
+#ifdef CONFIG_FCMA
+	if (get_pageblock_migratetype(page) == MIGRATE_FCMA || in_fcma_area(page))
+		return false;
+#endif
 
 	if (cc->ignore_block_suitable)
 		return true;
@@ -1439,6 +1485,12 @@ static void isolate_freepages(struct compact_control *cc)
 	unsigned long low_pfn;	     /* lowest pfn scanner is able to scan */
 	struct list_head *freelist = &cc->freepages;
 	unsigned int stride;
+#ifdef CONFIG_FCMA
+	int cluster = SWAP_CLUSTER_MAX;
+
+	if (cc->fcma)
+		cluster = fcma_cluster_max;
+#endif
 
 	/* Try a small search of the free lists for a candidate */
 	isolate_start_pfn = fast_isolate_freepages(cc);
@@ -1478,7 +1530,11 @@ static void isolate_freepages(struct compact_control *cc)
 		 * This can iterate a massively long zone without finding any
 		 * suitable migration targets, so periodically check resched.
 		 */
+#ifdef CONFIG_FCMA
+		if (!(block_start_pfn % (cluster * pageblock_nr_pages)))
+#else
 		if (!(block_start_pfn % (SWAP_CLUSTER_MAX * pageblock_nr_pages)))
+#endif
 			cond_resched();
 
 		page = pageblock_pfn_to_page(block_start_pfn, block_end_pfn,
@@ -1748,6 +1804,12 @@ static isolate_migrate_t isolate_migratepages(struct compact_control *cc)
 		(sysctl_compact_unevictable_allowed ? ISOLATE_UNEVICTABLE : 0) |
 		(cc->mode != MIGRATE_SYNC ? ISOLATE_ASYNC_MIGRATE : 0);
 	bool fast_find_block;
+#ifdef CONFIG_FCMA
+	int cluster = SWAP_CLUSTER_MAX;
+
+	if (cc->fcma)
+		cluster = fcma_cluster_max;
+#endif
 
 	/*
 	 * Start at where we last stopped, or beginning of the zone as
@@ -1784,8 +1846,13 @@ static isolate_migrate_t isolate_migratepages(struct compact_control *cc)
 		 * many pageblocks unsuitable, so periodically check if we
 		 * need to schedule.
 		 */
+#ifdef CONFIG_FCMA
+		if (!(low_pfn % (cluster * pageblock_nr_pages)))
+			cond_resched();
+#else
 		if (!(low_pfn % (SWAP_CLUSTER_MAX * pageblock_nr_pages)))
 			cond_resched();
+#endif
 
 		page = pageblock_pfn_to_page(block_start_pfn,
 						block_end_pfn, cc->zone);

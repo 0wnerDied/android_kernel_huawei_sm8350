@@ -11,6 +11,8 @@
 #include <linux/mm.h>
 #include <linux/pagemap.h>
 #include <linux/tracepoint-defs.h>
+#include <linux/rmap.h>
+#include <linux/swap.h>
 
 /*
  * The set of flags that only affect watermark checking and reclaim
@@ -83,6 +85,41 @@ static inline unsigned long ra_submit(struct file_ra_state *ra,
 					ra->start, ra->size, ra->async_size);
 }
 
+#ifdef CONFIG_HUAWEI_PAGECACHE_HELPER
+unsigned long pch_shrink_read_pages(unsigned long nr);
+unsigned long pch_shrink_mmap_pages(unsigned long nr);
+unsigned long pch_shrink_mmap_async_pages(unsigned long nr);
+void pch_mmap_readextend(struct vm_area_struct *vma,
+			struct file_ra_state *ra,
+			struct file *file,pgoff_t offset);
+extern void pch_read_around(struct file_ra_state *ra,
+			struct address_space *mapping,
+			struct file *file,pgoff_t offset);
+#else
+static inline unsigned long pch_shrink_read_pages(unsigned long nr)
+{
+	return nr;
+}
+
+static inline unsigned long pch_shrink_mmap_pages(unsigned long nr)
+{
+	return nr;
+}
+
+static inline unsigned long pch_shrink_mmap_async_pages(unsigned long nr)
+{
+	return nr;
+}
+
+static inline void pch_mmap_readextend(struct vm_area_struct *vma,
+					struct file_ra_state *ra,
+					struct file *file,pgoff_t offset) {}
+
+static inline void pch_read_around(struct file_ra_state *ra,
+					struct address_space *mapping,
+					struct file *file, pgoff_t offset) {}
+#endif
+
 /*
  * Turn a non-refcounted page (->_refcount == 0) into refcounted with
  * a count of one.
@@ -105,8 +142,177 @@ extern unsigned long highest_memmap_pfn;
 /*
  * in mm/vmscan.c:
  */
+#ifdef CONFIG_HYPERHOLD
+enum reclaim_invoker {
+	ALL,
+	KSWAPD,
+	ZSWAPD,
+	DIRECT_RECLAIM,
+	NODE_RECLAIM,
+	SOFT_LIMIT,
+	RCC_RECLAIM,
+	FILE_RECLAIM,
+	ANON_RECLAIM
+};
+#endif
+
+struct scan_control {
+	/* How many pages shrink_list() should reclaim */
+	unsigned long nr_to_reclaim;
+
+	/*
+	 * Nodemask of nodes allowed by the caller. If NULL, all nodes
+	 * are scanned.
+	 */
+	nodemask_t	*nodemask;
+
+	/*
+	 * The memory cgroup that hit its limit and as a result is the
+	 * primary target of this reclaim invocation.
+	 */
+	struct mem_cgroup *target_mem_cgroup;
+#ifdef CONFIG_HUAWEI_RCC
+	/* 0: not in rcc module, 1: scan anon; 2: scan file; 3: scan both*/
+	int rcc_mode;
+#endif
+
+	/* Writepage batching in laptop mode; RECLAIM_WRITE */
+	unsigned int may_writepage:1;
+
+	/* Can mapped pages be reclaimed? */
+	unsigned int may_unmap:1;
+
+	/* Can pages be swapped as part of reclaim? */
+	unsigned int may_swap:1;
+
+	/*
+	 * Cgroups are not reclaimed below their configured memory.low,
+	 * unless we threaten to OOM. If any cgroups are skipped due to
+	 * memory.low and nothing was reclaimed, go back for memory.low.
+	 */
+	unsigned int memcg_low_reclaim:1;
+	unsigned int memcg_low_skipped:1;
+
+	unsigned int hibernation_mode:1;
+
+	/* One of the zones is ready for compaction */
+	unsigned int compaction_ready:1;
+
+	/* Allocation order */
+	s8 order;
+
+	/* Scan (total_size >> priority) pages at once */
+	s8 priority;
+
+	/* The highest zone to isolate pages for reclaim from */
+	s8 reclaim_idx;
+
+	/* This context's GFP mask */
+	gfp_t gfp_mask;
+
+	/* Incremented by the number of inactive pages that were scanned */
+	unsigned long nr_scanned;
+
+	/* Number of pages freed so far during a call to shrink_zones() */
+	unsigned long nr_reclaimed;
+
+	struct {
+		unsigned int dirty;
+		unsigned int unqueued_dirty;
+		unsigned int congested;
+		unsigned int writeback;
+		unsigned int immediate;
+		unsigned int file_taken;
+		unsigned int taken;
+	} nr;
+#ifdef CONFIG_HYPERHOLD
+	enum reclaim_invoker invoker;
+	u32 isolate_count;
+	unsigned long nr_scanned_anon;
+	unsigned long nr_scanned_file;
+	unsigned long nr_reclaimed_anon;
+	unsigned long nr_reclaimed_file;
+#endif
+	/* for recording the reclaimed slab by now */
+	struct reclaim_state reclaim_state;
+	/*
+	 * Reclaim pages from a vma. If the page is shared by other tasks
+	 * it is zapped from a vma without reclaim so it ends up remaining
+	 * on memory until last task zap it.
+	 */
+	struct vm_area_struct *target_vma;
+#ifdef CONFIG_FCMA
+	bool fcma;
+#endif
+#ifdef CONFIG_HUAWEI_SWAP_ZDATA
+	bool ishibernation_rec;
+	/* the number of blocks that was writebacked */
+	unsigned int nr_writedblock;
+#endif
+};
+
+struct reclaim_stat {
+	unsigned int nr_dirty;
+	unsigned int nr_unqueued_dirty;
+	unsigned int nr_congested;
+	unsigned int nr_writeback;
+	unsigned int nr_immediate;
+	unsigned int nr_activate[2];
+	unsigned int nr_ref_keep;
+	unsigned int nr_unmap_fail;
+};
+
+enum scan_balance {
+	SCAN_EQUAL,
+	SCAN_FRACT,
+	SCAN_ANON,
+	SCAN_FILE,
+};
+#ifdef CONFIG_DIRECT_SWAPPINESS
+extern int direct_vm_swappiness;
+#endif
+extern unsigned int enough_inactive_file;
+
+extern bool inactive_list_is_low(struct lruvec *lruvec, bool file,
+		struct scan_control *sc, bool trace);
+extern int isolate_lru_page(struct page *page);
+extern unsigned long isolate_lru_pages(unsigned long nr_to_scan,
+		struct lruvec *lruvec, struct list_head *dst,
+		unsigned long *nr_scanned, struct scan_control *sc,
+		enum lru_list lru);
+extern void putback_lru_page(struct page *page);
+unsigned noinline_for_stack move_pages_to_lru(struct lruvec *lruvec,
+						     struct list_head *list);
+extern unsigned long shrink_page_list(struct list_head *page_list,
+		struct pglist_data *pgdat,
+		struct scan_control *sc,
+		enum ttu_flags ttu_flags,
+		struct reclaim_stat *stat,
+		bool force_reclaim);
+extern unsigned long shrink_list(enum lru_list lru, unsigned long nr_to_scan,
+		struct lruvec *lruvec, struct scan_control *sc);
+extern unsigned long
+shrink_inactive_list(unsigned long nr_to_scan, struct lruvec *lruvec,
+		struct scan_control *sc, enum lru_list lru);
+extern unsigned long shrink_slab(gfp_t gfp_mask, int nid,
+		struct mem_cgroup *memcg,
+		int priority);
+extern void shrink_node_memcg(struct pglist_data *pgdat, struct mem_cgroup *memcg,
+		struct scan_control *sc, unsigned long *lru_pages);
+extern inline bool should_continue_reclaim(struct pglist_data *pgdat,
+					unsigned long nr_reclaimed,
+					struct scan_control *sc);
 extern int isolate_lru_page(struct page *page);
 extern void putback_lru_page(struct page *page);
+extern bool global_reclaim(struct scan_control *sc);
+extern bool sane_reclaim(struct scan_control *sc);
+extern void set_memcg_congestion(pg_data_t *pgdat,
+				struct mem_cgroup *memcg,
+				bool congested);
+extern bool memcg_congested(pg_data_t *pgdat,
+			struct mem_cgroup *memcg);
+extern int current_may_throttle(void);
+extern bool pgdat_memcg_congested(pg_data_t *pgdat, struct mem_cgroup *memcg);
 
 /*
  * in mm/rmap.c:
@@ -223,6 +429,9 @@ struct compact_control {
 	bool whole_zone;		/* Whole zone should/has been scanned */
 	bool contended;			/* Signal lock or sched contention */
 	bool rescan;			/* Rescanning the same pageblock */
+#ifdef CONFIG_FCMA
+	bool fcma;
+#endif
 };
 
 /*
@@ -519,6 +728,10 @@ extern unsigned long  __must_check vm_mmap_pgoff(struct file *, unsigned long,
 extern void set_pageblock_order(void);
 unsigned long reclaim_clean_pages_from_list(struct zone *zone,
 					    struct list_head *page_list);
+unsigned long __reclaim_clean_pages_from_list(struct zone *zone,
+					      struct list_head *page_list,
+					      bool fcma);
+
 /* The ALLOC_WMARK bits are used as an index to zone->watermark */
 #define ALLOC_WMARK_MIN		WMARK_MIN
 #define ALLOC_WMARK_LOW		WMARK_LOW

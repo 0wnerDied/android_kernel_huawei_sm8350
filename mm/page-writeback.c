@@ -24,6 +24,7 @@
 #include <linux/init.h>
 #include <linux/backing-dev.h>
 #include <linux/task_io_accounting_ops.h>
+#include <linux/blk-cgroup.h>
 #include <linux/blkdev.h>
 #include <linux/mpage.h>
 #include <linux/rmap.h>
@@ -1558,8 +1559,14 @@ static inline void wb_dirty_limits(struct dirty_throttle_control *dtc)
  * If we're over `background_thresh' then the writeback threads are woken to
  * perform some writeout.
  */
+#ifdef CONFIG_BLK_CGROUP_IOSMART
+static void balance_dirty_pages(struct bdi_writeback *wb,
+				unsigned long pages_dirtied,
+				struct inode *inode)
+#else
 static void balance_dirty_pages(struct bdi_writeback *wb,
 				unsigned long pages_dirtied)
+#endif
 {
 	struct dirty_throttle_control gdtc_stor = { GDTC_INIT(wb) };
 	struct dirty_throttle_control mdtc_stor = { MDTC_INIT(wb, &gdtc_stor) };
@@ -1586,7 +1593,17 @@ static void balance_dirty_pages(struct bdi_writeback *wb,
 		unsigned long m_dirty = 0;	/* stop bogus uninit warnings */
 		unsigned long m_thresh = 0;
 		unsigned long m_bg_thresh = 0;
+#ifdef CONFIG_BLK_CGROUP_IOSMART
+		struct blkcg_gq *blkg = NULL;
+		unsigned int weight;
 
+		if (unlikely(!inode || !inode->i_sb || !inode->i_sb->s_bdev))
+			blkg = NULL;
+		else
+			blkg = task_blkg_get(current, inode->i_sb->s_bdev);
+
+		task_blkg_inc_writer(blkg);
+#endif
 		/*
 		 * Unstable writes are a feature of certain networked
 		 * filesystems (i.e. NFS) in which data may have been
@@ -1661,8 +1678,16 @@ static void balance_dirty_pages(struct bdi_writeback *wb,
 			if (mdtc)
 				m_intv = dirty_poll_interval(m_dirty, m_thresh);
 			current->nr_dirtied_pause = min(intv, m_intv);
+#ifdef CONFIG_BLK_CGROUP_IOSMART
+			task_blkg_dec_writer(blkg);
+			task_blkg_put(blkg);
+#endif
 			break;
 		}
+
+#ifdef CONFIG_MAS_BLK_BW_OPTIMIZE
+		blk_write_throttle(bdi->queue, ASYNC_LIMIT_STAGE_ONE);
+#endif
 
 		if (unlikely(!writeback_in_progress(wb)))
 			wb_start_background_writeback(wb);
@@ -1714,6 +1739,12 @@ static void balance_dirty_pages(struct bdi_writeback *wb,
 		dirty_ratelimit = wb->dirty_ratelimit;
 		task_ratelimit = ((u64)dirty_ratelimit * sdtc->pos_ratio) >>
 							RATELIMIT_CALC_SHIFT;
+#ifdef CONFIG_BLK_CGROUP_IOSMART
+		weight = blkcg_weight(blkg);
+		if (weight != BLKIO_WEIGHT_DEFAULT)
+			task_ratelimit = (u64)task_ratelimit * weight /
+					BLKIO_WEIGHT_DEFAULT;
+#endif
 		max_pause = wb_max_pause(wb, sdtc->wb_dirty);
 		min_pause = wb_min_pause(wb, max_pause,
 					 task_ratelimit, dirty_ratelimit,
@@ -1756,6 +1787,10 @@ static void balance_dirty_pages(struct bdi_writeback *wb,
 				current->nr_dirtied = 0;
 			} else if (current->nr_dirtied_pause <= pages_dirtied)
 				current->nr_dirtied_pause += pages_dirtied;
+#ifdef CONFIG_BLK_CGROUP_IOSMART
+			task_blkg_dec_writer(blkg);
+			task_blkg_put(blkg);
+#endif
 			break;
 		}
 		if (unlikely(pause > max_pause)) {
@@ -1777,6 +1812,10 @@ pause:
 					  period,
 					  pause,
 					  start_time);
+
+#ifdef CONFIG_MAS_BLK_BW_OPTIMIZE
+		blk_write_throttle(bdi->queue, ASYNC_LIMIT_STAGE_TWO);
+#endif
 		__set_current_state(TASK_KILLABLE);
 		wb->dirty_sleep = now;
 		io_schedule_timeout(pause);
@@ -1785,6 +1824,10 @@ pause:
 		current->nr_dirtied = 0;
 		current->nr_dirtied_pause = nr_dirtied_pause;
 
+#ifdef CONFIG_BLK_CGROUP_IOSMART
+		task_blkg_dec_writer(blkg);
+		task_blkg_put(blkg);
+#endif
 		/*
 		 * This is typically equal to (dirty < thresh) and can also
 		 * keep "1000+ dd on a slow USB stick" under control.
@@ -1910,7 +1953,11 @@ void balance_dirty_pages_ratelimited(struct address_space *mapping)
 	preempt_enable();
 
 	if (unlikely(current->nr_dirtied >= ratelimit))
+#ifdef CONFIG_BLK_CGROUP_IOSMART
+		balance_dirty_pages(wb, current->nr_dirtied, inode);
+#else
 		balance_dirty_pages(wb, current->nr_dirtied);
+#endif
 
 	wb_put(wb);
 }
@@ -2145,6 +2192,12 @@ EXPORT_SYMBOL(tag_pages_for_writeback);
  * not miss some pages (e.g., because some other process has cleared TOWRITE
  * tag we set). The rule we follow is that TOWRITE tag can be cleared only
  * by the process clearing the DIRTY tag (and submitting the page for IO).
+* To avoid livelocks (when other process dirties new pages), we first tag
+ * pages which should be written back with TOWRITE tag and only then start
+ * writing them. For data-integrity sync we have to be careful so that we do
+ * not miss some pages (e.g., because some other process has cleared TOWRITE
+ * tag we set). The rule we follow is that TOWRITE tag can be cleared only
+ * by the process clearing the DIRTY tag (and submitting the page for IO).
  *
  * To avoid deadlocks between range_cyclic writeback and callers that hold
  * pages in PageWriteback to aggregate IO until write_cache_pages() returns,
@@ -2155,9 +2208,23 @@ EXPORT_SYMBOL(tag_pages_for_writeback);
  *
  * Return: %0 on success, negative error code otherwise
  */
+
+#ifdef CONFIG_MAS_STORAGE
 int write_cache_pages(struct address_space *mapping,
 		      struct writeback_control *wbc, writepage_t writepage,
 		      void *data)
+{
+	return __write_cache_pages(mapping, wbc, writepage, data, NULL);
+}
+
+int __write_cache_pages(struct address_space *mapping,
+			struct writeback_control *wbc, writepage_t writepage,
+			void *data, submit_bio_first_t submit_bio_first)
+#else
+int write_cache_pages(struct address_space *mapping,
+		      struct writeback_control *wbc, writepage_t writepage,
+		      void *data)
+#endif
 {
 	int ret = 0;
 	int done = 0;
@@ -2202,7 +2269,16 @@ int write_cache_pages(struct address_space *mapping,
 
 			done_index = page->index;
 
+#ifdef CONFIG_MAS_STORAGE
+			might_sleep();
+			if (!trylock_page(page)) {
+				if (submit_bio_first)
+					(*submit_bio_first)(page, wbc, data);
+				__lock_page(page);
+			}
+#else
 			lock_page(page);
+#endif
 
 			/*
 			 * Page truncated or invalidated. We can freely skip it
@@ -2224,10 +2300,19 @@ continue_unlock:
 			}
 
 			if (PageWriteback(page)) {
-				if (wbc->sync_mode != WB_SYNC_NONE)
+				if (wbc->sync_mode != WB_SYNC_NONE) {
+#ifdef CONFIG_MAS_STORAGE
+					/*
+					 * submit bio before wait_on_page_writeback to avoid deadlock,
+					 * caused by two processes sync different pages of the same file.
+					 */
+					if (submit_bio_first)
+						(*submit_bio_first)(page, wbc, data);
+#endif
 					wait_on_page_writeback(page);
-				else
+				} else {
 					goto continue_unlock;
+				}
 			}
 
 			BUG_ON(PageWriteback(page));

@@ -15,17 +15,29 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/page_isolation.h>
 
+#ifdef CONFIG_FCMA
+static int set_migratetype_isolate(struct page *page, int migratetype, int isol_flags, bool fcma)
+#else
 static int set_migratetype_isolate(struct page *page, int migratetype, int isol_flags)
+#endif
 {
 	struct zone *zone;
 	unsigned long flags, pfn;
 	struct memory_isolate_notify arg;
 	int notifier_ret;
 	int ret = -EBUSY;
+#ifdef CONFIG_FCMA
+	bool dont_drain = false;
+#endif
 
 	zone = page_zone(page);
 
+#ifdef CONFIG_FCMA
+	if (!fcma)
+		spin_lock_irqsave(&zone->lock, flags);
+#else
 	spin_lock_irqsave(&zone->lock, flags);
+#endif
 
 	/*
 	 * We assume the caller intended to SET migrate type to isolate.
@@ -79,11 +91,23 @@ out:
 									NULL);
 
 		__mod_zone_freepage_state(zone, -nr_pages, mt);
+#ifdef CONFIG_FCMA
+		if (migratetype == MIGRATE_FCMA)
+			dont_drain = true;
+#endif
 	}
 
+#ifdef CONFIG_FCMA
+	if (!fcma) {
+		spin_unlock_irqrestore(&zone->lock, flags);
+		if (!ret && !dont_drain)
+			drain_all_pages(zone);
+	}
+#else
 	spin_unlock_irqrestore(&zone->lock, flags);
 	if (!ret)
 		drain_all_pages(zone);
+#endif
 	return ret;
 }
 
@@ -204,25 +228,51 @@ int start_isolate_page_range(unsigned long start_pfn, unsigned long end_pfn,
 	unsigned long pfn;
 	unsigned long undo_pfn;
 	struct page *page;
+#ifdef CONFIG_FCMA
+	struct zone *zone;
+	unsigned long irqflags;
+#endif
 	int nr_isolate_pageblock = 0;
-
+#ifdef CONFIG_FCMA
+	bool fcma = (migratetype == MIGRATE_FCMA);
+#endif
 	BUG_ON(!IS_ALIGNED(start_pfn, pageblock_nr_pages));
 	BUG_ON(!IS_ALIGNED(end_pfn, pageblock_nr_pages));
+
+#ifdef CONFIG_FCMA
+	if (fcma) {
+		page = __first_valid_page(start_pfn, pageblock_nr_pages);
+		zone = page_zone(page);
+		spin_lock_irqsave(&zone->lock, irqflags);
+	}
+#endif
 
 	for (pfn = start_pfn;
 	     pfn < end_pfn;
 	     pfn += pageblock_nr_pages) {
 		page = __first_valid_page(pfn, pageblock_nr_pages);
 		if (page) {
+#ifdef CONFIG_FCMA
+			if (set_migratetype_isolate(page, migratetype, flags, fcma)) {
+#else
 			if (set_migratetype_isolate(page, migratetype, flags)) {
+#endif
 				undo_pfn = pfn;
 				goto undo;
 			}
 			nr_isolate_pageblock++;
 		}
 	}
+#ifdef CONFIG_FCMA
+	if (fcma)
+		spin_unlock_irqrestore(&zone->lock, irqflags);
+#endif
 	return nr_isolate_pageblock;
 undo:
+#ifdef CONFIG_FCMA
+	if (fcma)
+		spin_unlock_irqrestore(&zone->lock, irqflags);
+#endif
 	for (pfn = start_pfn;
 	     pfn < undo_pfn;
 	     pfn += pageblock_nr_pages) {

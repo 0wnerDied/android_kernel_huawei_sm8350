@@ -13,6 +13,10 @@ struct cma {
 	spinlock_t mem_head_lock;
 #endif
 	const char *name;
+#ifdef CONFIG_FCMA
+	struct list_head list;
+	bool is_fcma;
+#endif
 };
 
 extern struct cma cma_areas[MAX_CMA_AREAS];

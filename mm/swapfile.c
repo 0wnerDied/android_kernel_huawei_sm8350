@@ -45,6 +45,10 @@
 #include <linux/swapops.h>
 #include <linux/swap_cgroup.h>
 
+#ifdef CONFIG_HYPERHOLD
+#include <linux/memcg_policy.h>
+#endif
+
 static bool swap_count_continued(struct swap_info_struct *, pgoff_t,
 				 unsigned char);
 static void free_swap_count_continuations(struct swap_info_struct *);
@@ -1301,9 +1305,13 @@ static void swap_entry_free(struct swap_info_struct *p, swp_entry_t entry)
 	p->swap_map[offset] = 0;
 	dec_cluster_info_page(p, p->cluster_info, offset);
 	unlock_cluster(ci);
-
+#ifdef CONFIG_HYPERHOLD
+	swap_range_free(p, offset, 1);
+	mem_cgroup_uncharge_swap(entry, 1);
+#else
 	mem_cgroup_uncharge_swap(entry, 1);
 	swap_range_free(p, offset, 1);
+#endif
 }
 
 /*
@@ -1351,8 +1359,13 @@ void put_swap_page(struct page *page, swp_entry_t entry)
 		if (free_entries == SWAPFILE_CLUSTER) {
 			unlock_cluster_or_swap_info(si, ci);
 			spin_lock(&si->lock);
+#ifdef CONFIG_HYPERHOLD
+			swap_free_cluster(si, idx);
+			mem_cgroup_uncharge_swap(entry, SWAPFILE_CLUSTER);
+#else
 			mem_cgroup_uncharge_swap(entry, SWAPFILE_CLUSTER);
 			swap_free_cluster(si, idx);
+#endif
 			spin_unlock(&si->lock);
 			return;
 		}
@@ -3365,6 +3378,28 @@ void si_swapinfo(struct sysinfo *val)
 	val->totalswap = total_swap_pages + nr_to_be_unused;
 	spin_unlock(&swap_lock);
 }
+
+#ifdef CONFIG_HYPERHOLD_ZSWAPD
+bool free_swap_is_low(void)
+{
+	unsigned int type;
+	u64 freeswap = 0;
+	unsigned long nr_to_be_unused = 0;
+
+	spin_lock(&swap_lock);
+	for (type = 0; type < nr_swapfiles; type++) {
+		struct swap_info_struct *si = swap_info[type];
+
+		if ((si->flags & SWP_USED) && !(si->flags & SWP_WRITEOK))
+			nr_to_be_unused += si->inuse_pages;
+	}
+	freeswap = atomic_long_read(&nr_swap_pages) + nr_to_be_unused;
+	spin_unlock(&swap_lock);
+
+	return (freeswap < get_free_swap_threshold_value());
+}
+EXPORT_SYMBOL(free_swap_is_low);
+#endif
 
 /*
  * Verify that a swap entry is valid and increment its swap map count.

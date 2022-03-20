@@ -857,6 +857,9 @@ int __ref online_pages(unsigned long pfn, unsigned long nr_pages, int online_typ
 
 	kswapd_run(nid);
 	kcompactd_run(nid);
+#ifdef CONFIG_HYPERHOLD_ZSWAPD
+	zswapd_run(nid);
+#endif
 
 	vm_total_pages = nr_free_pagecache_pages();
 
@@ -1654,6 +1657,9 @@ static int __ref __offline_pages(unsigned long start_pfn,
 	if (arg.status_change_nid >= 0) {
 		kswapd_stop(node);
 		kcompactd_stop(node);
+#ifdef CONFIG_HYPERHOLD_ZSWAPD
+		zswapd_stop(node);
+#endif
 	}
 
 	vm_total_pages = nr_free_pagecache_pages();

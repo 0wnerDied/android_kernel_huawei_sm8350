@@ -32,6 +32,10 @@
 #include <linux/show_mem_notifier.h>
 #include <trace/events/cma.h>
 
+#ifdef CONFIG_FCMA
+#include <linux/fcma.h>
+#endif
+
 #include "cma.h"
 
 struct cma cma_areas[MAX_CMA_AREAS];
@@ -143,7 +147,14 @@ static void __init cma_activate_area(struct cma *cma)
 			if (page_zone(pfn_to_page(pfn)) != zone)
 				goto not_in_zone;
 		}
+#ifdef CONFIG_FCMA
+		if (cma->is_fcma)
+			init_fcma_reserved_pageblock(pfn_to_page(base_pfn));
+		else
+			init_cma_reserved_pageblock(pfn_to_page(base_pfn));
+#else
 		init_cma_reserved_pageblock(pfn_to_page(base_pfn));
+#endif
 	} while (--i);
 
 	mutex_init(&cma->lock);
@@ -228,11 +239,17 @@ int __init cma_init_reserved_mem(phys_addr_t base, phys_addr_t size,
 		if (!cma->name)
 			return -ENOMEM;
 	}
+#ifdef CONFIG_FCMA
+	cma->is_fcma = false;
+#endif
 	cma->base_pfn = PFN_DOWN(base);
 	cma->count = size >> PAGE_SHIFT;
 	cma->order_per_bit = order_per_bit;
 	*res_cma = cma;
 	cma_area_count++;
+#ifdef CONFIG_FCMA
+	INIT_LIST_HEAD(&cma->list);
+#endif
 	totalcma_pages += (size / PAGE_SIZE);
 
 	return 0;
@@ -439,6 +456,9 @@ struct page *cma_alloc(struct cma *cma, size_t count, unsigned int align,
 	unsigned long start = 0;
 	unsigned long bitmap_maxno, bitmap_no, bitmap_count;
 	size_t i;
+#ifdef CONFIG_FCMA
+	int migratetype;
+#endif
 	struct page *page = NULL;
 	int ret = -ENOMEM;
 	int retry_after_sleep = 0;
@@ -456,6 +476,9 @@ struct page *cma_alloc(struct cma *cma, size_t count, unsigned int align,
 
 	trace_cma_alloc_start(count, align);
 
+#ifdef CONFIG_FCMA
+	migratetype = cma->is_fcma ? MIGRATE_FCMA : MIGRATE_CMA;
+#endif
 	mask = cma_bitmap_aligned_mask(cma, align);
 	offset = cma_bitmap_aligned_offset(cma, align);
 	bitmap_maxno = cma_bitmap_maxno(cma);
@@ -509,8 +532,15 @@ struct page *cma_alloc(struct cma *cma, size_t count, unsigned int align,
 
 		pfn = cma->base_pfn + (bitmap_no << cma->order_per_bit);
 		mutex_lock(&cma_mutex);
+#ifdef CONFIG_FCMA
+		set_fcma_migrate_flag(migratetype);
+		ret = alloc_contig_range(pfn, pfn + count, migratetype,
+				     GFP_KERNEL | (no_warn ? __GFP_NOWARN : 0));
+		clear_fcma_migrate_flag(migratetype);
+#else
 		ret = alloc_contig_range(pfn, pfn + count, MIGRATE_CMA,
 				     GFP_KERNEL | (no_warn ? __GFP_NOWARN : 0));
+#endif
 		mutex_unlock(&cma_mutex);
 		if (ret == 0) {
 			page = pfn_to_page(pfn);
@@ -546,6 +576,11 @@ struct page *cma_alloc(struct cma *cma, size_t count, unsigned int align,
 			__func__, cma->name, count, ret);
 		cma_debug_show_areas(cma);
 	}
+
+#ifdef CONFIG_FCMA
+	if (page && cma->is_fcma)
+		fcma_page_num_sub(count);
+#endif
 
 	pr_debug("%s(): returned %p\n", __func__, page);
 	return page;

@@ -25,7 +25,9 @@
 #include <linux/compat.h>
 
 #include <linux/uaccess.h>
-
+#ifdef CONFIG_HW_MM_POLICY
+#include <chipset_common/linux/mm_policy.h>
+#endif
 #include "internal.h"
 
 /**
@@ -559,6 +561,12 @@ void *kvmalloc_node(size_t size, gfp_t flags, int node)
 
 		if (!(kmalloc_flags & __GFP_RETRY_MAYFAIL))
 			kmalloc_flags |= __GFP_NORETRY;
+#ifdef CONFIG_HW_MM_POLICY
+		if (mm_policy_vip_kvmalloc_nodelay(kmalloc_flags)) {
+			kmalloc_flags &= ~__GFP_DIRECT_RECLAIM;
+			kmalloc_flags |= __GFP_KSWAPD_RECLAIM;
+		}
+#endif
 	}
 
 	ret = kmalloc_node(size, kmalloc_flags, node);

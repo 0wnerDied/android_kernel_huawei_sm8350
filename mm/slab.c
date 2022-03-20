@@ -117,7 +117,9 @@
 #include	<linux/memory.h>
 #include	<linux/prefetch.h>
 #include	<linux/sched/task_stack.h>
-
+#ifdef CONFIG_HW_PAGE_TRACKER
+#include	<linux/hw/page_tracker.h>
+#endif
 #include	<net/sock.h>
 
 #include	<asm/cacheflush.h>
@@ -1383,6 +1385,9 @@ static struct page *kmem_getpages(struct kmem_cache *cachep, gfp_t flags,
 	if (sk_memalloc_socks() && page_is_pfmemalloc(page))
 		SetPageSlabPfmemalloc(page);
 
+#ifdef CONFIG_HW_PAGE_TRACKER
+	page_tracker_set_type(page, TRACK_SLAB, cachep->gfporder);
+#endif
 	return page;
 }
 

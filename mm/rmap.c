@@ -66,7 +66,9 @@
 #include <linux/page_idle.h>
 #include <linux/memremap.h>
 #include <linux/userfaultfd_k.h>
-
+#ifdef CONFIG_HW_PAGE_TRACKER
+#include <linux/hw/page_tracker.h>
+#endif
 #include <asm/tlbflush.h>
 
 #include <trace/events/tlb.h>
@@ -634,12 +636,21 @@ static bool should_defer_flush(struct mm_struct *mm, enum ttu_flags flags)
 	if (!(flags & TTU_BATCH_FLUSH))
 		return false;
 
+#ifdef CONFIG_ARM64
+	if (!(flags & TTU_FCMA))
+		should_defer = false;
+	else
+		should_defer = true;
+
+	return should_defer;
+#else
 	/* If remote CPUs need to be flushed then defer batch the flush */
 	if (cpumask_any_but(mm_cpumask(mm), get_cpu()) < nr_cpu_ids)
 		should_defer = true;
 	put_cpu();
 
 	return should_defer;
+#endif
 }
 
 /*
@@ -1123,6 +1134,9 @@ void do_page_add_anon_rmap(struct page *page,
 		if (compound)
 			__inc_node_page_state(page, NR_ANON_THPS);
 		__mod_node_page_state(page_pgdat(page), NR_ANON_MAPPED, nr);
+#ifdef CONFIG_HW_PAGE_TRACKER
+		page_tracker_set_type(page, TRACK_ANON, 0);
+#endif
 	}
 	if (unlikely(PageKsm(page)))
 		return;
@@ -1166,6 +1180,9 @@ void __page_add_new_anon_rmap(struct page *page,
 		atomic_set(&page->_mapcount, 0);
 	}
 	__mod_node_page_state(page_pgdat(page), NR_ANON_MAPPED, nr);
+#ifdef CONFIG_HW_PAGE_TRACKER
+	page_tracker_set_type(page, TRACK_ANON, 0);
+#endif
 	__page_set_anon_rmap(page, vma, address, 1);
 }
 

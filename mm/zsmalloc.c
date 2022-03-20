@@ -213,6 +213,13 @@ struct size_class {
 	struct zs_size_stat stats;
 };
 
+#ifdef CONFIG_ZS_MALLOC_EXT
+struct size_class_ext {
+	struct size_class *class;
+	void *priv;
+};
+#endif
+
 /* huge object: pages_per_zspage == 1 && maxobj_per_zspage == 1 */
 static void SetPageHugeObject(struct page *page)
 {
@@ -273,6 +280,11 @@ struct zs_pool {
 	struct wait_queue_head migration_wait;
 	atomic_long_t isolated_pages;
 	bool destroying;
+#endif
+#ifdef CONFIG_ZS_MALLOC_EXT
+	int ext_flag;
+	ext_size_parse_fn *size_parse;
+	ext_zsmalloc_fn *ext_zsmalloc;
 #endif
 };
 
@@ -1063,6 +1075,14 @@ static struct zspage *alloc_zspage(struct zs_pool *pool,
 	int i;
 	struct page *pages[ZS_MAX_PAGES_PER_ZSPAGE];
 	struct zspage *zspage = cache_alloc_zspage(pool, gfp);
+#ifdef CONFIG_ZS_MALLOC_EXT
+	struct size_class_ext *ext = NULL;
+
+	if (pool->ext_flag) {
+		ext = (struct size_class_ext *)class;
+		class = ext->class;
+	}
+#endif
 
 	if (!zspage)
 		return NULL;
@@ -1073,8 +1093,12 @@ static struct zspage *alloc_zspage(struct zs_pool *pool,
 
 	for (i = 0; i < class->pages_per_zspage; i++) {
 		struct page *page;
-
+#ifdef CONFIG_ZS_MALLOC_EXT
+		page = pool->ext_flag ? pool->ext_zsmalloc(ext->priv, gfp)
+						: alloc_page(gfp);
+#else
 		page = alloc_page(gfp);
+#endif
 		if (!page) {
 			while (--i >= 0) {
 				dec_zone_page_state(pages[i], NR_ZSPAGES);
@@ -1085,6 +1109,9 @@ static struct zspage *alloc_zspage(struct zs_pool *pool,
 		}
 
 		inc_zone_page_state(page, NR_ZSPAGES);
+#ifdef CONFIG_MM_PAGE_TRACE
+		SetPageZspage(page);
+#endif
 		pages[i] = page;
 	}
 
@@ -1417,6 +1444,15 @@ unsigned long zs_malloc(struct zs_pool *pool, size_t size, gfp_t gfp)
 	enum fullness_group newfg;
 	struct zspage *zspage;
 
+#ifdef CONFIG_ZS_MALLOC_EXT
+	struct size_class_ext ext;
+
+	if (pool->ext_flag) {
+		ext.priv = (void *)(uintptr_t)size;
+		size = pool->size_parse(ext.priv);
+	}
+#endif
+
 	if (unlikely(!size || size > ZS_MAX_ALLOC_SIZE))
 		return 0;
 
@@ -1442,7 +1478,16 @@ unsigned long zs_malloc(struct zs_pool *pool, size_t size, gfp_t gfp)
 
 	spin_unlock(&class->lock);
 
+#ifdef CONFIG_ZS_MALLOC_EXT
+	if (pool->ext_flag) {
+		ext.class = class;
+		zspage = alloc_zspage(pool, (struct size_class *)&ext, gfp);
+	} else {
+		zspage = alloc_zspage(pool, class, gfp);
+	}
+#else
 	zspage = alloc_zspage(pool, class, gfp);
+#endif
 	if (!zspage) {
 		cache_free_handle(pool, handle);
 		return 0;
@@ -2500,6 +2545,25 @@ void zs_destroy_pool(struct zs_pool *pool)
 	kfree(pool);
 }
 EXPORT_SYMBOL_GPL(zs_destroy_pool);
+
+#ifdef CONFIG_ZS_MALLOC_EXT
+bool is_ext_pool(struct zs_pool *pool)
+{
+	return pool->ext_flag;
+}
+void zs_pool_enable_ext(struct zs_pool *pool, bool enable,
+					ext_size_parse_fn *parse_fn)
+{
+	pool->ext_flag = enable ? 1 : 0;
+	pool->size_parse = enable ? parse_fn : NULL;
+}
+
+void zs_pool_ext_malloc_register(struct zs_pool *pool,
+						ext_zsmalloc_fn *fn)
+{
+	pool->ext_zsmalloc = fn;
+}
+#endif
 
 static int __init zs_init(void)
 {

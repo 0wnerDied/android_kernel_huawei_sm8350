@@ -41,8 +41,27 @@
 #include <linux/delayacct.h>
 #include <linux/psi.h>
 #include <linux/ramfs.h>
+#include <linux/pagecache_manage.h>
+#include <linux/pagecache_debug.h>
+#ifdef CONFIG_FCMA
+#include <linux/fcma.h>
+#endif
 #include "internal.h"
+#if defined(CONFIG_TASK_PROTECT_LRU) || defined(CONFIG_MEMCG_PROTECT_LRU)
+#include <linux/protect_lru.h>
+#endif
 
+#ifdef CONFIG_HW_PAGE_TRACKER
+#include <linux/hw/page_tracker.h>
+#endif
+
+#ifdef CONFIG_HW_MEMORY_MONITOR
+#include <mmonitor/mmonitor.h>
+#endif
+
+#ifdef CONFIG_CGROUP_IOLIMIT
+#include <linux/iolimit_cgroup.h>
+#endif
 #define CREATE_TRACE_POINTS
 #include <trace/events/filemap.h>
 
@@ -52,6 +71,9 @@
 #include <linux/buffer_head.h> /* for try_to_free_buffers */
 
 #include <asm/mman.h>
+#ifdef CONFIG_HW_CGROUP_WORKINGSET
+#include <linux/workingset_cgroup.h>
+#endif
 
 int want_old_faultaround_pte = 1;
 
@@ -863,9 +885,9 @@ int replace_page_cache_page(struct page *old, struct page *new, gfp_t gfp_mask)
 EXPORT_SYMBOL_GPL(replace_page_cache_page);
 
 noinline int __add_to_page_cache_locked(struct page *page,
-					struct address_space *mapping,
-					pgoff_t offset, gfp_t gfp_mask,
-					void **shadowp)
+				      struct address_space *mapping,
+				      pgoff_t offset, gfp_t gfp_mask,
+				      void **shadowp)
 {
 	XA_STATE(xas, &mapping->i_pages, offset);
 	int huge = PageHuge(page);
@@ -877,11 +899,21 @@ noinline int __add_to_page_cache_locked(struct page *page,
 	VM_BUG_ON_PAGE(PageSwapBacked(page), page);
 	mapping_set_update(&xas, mapping);
 
+#ifdef CONFIG_MEMCG_PROTECT_LRU
+	memcg = get_protect_file_memcg(page, mapping);
+#endif
 	if (!huge) {
 		error = mem_cgroup_try_charge(page, current->mm,
 					      gfp_mask, &memcg, false);
+#ifdef CONFIG_MEMCG_PROTECT_LRU
+		if (error) {
+			protect_add_page_cache_rollback(page);
+			return error;
+		}
+#else
 		if (error)
 			return error;
+#endif
 	}
 
 	get_page(page);
@@ -913,12 +945,17 @@ unlock:
 
 	if (xas_error(&xas))
 		goto error;
-
+#ifdef CONFIG_HW_PAGE_TRACKER
+	page_tracker_set_type(page, TRACK_FILE, 0);
+#endif
 	if (!huge)
 		mem_cgroup_commit_charge(page, memcg, false, false);
 	trace_mm_filemap_add_to_page_cache(page);
 	return 0;
 error:
+#ifdef CONFIG_MEMCG_PROTECT_LRU
+	protect_add_page_cache_rollback(page);
+#endif
 	page->mapping = NULL;
 	/* Leave page->index set: truncation relies upon it */
 	if (!huge)
@@ -971,6 +1008,12 @@ int add_to_page_cache_lru(struct page *page, struct address_space *mapping,
 		WARN_ON_ONCE(PageActive(page));
 		if (!(gfp_mask & __GFP_WRITE) && shadow)
 			workingset_refault(page, shadow);
+#if  defined(CONFIG_TASK_PROTECT_LRU)
+		protect_lru_set_from_file(page);
+#elif defined(CONFIG_MEMCG_PROTECT_LRU)
+		if (PageProtect(page))
+			SetPageActive(page);
+#endif
 		lru_cache_add(page);
 	}
 	return ret;
@@ -1710,7 +1753,11 @@ no_page:
 			unlock_page(page);
 	}
 
+#ifdef CONFIG_TASK_PROTECT_LRU
+	return shrink_protect_lru_by_overlimit(page);
+#else
 	return page;
+#endif
 }
 EXPORT_SYMBOL(pagecache_get_page);
 
@@ -2053,6 +2100,9 @@ static ssize_t generic_file_buffered_read(struct kiocb *iocb,
 		unsigned long nr, ret;
 
 		cond_resched();
+#ifdef CONFIG_CGROUP_IOLIMIT
+		io_read_bandwidth_control(PAGE_SIZE);
+#endif
 find_page:
 		if (fatal_signal_pending(current)) {
 			error = -EINTR;
@@ -2060,7 +2110,13 @@ find_page:
 		}
 
 		page = find_get_page(mapping, index);
+#ifdef CONFIG_HW_MEMORY_MONITOR
+		count_mmonitor_event(FILE_CACHE_READ_COUNT);
+#endif
 		if (!page) {
+#ifdef CONFIG_HW_MEMORY_MONITOR
+			count_mmonitor_event(FILE_CACHE_MISS_COUNT);
+#endif
 			if (iocb->ki_flags & IOCB_NOWAIT)
 				goto would_block;
 			page_cache_sync_readahead(mapping,
@@ -2268,7 +2324,9 @@ out:
 	ra->prev_pos = prev_index;
 	ra->prev_pos <<= PAGE_SHIFT;
 	ra->prev_pos |= prev_offset;
-
+#ifdef CONFIG_HW_CGROUP_WORKINGSET
+	workingset_pagecache_on_readfile(filp, ppos, index, offset);
+#endif
 	*ppos = ((loff_t)index << PAGE_SHIFT) + offset;
 	file_accessed(filp);
 	return written ? written : error;
@@ -2431,10 +2489,14 @@ static struct file *do_sync_mmap_readahead(struct vm_fault *vmf)
 	 * mmap read-around
 	 */
 	fpin = maybe_unlock_mmap_for_io(vmf, fpin);
+#ifndef CONFIG_HUAWEI_PAGECACHE_HELPE
 	ra->start = max_t(long, 0, offset - ra->ra_pages / 2);
 	ra->size = ra->ra_pages;
 	ra->async_size = ra->ra_pages / 4;
 	ra_submit(ra, mapping, file);
+#else
+	pch_read_around(ra, mapping, file, offset);
+#endif
 	return fpin;
 }
 
@@ -2509,18 +2571,37 @@ vm_fault_t filemap_fault(struct vm_fault *vmf)
 	 * Do we have something in the page cache already?
 	 */
 	page = find_get_page(mapping, offset);
+#ifdef CONFIG_HW_MEMORY_MONITOR
+	count_mmonitor_event(FILE_CACHE_MAP_COUNT);
+#endif
+#ifdef CONFIG_HW_CGROUP_WORKINGSET
+	workingset_pagecache_on_pagefault(file, offset);
+#endif
 	if (likely(page) && !(vmf->flags & FAULT_FLAG_TRIED)) {
 		/*
 		 * We found the page, so try async readahead before
 		 * waiting for the lock.
 		 */
+#ifdef CONFIG_CGROUP_IOLIMIT
+		task_set_in_pagefault(current);
+#endif
 		fpin = do_async_mmap_readahead(vmf, page);
+#ifdef CONFIG_CGROUP_IOLIMIT
+		task_clear_in_pagefault(current);
+#endif
 	} else if (!page) {
 		/* No page in the page cache at all */
 		count_vm_event(PGMAJFAULT);
 		count_memcg_event_mm(vmf->vma->vm_mm, PGMAJFAULT);
 		ret = VM_FAULT_MAJOR;
+#ifdef CONFIG_CGROUP_IOLIMIT
+		task_set_in_pagefault(current);
+#endif
 		fpin = do_sync_mmap_readahead(vmf);
+		pch_mmap_readextend(vmf->vma, ra, file, offset);
+#ifdef CONFIG_CGROUP_IOLIMIT
+		task_clear_in_pagefault(current);
+#endif
 retry_find:
 		page = pagecache_get_page(mapping, offset,
 					  FGP_CREAT|FGP_FOR_MMAP,
@@ -2572,6 +2653,10 @@ retry_find:
 	}
 
 	vmf->page = page;
+#ifdef CONFIG_FCMA
+	if (!test_fcma_migrate_flag() && !in_fcma_area(page))
+		fcma_replace_page(page);
+#endif
 	return ret | VM_FAULT_LOCKED;
 
 page_not_uptodate:
@@ -2583,7 +2668,13 @@ page_not_uptodate:
 	 */
 	ClearPageError(page);
 	fpin = maybe_unlock_mmap_for_io(vmf, fpin);
+#ifdef CONFIG_CGROUP_IOLIMIT
+	task_set_in_pagefault(current);
+#endif
 	error = mapping->a_ops->readpage(file, page);
+#ifdef CONFIG_CGROUP_IOLIMIT
+	task_clear_in_pagefault(current);
+#endif
 	if (!error) {
 		wait_on_page_locked(page);
 		if (!PageUptodate(page))
@@ -3287,6 +3378,9 @@ ssize_t generic_perform_write(struct file *file,
 		size_t copied;		/* Bytes copied from user */
 		void *fsdata;
 
+#ifdef CONFIG_CGROUP_IOLIMIT
+		io_write_bandwidth_control(PAGE_SIZE);
+#endif
 		offset = (pos & (PAGE_SIZE - 1));
 		bytes = min_t(unsigned long, PAGE_SIZE - offset,
 						iov_iter_count(i));

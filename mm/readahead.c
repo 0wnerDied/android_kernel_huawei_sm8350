@@ -22,6 +22,7 @@
 #include <linux/mm_inline.h>
 #include <linux/blk-cgroup.h>
 #include <linux/fadvise.h>
+#include <linux/pagecache_manage.h>
 
 #include "internal.h"
 
@@ -113,7 +114,7 @@ int read_cache_pages(struct address_space *mapping, struct list_head *pages,
 
 EXPORT_SYMBOL(read_cache_pages);
 
-static int read_pages(struct address_space *mapping, struct file *filp,
+int read_pages(struct address_space *mapping, struct file *filp,
 		struct list_head *pages, unsigned int nr_pages, gfp_t gfp)
 {
 	struct blk_plug plug;
@@ -265,6 +266,8 @@ static unsigned long get_init_ra_size(unsigned long size, unsigned long max)
 	else
 		newsize = max;
 
+	newsize = pch_shrink_read_pages(newsize);
+
 	return newsize;
 }
 
@@ -388,6 +391,12 @@ ondemand_readahead(struct address_space *mapping,
 	unsigned long max_pages = ra->ra_pages;
 	unsigned long add_pages;
 	pgoff_t prev_offset;
+#ifdef CONFIG_MAS_BUFFERED_READAHEAD
+	unsigned long ra_pages_cr = inode_to_bdi(mapping->host)->ra_pages_cr;
+
+	if (ra_pages_cr)
+		max_pages = ra_pages_cr;
+#endif
 
 	/*
 	 * If the request exceeds the readahead window, allow the read to

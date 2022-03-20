@@ -38,7 +38,9 @@
 #include <linux/hugetlb.h>
 #include <linux/frontswap.h>
 #include <linux/fs_parser.h>
-
+#ifdef CONFIG_HW_PAGE_TRACKER
+#include <linux/hw/page_tracker.h>
+#endif
 #include <asm/tlbflush.h> /* for arch/microblaze update_mmu_cache() */
 
 static struct vfsmount *shm_mnt;
@@ -85,6 +87,10 @@ static struct vfsmount *shm_mnt;
 #include <asm/pgtable.h>
 
 #include "internal.h"
+
+#ifdef CONFIG_HW_MEMORY_MONITOR
+#include <mmonitor/mmonitor.h>
+#endif
 
 #define BLOCKS_PER_PAGE  (PAGE_SIZE/512)
 #define VM_ACCT(size)    (PAGE_ALIGN(size) >> PAGE_SHIFT)
@@ -648,6 +654,9 @@ unlock:
 	} while (xas_nomem(&xas, gfp));
 
 	if (xas_error(&xas)) {
+#ifdef CONFIG_HW_PAGE_TRACKER
+		page_tracker_set_type(page, TRACK_FILE, 0);
+#endif
 		page->mapping = NULL;
 		page_ref_sub(page, nr);
 		return xas_error(&xas);
@@ -1642,6 +1651,9 @@ static int shmem_swapin_page(struct inode *inode, pgoff_t index,
 
 	/* Look it up and read it in.. */
 	page = lookup_swap_cache(swap, NULL, 0);
+#ifdef CONFIG_HW_MEMORY_MONITOR
+	count_mmonitor_event(FILE_CACHE_MAP_COUNT);
+#endif
 	if (!page) {
 		/* Or update major stats only when swapin succeeds?? */
 		if (fault_type) {

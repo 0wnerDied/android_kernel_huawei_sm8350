@@ -338,6 +338,11 @@ int slab_unmergeable(struct kmem_cache *s)
 		return 1;
 #endif
 
+#ifdef CONFIG_MM_PAGE_TRACE
+	if (s->flags & SLAB_MM_NOTRACE)
+		return 1;
+#endif
+
 	return 0;
 }
 
@@ -359,6 +364,10 @@ struct kmem_cache *find_mergeable(unsigned int size, unsigned int align,
 
 	if (flags & SLAB_NEVER_MERGE)
 		return NULL;
+#ifdef CONFIG_MM_PAGE_TRACE
+	if (flags & SLAB_MM_NOTRACE)
+		return NULL;
+#endif
 
 	list_for_each_entry_reverse(s, &slab_root_caches, root_caches_node) {
 		if (slab_unmergeable(s))
@@ -1344,6 +1353,11 @@ void *kmalloc_order(size_t size, gfp_t flags, unsigned int order)
 		ret = page_address(page);
 		mod_node_page_state(page_pgdat(page), NR_SLAB_UNRECLAIMABLE,
 				    1 << order);
+#if !defined(CONFIG_TRACING) && defined(CONFIG_MM_PAGE_TRACE)
+		set_lslub_track(page, order, _RET_IP_);
+		mod_zone_page_state(page_zone(page),
+			NR_LSLAB_PAGES, 1 << order);
+#endif
 	}
 	ret = kasan_kmalloc_large(ret, size, flags);
 	/* As ret might get tagged, call kmemleak hook after KASAN. */
@@ -1356,6 +1370,15 @@ EXPORT_SYMBOL(kmalloc_order);
 void *kmalloc_order_trace(size_t size, gfp_t flags, unsigned int order)
 {
 	void *ret = kmalloc_order(size, flags, order);
+#ifdef CONFIG_MM_PAGE_TRACE
+	if (likely(ret)) {
+		struct page *page = virt_to_page(ret);
+
+		set_lslub_track(page, order, _RET_IP_);
+		mod_zone_page_state(page_zone(page),
+			NR_LSLAB_PAGES, 1 << order);
+	}
+#endif
 	trace_kmalloc(_RET_IP_, ret, size, PAGE_SIZE << order, flags);
 	return ret;
 }
@@ -1428,7 +1451,7 @@ static void print_slabinfo_header(struct seq_file *m)
 	seq_puts(m, "slabinfo - version: 2.1\n");
 #endif
 	seq_puts(m, "# name            <active_objs> <num_objs> <objsize> <objperslab> <pagesperslab>");
-	seq_puts(m, " : tunables <limit> <batchcount> <sharedfactor>");
+	seq_puts(m, " : tunables <rcl> <batchcount> <sharedfactor>");
 	seq_puts(m, " : slabdata <active_slabs> <num_slabs> <sharedavail>");
 #ifdef CONFIG_DEBUG_SLAB
 	seq_puts(m, " : globalstat <listallocs> <maxobjs> <grown> <reaped> <error> <maxfreeable> <nodeallocs> <remotefrees> <alienoverflow>");
@@ -1578,17 +1601,19 @@ void dump_unreclaimable_slab(void)
 		return;
 	}
 
-	pr_info("Unreclaimable slab info:\n");
-	pr_info("Name                      Used          Total\n");
+	pr_info("slab info:\n");
+	pr_info("Type               Name                      Used          Total\n");
 
 	list_for_each_entry_safe(s, s2, &slab_caches, list) {
-		if (!is_root_cache(s) || (s->flags & SLAB_RECLAIM_ACCOUNT))
+		if (!is_root_cache(s))
 			continue;
 
 		get_slabinfo(s, &sinfo);
 
 		if (sinfo.num_objs > 0)
-			pr_info("%-17s %10luKB %10luKB\n", cache_name(s),
+			pr_info("%s %-17s %10luKB %10luKB\n",
+				(s->flags & SLAB_RECLAIM_ACCOUNT) ? "Reclaimable" : "Unreclaimable",
+				cache_name(s),
 				(sinfo.active_objs * s->size) / 1024,
 				(sinfo.num_objs * s->size) / 1024);
 	}

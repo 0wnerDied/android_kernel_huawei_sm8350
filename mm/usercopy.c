@@ -20,6 +20,9 @@
 #include <linux/atomic.h>
 #include <linux/jump_label.h>
 #include <asm/sections.h>
+#ifdef CONFIG_HUAWEI_PROC_CHECK_ROOT
+#include <chipset_common/security/saudit.h>
+#endif
 
 /*
  * Checks if a given pointer and length is contained by the current
@@ -91,6 +94,12 @@ void __noreturn usercopy_abort(const char *name, const char *detail,
 		 detail ? " '" : "", detail ? : "", detail ? "'" : "",
 		 offset, len);
 
+#ifdef CONFIG_HUAWEI_PROC_CHECK_ROOT
+	saudit_log(USERCOPY, STP_RISK, 0,
+		"msg=kernel memory %s attempt detected %s '%s' (%lu bytes),",
+		to_user ? "exposure" : "overwrite",
+		to_user ? "from" : "to", name ? : "unknown", len);
+#endif
 	/*
 	 * For greater effect, it would be nice to do do_group_exit(),
 	 * but BUG() actually hooks all the lock-breaking and per-arch

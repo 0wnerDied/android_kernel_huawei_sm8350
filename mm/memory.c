@@ -83,6 +83,13 @@
 #include <asm/pgtable.h>
 
 #include "internal.h"
+#ifdef CONFIG_HW_CGROUP_WORKINGSET
+#include <linux/workingset_cgroup.h>
+#endif
+
+#ifdef CONFIG_HW_MEMORY_MONITOR
+#include <mmonitor/mmonitor.h>
+#endif
 
 #if defined(LAST_CPUPID_NOT_IN_PAGE_FLAGS) && !defined(CONFIG_COMPILE_TEST)
 #warning Unfortunate NUMA and NUMA Balancing config, growing page-frame for last_cpupid.
@@ -2370,12 +2377,12 @@ static inline bool cow_user_page(struct page *dst, struct page *src,
 			update_mmu_cache(vma, addr, vmf->pte);
 	}
 
-	/*
-	 * This really shouldn't fail, because the page is there
-	 * in the page tables. But it might just be unreadable,
-	 * in which case we just give up and fill the result with
-	 * zeroes.
-	 */
+		/*
+		 * This really shouldn't fail, because the page is there
+		 * in the page tables. But it might just be unreadable,
+		 * in which case we just give up and fill the result with
+		 * zeroes.
+		 */
 	if (__copy_from_user_inatomic(kaddr, uaddr, PAGE_SIZE)) {
 		if (locked)
 			goto warn;
@@ -2409,8 +2416,8 @@ warn:
 pte_unlock:
 	if (locked)
 		pte_unmap_unlock(vmf->pte, vmf->ptl);
-	kunmap_atomic(kaddr);
-	flush_dcache_page(dst);
+		kunmap_atomic(kaddr);
+		flush_dcache_page(dst);
 
 	return ret;
 }
@@ -2859,6 +2866,10 @@ static vm_fault_t do_wp_page(struct vm_fault *vmf)
 			unlock_page(page);
 			goto copy;
 		}
+#ifdef CONFIG_ZRAM_NON_COMPRESS
+                if (PageNonCompress(vmf->page))
+                        ClearPageNonCompress(vmf->page);
+#endif
 		/*
 		 * Ok, we've got the only map reference, and the only
 		 * page count reference, and the page is locked,
@@ -3027,6 +3038,13 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 
 
 	delayacct_set_flag(DELAYACCT_PF_SWAPIN);
+
+#ifdef CONFIG_HW_MEMORY_MONITOR
+	if (current->delays)
+		__delayacct_blkio_start();
+	count_mmonitor_event(FILE_CACHE_MAP_COUNT);
+#endif
+
 	page = lookup_swap_cache(entry, vma, vmf->address);
 	swapcache = page;
 
@@ -3077,6 +3095,10 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 
 			if (likely(pte_same(*vmf->pte, vmf->orig_pte)))
 				ret = VM_FAULT_OOM;
+#ifdef CONFIG_HW_MEMORY_MONITOR
+			if (current->delays)
+				__delayacct_blkio_end(current);
+#endif
 			delayacct_clear_flag(DELAYACCT_PF_SWAPIN);
 			goto unlock;
 		}
@@ -3091,11 +3113,19 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 		 * owner processes (which may be unknown at hwpoison time)
 		 */
 		ret = VM_FAULT_HWPOISON;
+#ifdef CONFIG_HW_MEMORY_MONITOR
+		if (current->delays)
+			__delayacct_blkio_end(current);
+#endif
 		delayacct_clear_flag(DELAYACCT_PF_SWAPIN);
 		goto out_release;
 	}
 
 	locked = lock_page_or_retry(page, vma->vm_mm, vmf->flags);
+#ifdef CONFIG_HW_MEMORY_MONITOR
+	if (current->delays)
+		__delayacct_blkio_end(current);
+#endif
 
 	delayacct_clear_flag(DELAYACCT_PF_SWAPIN);
 	if (!locked) {
@@ -3155,6 +3185,12 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 	inc_mm_counter_fast(vma->vm_mm, MM_ANONPAGES);
 	dec_mm_counter_fast(vma->vm_mm, MM_SWAPENTS);
 	pte = mk_pte(page, vmf->vma_page_prot);
+
+#ifdef CONFIG_ZRAM_NON_COMPRESS
+        if (PageNonCompress(page))
+                pte = pte_wrprotect(pte);
+#endif
+
 	if ((vmf->flags & FAULT_FLAG_WRITE) && reuse_swap_page(page, NULL)) {
 		pte = maybe_mkwrite(pte_mkdirty(pte), vmf->vma_flags);
 		vmf->flags &= ~FAULT_FLAG_WRITE;
@@ -3789,7 +3825,12 @@ static vm_fault_t do_read_fault(struct vm_fault *vmf)
 	 * if page by the offset is not ready to be mapped (cold cache or
 	 * something).
 	 */
+#ifdef CONFIG_HW_CGROUP_WORKINGSET
+	if (vma->vm_ops->map_pages && fault_around_bytes >> PAGE_SHIFT > 1 &&
+		likely(!(current->ext_flags & PF_EXT_WSCG_MONITOR))) {
+#else
 	if (vma->vm_ops->map_pages && fault_around_bytes >> PAGE_SHIFT > 1) {
+#endif
 		ret = do_fault_around(vmf);
 		if (ret)
 			return ret;
@@ -4173,7 +4214,9 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 
 	if (!pte_present(vmf->orig_pte))
 		return do_swap_page(vmf);
-
+#ifdef CONFIG_HW_CGROUP_WORKINGSET
+	workingset_pagecache_on_ptefault(vmf);
+#endif
 	if (pte_protnone(vmf->orig_pte) && vma_is_accessible(vmf->vma))
 		return do_numa_page(vmf);
 

@@ -68,7 +68,9 @@
 #include <linux/rcupdate.h>
 #include <linux/list.h>
 #include <linux/kmemleak.h>
-
+#ifdef CONFIG_HW_PAGE_TRACKER
+#include <linux/hw/page_tracker.h>
+#endif
 #include <trace/events/kmem.h>
 
 #include <linux/atomic.h>
@@ -204,6 +206,9 @@ static void *slob_new_pages(gfp_t gfp, int order, int node)
 
 	mod_node_page_state(page_pgdat(page), NR_SLAB_UNRECLAIMABLE,
 			    1 << order);
+#ifdef CONFIG_HW_PAGE_TRACKER
+	page_tracker_set_type(page, TRACK_SLAB, order);
+#endif
 	return page_address(page);
 }
 

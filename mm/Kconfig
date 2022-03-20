@@ -63,6 +63,37 @@ config SPARSEMEM_MANUAL
 
 endchoice
 
+config HYPERHOLD
+        bool "Enable HyperHold"
+        default n
+        depends on MEMCG
+        help
+          HyperHold is a intelligent memory management solution.
+
+config HYPERHOLD_FILE_LRU
+        bool "Enable HyperHold FILE LRU"
+        default y
+        depends on HYPERHOLD
+        help
+          File-LRU is a mechanism that recliam anonymous pages and filecache separately.
+
+config HYPERHOLD_ZSWAPD
+        bool "Enable zswapd thread to reclaim anon pages in background"
+        default n
+        depends on HYPERHOLD
+        help
+          zswapd is a kernel thread that reclaim anonymous pages in the
+          background. When the use of swap pages reaches the watermark
+          and the refault of anonymous pages is high, the content of
+          zram will exchanged to eswap by a certain percentage.
+
+config HYPERHOLD_DEBUG
+        bool "Enable HyperHold debug"
+        default n
+        depends on HYPERHOLD
+        help
+          This macro controls the debugging functions of HyperHold.
+
 config DISCONTIGMEM
 	def_bool y
 	depends on (!SELECT_MEMORY_MODEL && ARCH_DISCONTIGMEM_ENABLE) || DISCONTIGMEM_MANUAL
@@ -538,6 +569,23 @@ config CMA_AREAS
 
 	  If unsure, leave the default value "7".
 
+config FCMA
+	bool "Fast Contiguous Memory Allocator"
+	depends on MMU
+	depends on CMA
+	select MIGRATION
+	select MEMORY_ISOLATION
+	select ARCH_WANT_BATCHED_UNMAP_TLB_FLUSH
+	help
+	  This enables the Fast Contiguous Memory Allocator which allows other
+	  subsystems to allocate big physically-contiguous blocks of memory.
+	  CMA reserves a region of memory and allows only read only pages to
+	  be allocated from it. This way, the kernel can use the memory for
+	  pagecache and when a subsystem requests for contiguous area, the
+	  allocated pages are migrated away to serve the contiguous request.
+
+	  If unsure, say "n".
+
 config LIMIT_MOVABLE_ZONE_ALLOC
 	bool "Limit types of allocations from Movable zone"
 	depends on QGKI && MEMORY_HOTPLUG_MOVABLE_NODE
@@ -547,6 +595,12 @@ config LIMIT_MOVABLE_ZONE_ALLOC
 	  satisfied from zone Movable. This restriction helps reduce the
 	  likelihood of a page in the movable zone being pinned which would
 	  prevent memory from being offlined.
+
+config MAS_BUFFERED_READAHEAD
+	bool "enlarge readahead for buffered read"
+	default n
+	help
+		for buffered readahead.
 
 config MEM_SOFT_DIRTY
 	bool "Track memory changes"
@@ -766,6 +820,17 @@ config HAVE_USERSPACE_LOW_MEMORY_KILLER
 	  when the OOM killer and userspace memory killer both have the
 	  potential to run).
 
+source "mm/xreclaimer/Kconfig"
+
+config ZS_MALLOC_EXT
+	bool "ZS malloc extend"
+	default n
+	help
+	  This function will allow caller use custom page allocation policy.
+	  Before using custom allocation policy, caller must register the custom
+	  page allocation function, and set the flag in the ZS pool.
+	  If not sure, choose N
+
 config ARCH_SUPPORTS_SPECULATIVE_PAGE_FAULT
        def_bool n
 
@@ -853,6 +918,14 @@ config OOM_TASK_PRIORITY_ADJ_LIMIT
 
 endmenu
 
+source "mm/mem_track/Kconfig"
+
+config HUAWEI_SLOW_PATH_COUNT
+	bool "page alloc enter slow path count"
+	default n
+	help
+	  Say 'Y' here is you want to count page alloc slow path.
+
 config PROCESS_RECLAIM
 	bool "Enable process reclaim"
 	depends on PROC_FS
@@ -870,6 +943,40 @@ config PROCESS_RECLAIM
 
 	 Any other value is ignored.
 
+config HUAWEI_DIRECT_SWAPPINESS
+	bool "Allow to adjust direct reclaim swappiness"
+	depends on SWAP && PROC_FS
+	default n
+	help
+	  Used to adjust direct reclaim compress priority by /proc/sys/vm/direct_swappiness.
+	  only 0 to 60 is valid. If unsure, say N to use it's original value(60).
+
+config HUAWEI_SWAP_ZDATA
+	bool "Compressed data to swap"
+	depends on SWAP
+	depends on PROCESS_RECLAIM
+	default n
+	help
+	  Save compressed data to swap page.
+	  If unsure, say Y to enable swap_zdata.
+
+config HUAWEI_PAGECACHE_HELPER
+	tristate "KIRIN page cache helper module"
+	default n
+	help
+	  This selects the Kirin page cache helper module.
+	  Select this if you want to optimize your Android system.
+	  If unsure, say N.
+
+config HUAWEI_PAGECACHE_DEBUG
+	tristate "KIRIN page cache trace module"
+	default n
+	depends on HUAWEI_DEBUG_FS
+	help
+	  This selects the Kirin page cache trace module.
+	  Select this if you want to optimize your Android system.
+	  If unsure, say N.
+
 config MULTIPLE_KSWAPD
 	bool "Spawn multiple kswapd threads"
 	depends on QGKI
@@ -882,3 +989,9 @@ config MULTIPLE_KSWAPD
 	 (echo <num> > /proc/sys/vm/kswapd_threads)
 
 	 Values not in the range of 1..16 are ignored.
+
+config HW_MM_POLICY
+	bool "memory policy module"
+	default n
+	help
+	  Huawei memory policy.

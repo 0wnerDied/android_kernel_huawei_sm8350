@@ -48,8 +48,15 @@
 #include <linux/page_owner.h>
 #include <linux/sched/mm.h>
 #include <linux/ptrace.h>
+#ifdef CONFIG_FCMA
+#include <linux/fcma.h>
+#endif
 
 #include <asm/tlbflush.h>
+
+#ifdef CONFIG_HW_PAGE_TRACKER
+#include <linux/hw/page_tracker.h>
+#endif
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/migrate.h>
@@ -157,6 +164,7 @@ void putback_movable_page(struct page *page)
 	__ClearPageIsolated(page);
 }
 
+
 /*
  * Put previously isolated pages back onto the appropriate lists
  * from where they were once taken off for compaction/migration.
@@ -165,6 +173,45 @@ void putback_movable_page(struct page *page)
  * built from lru, balloon, hugetlbfs page. See isolate_migratepages_range()
  * and isolate_huge_page().
  */
+#ifdef CONFIG_FCMA
+void __putback_movable_pages(struct list_head *l, bool fcma)
+{
+	struct page *page;
+	struct page *page2;
+
+	list_for_each_entry_safe(page, page2, l, lru) {
+		if (unlikely(PageHuge(page))) {
+			putback_active_hugepage(page);
+			continue;
+		}
+		list_del(&page->lru);
+		/*
+		 * We isolated non-lru movable page so here we can use
+		 * __PageMovable because LRU page's mapping cannot have
+		 * PAGE_MAPPING_MOVABLE.
+		 */
+		if (unlikely(__PageMovable(page))) {
+			VM_BUG_ON_PAGE(!PageIsolated(page), page);
+			lock_page(page);
+			if (PageMovable(page))
+				putback_movable_page(page);
+			else
+				__ClearPageIsolated(page);
+			unlock_page(page);
+			put_page(page);
+		} else {
+			mod_node_page_state(page_pgdat(page), NR_ISOLATED_ANON +
+					page_is_file_cache(page), -hpage_nr_pages(page));
+			__putback_lru_page(page, fcma);
+		}
+	}
+}
+
+void putback_movable_pages(struct list_head *l)
+{
+	__putback_movable_pages(l, false);
+}
+#else
 void putback_movable_pages(struct list_head *l)
 {
 	struct page *page;
@@ -197,6 +244,7 @@ void putback_movable_pages(struct list_head *l)
 		}
 	}
 }
+#endif
 
 /*
  * Restore a potential migration pte to a working pte entry
@@ -622,6 +670,22 @@ void migrate_page_states(struct page *newpage, struct page *page)
 	if (page_is_idle(page))
 		set_page_idle(newpage);
 
+#ifdef CONFIG_ZRAM_NON_COMPRESS
+        if (TestClearPageNonCompress(page))
+                SetPageNonCompress(newpage);
+#endif
+
+#if defined(CONFIG_TASK_PROTECT_LRU)
+	if (PageProtect(page)) {
+		SetPageProtect(newpage);
+		set_page_num(newpage, get_page_num(page));
+	}
+#elif defined(CONFIG_MEMCG_PROTECT_LRU)
+	if (PageProtect(page)) {
+		SetPageProtect(newpage);
+		ClearPageProtect(page);
+	}
+#endif
 	/*
 	 * Copy NUMA information to the new page, to prevent over-eager
 	 * future migrations of this same page.
@@ -690,6 +754,9 @@ int migrate_page(struct address_space *mapping,
 		migrate_page_copy(newpage, page);
 	else
 		migrate_page_states(newpage, page);
+#ifdef CONFIG_HW_PAGE_TRACKER
+	page_tracker_change_tracker(newpage, page);
+#endif
 	return MIGRATEPAGE_SUCCESS;
 }
 EXPORT_SYMBOL(migrate_page);
@@ -1001,8 +1068,14 @@ out:
 	return rc;
 }
 
+#ifdef CONFIG_FCMA
+static int __unmap_and_move(struct page *page, struct page *newpage,
+				int force, enum migrate_mode mode,
+				unsigned long private)
+#else
 static int __unmap_and_move(struct page *page, struct page *newpage,
 				int force, enum migrate_mode mode)
+#endif
 {
 	int rc = -EAGAIN;
 	int page_was_mapped = 0;
@@ -1137,10 +1210,22 @@ out:
 	 * state.
 	 */
 	if (rc == MIGRATEPAGE_SUCCESS) {
+#ifdef CONFIG_FCMA
+		if (unlikely(!is_lru)) {
+			put_page(newpage);
+		} else {
+			if (private == FCMA_PAGE_HINT)
+				__putback_lru_page(newpage, true);
+			else
+				putback_lru_page(newpage);
+		}
+#else
 		if (unlikely(!is_lru))
 			put_page(newpage);
 		else
 			putback_lru_page(newpage);
+#endif
+
 	}
 
 	return rc;
@@ -1194,7 +1279,11 @@ static ICE_noinline int unmap_and_move(new_page_t get_new_page,
 		goto out;
 	}
 
+#ifdef CONFIG_FCMA
+	rc = __unmap_and_move(page, newpage, force, mode, private);
+#else
 	rc = __unmap_and_move(page, newpage, force, mode);
+#endif
 	if (rc == MIGRATEPAGE_SUCCESS)
 		set_page_owner_migrate_reason(newpage, reason);
 

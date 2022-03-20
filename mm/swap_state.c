@@ -21,6 +21,9 @@
 #include <linux/vmalloc.h>
 #include <linux/swap_slots.h>
 #include <linux/huge_mm.h>
+#ifdef CONFIG_HW_PAGE_TRACKER
+#include <linux/hw/page_tracker.h>
+#endif
 
 #include <asm/pgtable.h>
 #include "internal.h"
@@ -139,6 +142,9 @@ int add_to_swap_cache(struct page *page, swp_entry_t entry, gfp_t gfp)
 		}
 		address_space->nrpages += nr;
 		__mod_node_page_state(page_pgdat(page), NR_FILE_PAGES, nr);
+#ifdef CONFIG_HW_PAGE_TRACKER
+		page_tracker_set_type(page, TRACK_FILE, 0);
+#endif
 		ADD_CACHE_INFO(add_total, nr);
 unlock:
 		xas_unlock_irq(&xas);
