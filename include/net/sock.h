@@ -231,6 +231,21 @@ struct sock_common {
 		u32		skc_tw_snd_nxt; /* struct tcp_timewait_sock */
 	};
 	/* public: */
+
+#ifdef CONFIG_HW_NETWORK_SLICE
+	int skc_slice_reported;
+	int skc_slice_binded;
+#endif
+#ifdef CONFIG_HW_DPIMARK_MODULE
+	unsigned int	skc_hwdpi_mark;
+#endif
+#ifdef CONFIG_HW_NETQOS_SCHED
+	int             skc_netqos_level;
+	unsigned long   skc_netqos_time;
+	unsigned long   skc_netqos_ttime;
+	unsigned int    skc_netqos_tx;
+	unsigned int    skc_netqos_rx;
+#endif
 };
 
 struct bpf_sk_storage;
@@ -362,6 +377,20 @@ struct sock {
 #define sk_incoming_cpu		__sk_common.skc_incoming_cpu
 #define sk_flags		__sk_common.skc_flags
 #define sk_rxhash		__sk_common.skc_rxhash
+#define sk_hwdpi_mark   __sk_common.skc_hwdpi_mark
+
+#ifdef CONFIG_HW_NETWORK_SLICE
+#define sk_slice_reported	__sk_common.skc_slice_reported
+#define sk_slice_binded	__sk_common.skc_slice_binded
+#endif
+
+#ifdef CONFIG_HW_NETQOS_SCHED
+#define sk_netqos_level		__sk_common.skc_netqos_level
+#define sk_netqos_time		__sk_common.skc_netqos_time
+#define sk_netqos_ttime		__sk_common.skc_netqos_ttime
+#define sk_netqos_tx		__sk_common.skc_netqos_tx
+#define sk_netqos_rx		__sk_common.skc_netqos_rx
+#endif
 
 	socket_lock_t		sk_lock;
 	atomic_t		sk_drops;
@@ -398,6 +427,17 @@ struct sock {
 		struct socket_wq __rcu	*sk_wq;
 		struct socket_wq	*sk_wq_raw;
 	};
+
+#ifdef CONFIG_HW_BOOSTER
+	int fg_spec;
+#endif
+#if defined(CONFIG_HUAWEI_BASTET) || defined(CONFIG_HUAWEI_XENGINE)
+	uint8_t acc_state;
+#endif
+#ifdef CONFIG_HW_WIFIPRO
+	int wifipro_is_google_sock;
+	char wifipro_dev_name[IFNAMSIZ];
+#endif
 #ifdef CONFIG_XFRM
 	struct xfrm_policy __rcu *sk_policy[2];
 #endif
@@ -513,6 +553,31 @@ struct sock {
 	struct bpf_sk_storage __rcu	*sk_bpf_storage;
 #endif
 	struct rcu_head		sk_rcu;
+
+#ifdef CONFIG_APP_ACCELERATOR
+	bool start_acc_flag;
+	u32 packet_num;
+#endif
+
+#ifdef CONFIG_HUAWEI_XENGINE
+	int hicom_flag;
+	u8	snd_pkt_cnt;
+	u8	is_mp_flow:1,
+		is_download_flow:1,
+		is_mp_flow_bind:1;
+#endif
+
+#ifdef CONFIG_CGROUP_BPF
+	char			sk_process_name[TASK_COMM_LEN];
+#endif
+
+#ifdef CONFIG_HUAWEI_KSTATE
+	pid_t		sk_pid;
+#endif
+
+#ifdef CONFIG_HW_DPIMARK_MODULE
+	unsigned long	sk_born_stamp;
+#endif
 
 	ANDROID_KABI_RESERVE(1);
 	ANDROID_KABI_RESERVE(2);

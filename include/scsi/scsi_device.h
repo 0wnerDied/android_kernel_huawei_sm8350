@@ -125,6 +125,7 @@ struct scsi_device {
 
 	unsigned int id, channel;
 	u64 lun;
+	unsigned int min_sectors;
 	unsigned int manufacturer;	/* Manufacturer of device, for using 
 					 * vendor-specific cmd's */
 	unsigned sector_size;	/* size in bytes */
@@ -459,6 +460,13 @@ static inline int scsi_execute_req(struct scsi_device *sdev,
 	return scsi_execute(sdev, cmd, data_direction, buffer,
 		bufflen, NULL, sshdr, timeout, retries,  0, 0, resid);
 }
+
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+extern int scsi_unistore_execute(struct scsi_device *sdev,
+	const unsigned char *cmd, int data_direction, void *buffer,
+	unsigned bufflen, int timeout, int retries, rq_end_io_fn *done);
+extern void scsi_unistore_execute_done(struct request *rq);
+#endif
 extern void sdev_disable_disk_events(struct scsi_device *sdev);
 extern void sdev_enable_disk_events(struct scsi_device *sdev);
 extern int scsi_vpd_lun_id(struct scsi_device *, char *, size_t);

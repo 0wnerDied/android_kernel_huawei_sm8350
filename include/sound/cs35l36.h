@@ -25,6 +25,7 @@ struct cs35l36_vpbr_cfg {
 
 struct cs35l36_platform_data {
 	bool multi_amp_mode;
+	int multi_amp_count;
 	bool dcm_mode;
 	bool amp_pcm_inv;
 	bool imon_pol_inv;

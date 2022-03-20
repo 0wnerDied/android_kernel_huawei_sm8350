@@ -1611,7 +1611,39 @@ struct station_info {
 	u32 fcs_err_count;
 
 	u32 airtime_link_metric;
+#ifdef CONFIG_HW_GET_EXT_SIG
+	s32 noise;
+	s32 snr;
+	s32 chload;
+#endif
+
+#ifdef CONFIG_HW_GET_EXT_SIG_ULDELAY
+	s32 ul_delay;
+#endif
 };
+
+#ifdef CONFIG_HW_NETWORK_QOE
+struct wifi_info {
+	char name[IFNAMSIZ];
+	u16 flag;
+	u32 rx_bytes;
+	u32 tx_bytes;
+	s8 rssi;
+	u32 txrate;
+	u32 rxrate;
+	u32 rx_packets;
+	u32 tx_packets;
+	u32 tx_failed;
+#ifdef CONFIG_HW_GET_EXT_SIG
+	s32 noise;
+	s32 snr;
+	s32 chload;
+#endif
+#ifdef CONFIG_HW_GET_EXT_SIG_ULDELAY
+	s32 ul_delay;
+#endif
+};
+#endif
 
 #if IS_ENABLED(CONFIG_CFG80211)
 /**

@@ -106,6 +106,54 @@ struct inodes_stat_t {
 	long dummy[5];		/* padding for sysctl ABI compatibility */
 };
 
+struct blkdev_cmd {
+	unsigned long cmd;
+	void __user *cust_argp;
+	unsigned long cust_arg_len;
+};
+
+/* unistore */
+enum cust_blkdev_cmd {
+	CUST_BLKDEV_INVALID = 0,
+	CUST_BLKDEV_SET_STREAM_ID = 1,
+	CUST_BLKDEV_GET_OPEN_PTR = 2,
+	CUST_BLKDEV_GET_SEGS_PER_SEC = 3,
+	CUST_BLKDEV_RESET_FTL = 4,
+	CUST_BLKDEV_SET_MAPPING_POS = 5,
+	CUST_BLKDEV_GET_OP_SIZE = 6,
+	CUST_BLKDEV_GET_UNISTORE_ENABLE = 7,
+	CUST_BLKDEV_GET_MAPPING_POS = 8,
+	CUST_BLKDEV_CLOSE_SECTION = 9,
+	CUST_BLKDEV_FS_SYNC_DONE = 10,
+	CUST_BLKDEV_SET_MAX_META_MAPPING_POS = 11,
+	CUST_BLKDEV_ADD_SECTION = 12,
+	CUST_BLKDEV_CLEAR_SECTION = 13,
+	CUST_BLKDEV_MAX,
+};
+
+struct blkdev_set_stream {
+	unsigned char stream_id;
+};
+
+struct blkdev_segments_per_section {
+	unsigned long segments_per_section;
+};
+
+struct blkdev_set_mapping_pos {
+	unsigned char lun_number;
+	unsigned short mapping_pos;
+};
+
+struct blkdev_op_size {
+	unsigned int op_size;
+};
+
+struct blkdev_unistore_enable {
+	uint8_t enable;
+};
+
+#define BLKCUST_CMD	_IO(0x12, 111) /* unistore - Custom Command */
+/* end of unistore */
 
 #define NR_FILE  8192	/* this can well be larger on a larger system */
 

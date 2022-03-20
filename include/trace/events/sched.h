@@ -10,6 +10,15 @@
 #include <linux/binfmts.h>
 #include <linux/sched/idle.h>
 
+#ifdef CONFIG_HW_QOS_THREAD
+#include <chipset_common/hwqos/hwqos_common.h>
+#endif
+
+#ifdef CONFIG_HW_RTG_FRAME
+#include <linux/sched/hw_rtg/frame.h>
+#include <linux/sched/hw_rtg/frame_info.h>
+#endif
+
 /*
  * Tracepoint for calling kthread_stop, performed to end a kthread:
  */
@@ -113,6 +122,9 @@ DECLARE_EVENT_CLASS(sched_wakeup_template,
 		__field(	int,	prio			)
 		__field(	int,	success			)
 		__field(	int,	target_cpu		)
+#ifdef CONFIG_HW_RTG_TRACE
+		__field(int, rtg_depth)
+#endif
 	),
 
 	TP_fast_assign(
@@ -121,11 +133,21 @@ DECLARE_EVENT_CLASS(sched_wakeup_template,
 		__entry->prio		= p->prio; /* XXX SCHED_DEADLINE */
 		__entry->success	= 1; /* rudiment, kill when possible */
 		__entry->target_cpu	= task_cpu(p);
+#ifdef CONFIG_HW_RTG_TRACE
+		__entry->rtg_depth= p->rtg_depth;
+#endif
 	),
 
-	TP_printk("comm=%s pid=%d prio=%d target_cpu=%03d",
+	TP_printk(
+#ifdef CONFIG_HW_RTG_TRACE
+	"comm=%s pid=%d prio=%d target_cpu=%03d rtg_depth=%d",
+		  __entry->comm, __entry->pid, __entry->prio,
+		  __entry->target_cpu, __entry->rtg_depth)
+#else
+	"comm=%s pid=%d prio=%d target_cpu=%03d",
 		  __entry->comm, __entry->pid, __entry->prio,
 		  __entry->target_cpu)
+#endif
 );
 
 /*
@@ -135,6 +157,70 @@ DECLARE_EVENT_CLASS(sched_wakeup_template,
 DEFINE_EVENT(sched_wakeup_template, sched_waking,
 	     TP_PROTO(struct task_struct *p),
 	     TP_ARGS(p));
+
+#ifdef CONFIG_HW_QOS_THREAD
+/*
+ * Tracepoint for sched qos
+ */
+DECLARE_EVENT_CLASS(sched_qos_template,
+
+	TP_PROTO(struct task_struct *p, struct transact_qos *tq, int type),
+
+	TP_ARGS(__perf_task(p), tq, type),
+
+	TP_STRUCT__entry(
+		__array(char,   comm,   TASK_COMM_LEN)
+		__field(pid_t,  pid)
+		__field(int,    prio)
+		__field(int,    success)
+		__field(int,    target_cpu)
+		__field(int,    dynamic_qos)
+		__field(int,    vip_prio)
+		__field(int,    min_util)
+		__field(int,    trans_qos)
+		__field(pid_t,  trans_from)
+		__field(int,    trans_type)
+		__field(int,    trans_flags)
+		__field(int,    type)
+	),
+
+	TP_fast_assign(
+		memcpy(__entry->comm, p->comm, TASK_COMM_LEN);
+		__entry->pid         = p->pid;
+		__entry->prio        = p->prio;
+		__entry->success     = 1; /* rudiment, kill when possible */
+		__entry->target_cpu  = task_cpu(p);
+		__entry->dynamic_qos = get_task_set_qos(p);
+#ifdef CONFIG_HUAWEI_SCHED_VIP
+		__entry->vip_prio = p->vip_prio;
+#else
+		__entry->vip_prio = -1;
+#endif
+#ifdef CONFIG_SCHED_HISI_UTIL_CLAMP
+		__entry->min_util = p->uclamp.min_util;
+#else
+		__entry->min_util = -1;
+#endif
+		__entry->trans_qos   = get_task_trans_qos(tq);
+		__entry->trans_from  = (tq == NULL) ? 0 : tq->trans_pid;
+		__entry->trans_type  = (tq == NULL) ? 0 : tq->trans_type;
+		__entry->trans_flags = atomic_read(&p->trans_flags);
+		__entry->type        = type;
+	),
+	TP_printk("comm=%s pid=%d prio=%d target_cpu=%03d dynamic_qos=%d trans_qos=%d hisi_vip_prio=%d min_util=%d trans_from=%d trans_type=%d trans_flags=%d type=%d",
+		__entry->comm, __entry->pid, __entry->prio,
+		__entry->target_cpu, __entry->dynamic_qos,
+		__entry->trans_qos, __entry->vip_prio,
+		__entry->min_util,
+		__entry->trans_from, __entry->trans_type,
+		__entry->trans_flags, __entry->type)
+);
+
+DEFINE_EVENT(sched_qos_template, sched_qos,
+	     TP_PROTO(struct task_struct *p, struct transact_qos *tq, int type),
+	     TP_ARGS(p, tq, type));
+
+#endif
 
 /*
  * Tracepoint called when the task is actually woken; p->state == TASK_RUNNNG.
@@ -150,6 +236,51 @@ DEFINE_EVENT(sched_wakeup_template, sched_wakeup,
 DEFINE_EVENT(sched_wakeup_template, sched_wakeup_new,
 	     TP_PROTO(struct task_struct *p),
 	     TP_ARGS(p));
+
+#ifdef CONFIG_HW_VIP_THREAD
+/*
+ * Tracepoint for sched vip
+ */
+DECLARE_EVENT_CLASS(sched_vip_template,
+
+	TP_PROTO(struct task_struct *p, char *msg),
+
+	TP_ARGS(__perf_task(p), msg),
+
+	TP_STRUCT__entry(
+		__array(	char,	comm,	TASK_COMM_LEN	)
+		__field(	pid_t,	pid			)
+		__field(	int,	prio			)
+		__array(	char,	msg, 	VIP_MSG_LEN	)
+		__field(	int,	target_cpu		)
+		__field(    u64,    dynamic_vip)
+		__field(    int,    vip_depth)
+	),
+
+	TP_fast_assign(
+		memcpy(__entry->comm, p->comm, TASK_COMM_LEN);
+		__entry->pid		= p->pid;
+		__entry->prio		= p->prio;
+		memcpy(__entry->msg, msg, min((size_t)VIP_MSG_LEN, strlen(msg)+1));
+		__entry->target_cpu	= task_cpu(p);
+		__entry->dynamic_vip   = atomic64_read(&p->dynamic_vip);
+		__entry->vip_depth     = p->vip_depth;
+	),
+
+	TP_printk("comm=%s pid=%d prio=%d msg=%s target_cpu=%03d dynamic_vip:%llx vip_depth:%d",
+		  __entry->comm, __entry->pid, __entry->prio,
+		  __entry->msg, __entry->target_cpu, __entry->dynamic_vip, __entry->vip_depth)
+);
+
+DEFINE_EVENT(sched_vip_template, sched_vip_queue_op,
+         TP_PROTO(struct task_struct *p, char *msg),
+	     TP_ARGS(p, msg));
+
+DEFINE_EVENT(sched_vip_template, sched_vip_sched,
+         TP_PROTO(struct task_struct *p, char *msg),
+	     TP_ARGS(p, msg));
+
+#endif
 
 #ifdef CREATE_TRACE_POINTS
 static inline long __trace_sched_switch_state(bool preempt, struct task_struct *p)
@@ -179,6 +310,9 @@ static inline long __trace_sched_switch_state(bool preempt, struct task_struct *
 }
 #endif /* CREATE_TRACE_POINTS */
 
+#ifdef CONFIG_HW_RTG
+#include "rtg.h"
+#endif
 /*
  * Tracepoint for task switches, performed by the scheduler:
  */
@@ -198,6 +332,9 @@ TRACE_EVENT(sched_switch,
 		__array(	char,	next_comm,	TASK_COMM_LEN	)
 		__field(	pid_t,	next_pid			)
 		__field(	int,	next_prio			)
+#ifdef CONFIG_HW_RTG_TRACE
+		__field(int,	rtg_depth)
+#endif
 	),
 
 	TP_fast_assign(
@@ -208,10 +345,18 @@ TRACE_EVENT(sched_switch,
 		memcpy(__entry->prev_comm, prev->comm, TASK_COMM_LEN);
 		__entry->next_pid	= next->pid;
 		__entry->next_prio	= next->prio == -1 ? 150 : next->prio;
+#ifdef CONFIG_HW_RTG_TRACE
+		__entry->rtg_depth = next->rtg_depth;
+#endif
 		/* XXX SCHED_DEADLINE */
 	),
 
-	TP_printk("prev_comm=%s prev_pid=%d prev_prio=%d prev_state=%s%s ==> next_comm=%s next_pid=%d next_prio=%d",
+	TP_printk(
+#ifdef CONFIG_HW_RTG_TRACE
+	"prev_comm=%s prev_pid=%d prev_prio=%d prev_state=%s%s ==> next_comm=%s next_pid=%d next_prio=%d next->rtg_depth=%d",
+#else
+	"prev_comm=%s prev_pid=%d prev_prio=%d prev_state=%s%s ==> next_comm=%s next_pid=%d next_prio=%d",
+#endif
 		__entry->prev_comm, __entry->prev_pid, __entry->prev_prio,
 
 		(__entry->prev_state & (TASK_REPORT_MAX - 1)) ?
@@ -227,7 +372,11 @@ TRACE_EVENT(sched_switch,
 		  "R",
 
 		__entry->prev_state & TASK_REPORT_MAX ? "+" : "",
-		__entry->next_comm, __entry->next_pid, __entry->next_prio)
+		__entry->next_comm, __entry->next_pid, __entry->next_prio
+#ifdef CONFIG_HW_RTG_TRACE
+		, __entry->rtg_depth
+#endif
+		)
 );
 
 /*
@@ -733,6 +882,92 @@ TRACE_EVENT(sched_pi_setprio,
 			__entry->oldprio, __entry->newprio)
 );
 
+#ifdef CONFIG_HW_FUTEX_PI
+#ifdef CONFIG_HW_QOS_THREAD
+TRACE_EVENT(sched_pi_setqos,
+
+	TP_PROTO(struct task_struct *tsk, int oldqos, int newqos),
+
+	TP_ARGS(tsk, oldqos, newqos),
+
+	TP_STRUCT__entry(
+		__array(char, comm, TASK_COMM_LEN)
+		__field(pid_t, pid)
+		__field(int, oldqos)
+		__field(int, newqos)
+	),
+
+	TP_fast_assign(
+		memcpy(__entry->comm, tsk->comm, TASK_COMM_LEN);
+		__entry->pid = tsk->pid;
+		__entry->oldqos = oldqos;
+		__entry->newqos	= newqos;
+		/* XXX SCHED_DEADLINE bits missing */
+	),
+
+	TP_printk("comm=%s pid=%d oldqos=%d newqos=%d",
+			__entry->comm, __entry->pid,
+			__entry->oldqos, __entry->newqos)
+);
+#endif
+
+#ifdef CONFIG_HW_VIP_THREAD
+TRACE_EVENT(sched_pi_setvip,
+
+	TP_PROTO(struct task_struct *tsk, int oldvip, int newvip),
+
+	TP_ARGS(tsk, oldvip, newvip),
+
+	TP_STRUCT__entry(
+		__array( char,	comm,	TASK_COMM_LEN	)
+		__field( pid_t,	pid			)
+		__field( int,	oldvip			)
+		__field( int,	newvip			)
+	),
+
+	TP_fast_assign(
+		memcpy(__entry->comm, tsk->comm, TASK_COMM_LEN);
+		__entry->pid		= tsk->pid;
+		__entry->oldvip		= oldvip;
+		__entry->newvip		= newvip;
+		/* XXX SCHED_DEADLINE bits missing */
+	),
+
+	TP_printk("comm=%s pid=%d oldvip=%d newvip=%d",
+			__entry->comm, __entry->pid,
+			__entry->oldvip, __entry->newvip)
+);
+#endif
+
+#ifdef CONFIG_HUAWEI_SCHED_VIP
+TRACE_EVENT(sched_pi_setvipprio,
+
+	TP_PROTO(struct task_struct *tsk, int oldvipprio, int newvipprio),
+
+	TP_ARGS(tsk, oldvipprio, newvipprio),
+
+	TP_STRUCT__entry(
+		__array(char, comm, TASK_COMM_LEN)
+		__field(pid_t, pid)
+		__field(int, oldvipprio)
+		__field(int, newvipprio)
+	),
+
+	TP_fast_assign(
+		memcpy(__entry->comm, tsk->comm, TASK_COMM_LEN);
+		__entry->pid = tsk->pid;
+		__entry->oldvipprio = oldvipprio;
+		__entry->newvipprio = newvipprio;
+		/* XXX SCHED_DEADLINE bits missing */
+	),
+
+	TP_printk("comm=%s pid=%d oldvipprio=%d newvipprio=%d",
+			__entry->comm, __entry->pid,
+			__entry->oldvipprio, __entry->newvipprio)
+);
+#endif
+#endif
+
 #ifdef CONFIG_DETECT_HUNG_TASK
 TRACE_EVENT(sched_process_hang,
 	TP_PROTO(struct task_struct *tsk),
@@ -1169,7 +1404,52 @@ TRACE_EVENT_CONDITION(sched_overutilized,
 	TP_printk("overutilized=%d sd_span=%s",
 		__entry->overutilized ? 1 : 0, __entry->cpulist)
 );
+
+#ifdef CONFIG_HW_RTG_FRAME
+TRACE_EVENT(rtg_frame_sched,
+
+	TP_PROTO(int rtgid, const char *s, s64 value),
+
+	TP_ARGS(rtgid, s, value),
+	TP_STRUCT__entry(
+		__field(int, rtgid)
+		__field(struct frame_info *, frame)
+		__field(pid_t, pid)
+		__string(str, s)
+		__field(s64, value)
+	),
+
+	TP_fast_assign(
+		__assign_str(str, s);
+		__entry->rtgid = rtgid != -1 ? rtgid : (current->grp ? current->grp->id : 0);
+		__entry->frame = rtg_frame_info(rtgid);
+		__entry->pid = __entry->frame ? ((__entry->frame->pid_task) ?
+						 ((__entry->frame->pid_task)->pid) :
+						 current->tgid) : current->tgid;
+		__entry->value = value;
+	),
+	TP_printk("C|%d|%s_%d|%lld", __entry->pid, __get_str(str), __entry->rtgid, __entry->value)
+);
+#endif
+
+#ifdef CONFIG_HW_RT_CAS
+#include "rt_cas.h"
+#endif
+#ifdef CONFIG_HW_RT_ACTIVE_LB
+#include "rt_misfit.h"
+#endif
+
 #endif /* CONFIG_SCHED_WALT */
+
+#if defined(CONFIG_HW_CPU_FREQ_GOV_SCHEDUTIL) || \
+	defined(CONFIG_HW_CPU_FREQ_GOV_SCHEDUTIL_COMMON) || \
+	defined(CONFIG_HW_PERFHUB_TRACE)
+#include "sched_hw.h"
+#endif
+
+#ifdef CONFIG_HUAWEI_SCHED_VIP
+#include "vip.h"
+#endif
 
 #endif /* _TRACE_SCHED_H */
 

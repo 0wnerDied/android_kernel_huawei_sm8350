@@ -26,6 +26,7 @@
 #define __MSM_DRM_H__
 
 #include "drm.h"
+#include "display_engine_kernel.h"
 
 #if defined(__cplusplus)
 extern "C" {
@@ -319,6 +320,12 @@ struct drm_msm_submitqueue_query {
 #define DRM_MSM_SUBMITQUEUE_NEW        0x0A
 #define DRM_MSM_SUBMITQUEUE_CLOSE      0x0B
 #define DRM_MSM_SUBMITQUEUE_QUERY      0x0C
+/* DRM_HBM_MODE_SET_PARAM is used by displayengine for mmie fp backlight */
+#define DRM_HBM_MODE_SET_PARAM         0x30
+
+/* Display engine IO starts at 0x50 */
+#define DRM_DISPLAY_ENGINE_GET         0x50
+#define DRM_DISPLAY_ENGINE_SET         0x51
 
 #define DRM_IOCTL_MSM_GET_PARAM        DRM_IOWR(DRM_COMMAND_BASE + DRM_MSM_GET_PARAM, struct drm_msm_param)
 #define DRM_IOCTL_MSM_GEM_NEW          DRM_IOWR(DRM_COMMAND_BASE + DRM_MSM_GEM_NEW, struct drm_msm_gem_new)
@@ -331,6 +338,9 @@ struct drm_msm_submitqueue_query {
 #define DRM_IOCTL_MSM_SUBMITQUEUE_NEW    DRM_IOWR(DRM_COMMAND_BASE + DRM_MSM_SUBMITQUEUE_NEW, struct drm_msm_submitqueue)
 #define DRM_IOCTL_MSM_SUBMITQUEUE_CLOSE  DRM_IOW (DRM_COMMAND_BASE + DRM_MSM_SUBMITQUEUE_CLOSE, __u32)
 #define DRM_IOCTL_MSM_SUBMITQUEUE_QUERY  DRM_IOW (DRM_COMMAND_BASE + DRM_MSM_SUBMITQUEUE_QUERY, struct drm_msm_submitqueue_query)
+#define DRM_IOCTL_HBM_MODE_SET_PARAM     DRM_IOWR(DRM_COMMAND_BASE + DRM_HBM_MODE_SET_PARAM, unsigned int)
+#define DRM_IOCTL_DISPLAY_ENGINE_GET   DRM_IOWR(DRM_COMMAND_BASE + DRM_DISPLAY_ENGINE_GET, struct display_engine_param)
+#define DRM_IOCTL_DISPLAY_ENGINE_SET   DRM_IOW (DRM_COMMAND_BASE + DRM_DISPLAY_ENGINE_SET, struct display_engine_param)
 
 #if defined(__cplusplus)
 }

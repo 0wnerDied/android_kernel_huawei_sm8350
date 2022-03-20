@@ -31,8 +31,23 @@
 #define NETLINK_SMC		22	/* SMC monitoring */
 
 #define NETLINK_INET_DIAG	NETLINK_SOCK_DIAG
+#define NETLINK_EMCOM 35
+#define MAX_LINKS 43		
+#define NETLINK_OLLIE 41
 
-#define MAX_LINKS 32		
+#define NETLINK_CHR_EVENT_NL 23
+#define NETLINK_WIFIPRO_EVENT_NL 24
+#define NETLINK_HW_DPI 25
+#define NETLINK_HW_KSTATE	30	/* kstate send event to user */
+#define NETLINK_HW_NF 32
+#define NETLINK_NETBOOSTER 37
+
+#define NETLINK_EIMA 39
+
+#define NETLINK_HW_IAWARE_CPU 33
+
+#define NETLINK_HW_DC 40
+#define NETLINK_WIFI_AUDIO_EVENT 42 /* Huawei wifi audio event */
 
 struct sockaddr_nl {
 	__kernel_sa_family_t	nl_family;	/* AF_NETLINK	*/

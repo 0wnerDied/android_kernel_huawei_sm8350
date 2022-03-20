@@ -569,4 +569,8 @@ static inline void neigh_update_is_router(struct neighbour *neigh, u32 flags,
 		*notify = 1;
 	}
 }
+#ifdef CONFIG_HW_NETWORK_QOE
+u32 get_wifi_arp_state(const char *name, int name_size, u32 gateway);
+#endif
+
 #endif

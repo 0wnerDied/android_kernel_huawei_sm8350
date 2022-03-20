@@ -52,4 +52,38 @@ extern void scsi_eh_prep_cmnd(struct scsi_cmnd *scmd,
 extern void scsi_eh_restore_cmnd(struct scsi_cmnd* scmd,
 		struct scsi_eh_save *ses);
 
+#if defined(CONFIG_MAS_ORDER_PRESERVE) || defined(CONFIG_SCSI_UFS_UNISTORE)
+static inline bool scsi_order(struct scsi_cmnd *scmd)
+{
+	return (scmd->request && scmd->request->q &&
+		blk_queue_query_order_enable(scmd->request->q));
+}
+
+static inline bool scsi_unistore(struct scsi_cmnd *scmd)
+{
+	return (scmd->request && scmd->request->q &&
+		blk_queue_query_unistore_enable(scmd->request->q));
+}
+
+static inline bool scsi_order_enable(struct scsi_cmnd *scmd)
+{
+	return scsi_unistore(scmd) || scsi_order(scmd);
+}
+
+static inline bool scsi_is_order_cmd(struct scsi_cmnd *scmd)
+{
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	if (scsi_unistore(scmd))
+		return (scmd->cmnd[0] == WRITE_10) ||
+		       ((scmd->cmnd[0] == SECURITY_PROTOCOL_OUT) &&
+			(scmd->request->mas_req.make_req_nr));
+#endif
+
+	return (scmd->cmnd[0] == WRITE_10) || (scmd->cmnd[0] == UNMAP) ||
+	       ((scmd->cmnd[0] == SECURITY_PROTOCOL_OUT) &&
+		(scmd->request->mas_req.make_req_nr));
+}
+
+#endif
+
 #endif /* _SCSI_SCSI_EH_H */

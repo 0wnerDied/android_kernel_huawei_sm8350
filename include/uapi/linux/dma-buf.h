@@ -27,6 +27,12 @@ struct dma_buf_sync {
 	__u64 flags;
 };
 
+struct dma_buf_sync_partial {
+	__u64 flags;
+	uint size;
+	uint offset;
+};
+
 #define DMA_BUF_SYNC_READ      (1 << 0)
 #define DMA_BUF_SYNC_WRITE     (2 << 0)
 #define DMA_BUF_SYNC_RW        (DMA_BUF_SYNC_READ | DMA_BUF_SYNC_WRITE)
@@ -39,6 +45,7 @@ struct dma_buf_sync {
 
 #define DMA_BUF_BASE		'b'
 #define DMA_BUF_IOCTL_SYNC	_IOW(DMA_BUF_BASE, 0, struct dma_buf_sync)
+#define DMA_BUF_IOCTL_SYNC_PARTIAL	_IOW('c', 0, struct dma_buf_sync_partial)
 
 /* 32/64bitness of this uapi was botched in android, there's no difference
  * between them in actual uapi, they're just different numbers.

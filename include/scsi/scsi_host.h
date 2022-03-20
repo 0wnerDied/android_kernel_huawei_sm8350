@@ -66,7 +66,7 @@ struct scsi_host_template {
 
 
 #ifdef CONFIG_COMPAT
-	/* 
+	/*
 	 * Compat handler. Handle 32bit ABI.
 	 * When unknown ioctl is passed return -ENOIOCTLCMD.
 	 *
@@ -76,6 +76,53 @@ struct scsi_host_template {
 			    void __user *arg);
 #endif
 
+#ifdef CONFIG_HYPERHOLD_CORE
+	int (*get_health_info)(struct scsi_device *sdev,
+		u8 *pre_eol_info, u8 *life_time_est_a, u8 *life_time_est_b);
+#endif
+
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	int (*dev_pwron_info_sync)(struct scsi_device *dev,
+		struct stor_dev_pwron_info *stor_info,
+		unsigned int rescue_seg_size);
+	int (*dev_stream_oob_info_fetch)(struct scsi_device *dev,
+		struct stor_dev_stream_info stream_info,
+		unsigned int oob_entry_cnt,
+		struct stor_dev_stream_oob_info *oob_info);
+	int (*dev_reset_ftl)(struct scsi_device *dev,
+		struct stor_dev_reset_ftl *reset_ftl);
+	int (*dev_read_section)(struct scsi_device *dev,
+		unsigned int *section_size);
+	int (*dev_read_lrb_in_use)(struct scsi_device *dev,
+		unsigned long *lrb_in_use);
+	int (*dev_read_op_size)(struct scsi_device *dev,
+		int *op_size);
+	int (*dev_config_mapping_partition)(struct scsi_device *dev,
+		struct stor_dev_mapping_partition *mapping_info);
+	int (*dev_read_mapping_partition)(struct scsi_device *dev,
+		struct stor_dev_mapping_partition *mapping_info);
+	int (*dev_fs_sync_done)(struct scsi_device *dev);
+	int (*dev_data_move)(struct scsi_device *dev,
+		struct stor_dev_data_move_info *data_move_info);
+	int (*dev_slc_mode_configuration)(struct scsi_device *dev, int *status);
+	int (*dev_sync_read_verify)(struct scsi_device *dev,
+		struct stor_dev_sync_read_verify_info *verify_info);
+	int (*dev_get_bad_block_info)(struct scsi_device *dev,
+		struct stor_dev_bad_block_info *bad_block_info);
+	int (*dev_get_program_size)(struct scsi_device *dev,
+		struct stor_dev_program_size *program_size);
+	void (*dev_bad_block_notify)(struct Scsi_Host *host,
+		struct stor_dev_bad_block_info *bad_block_info);
+	int (*dev_bad_block_notify_register)(struct scsi_device *dev,
+		void (*func)(struct Scsi_Host *host,
+		struct stor_dev_bad_block_info *bad_block_info));
+#ifdef CONFIG_MAS_DEBUG_FS
+	int (*dev_rescue_block_inject_data)(struct scsi_device *dev,
+		unsigned int lba);
+	int (*dev_bad_block_error_inject)(struct scsi_device *dev,
+		unsigned char bad_slc_cnt, unsigned char bad_tlc_cnt);
+#endif
+#endif
 	/*
 	 * The queuecommand function is used to queue up a scsi
 	 * command block to the LLDD.  When the driver finished
@@ -331,7 +378,14 @@ struct scsi_host_template {
 #define SCSI_ADAPTER_RESET	1
 #define SCSI_FIRMWARE_RESET	2
 
-
+#ifdef CONFIG_MAS_BLK
+	int (*direct_flush)(struct scsi_device *);
+	void (*dump_status)(struct Scsi_Host *shost, enum blk_dump_scene dump_type);
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	int (*send_request_sense_directly)(struct scsi_device *,
+					unsigned int, bool);
+#endif
+#endif
 	/*
 	 * Name of proc directory
 	 */
@@ -530,6 +584,29 @@ enum scsi_host_state {
 	SHOST_DEL_RECOVERY,
 };
 
+#ifdef CONFIG_MAS_BLK
+enum scsi_host_queue_quirk{
+	SHOST_QUIRK_BUSY_IDLE_ENABLE = 0,
+	SHOST_QUIRK_FLUSH_REDUCING,
+	SHOST_QUIRK_UNMAP_IN_SOFTIRQ,
+	SHOST_QUIRK_DRIVER_TAG_ALLOC,
+	SHOST_QUIRK_SCSI_QUIESCE_IN_LLD,
+	SHOST_QUIRK_MAS_UFS_MQ,
+	SHOST_QUIRK_BKOPS,
+	SHOST_QUIRK_IO_LATENCY_WARNING,
+	SHOST_QUIRK_BUSY_IDLE_INTR_ENABLE,
+	SHOST_QUIRK_IO_LATENCY_PROTECTION,
+};
+
+#define SHOST_QUIRK(x)  (1 << x)
+
+enum mas_dev_quirk{
+	SHOST_QUIRK_BKOPS_ENABLE = 0,
+	SHOST_QUIRK_IDLE_ENABLE,
+};
+#define SHOST_MAS_DEV_QUIRK(x) (1 << x)
+#endif
+
 struct Scsi_Host {
 	/*
 	 * __devices is protected by the host_lock, but you should
@@ -566,13 +643,15 @@ struct Scsi_Host {
 	unsigned int host_failed;	   /* commands that failed.
 					      protected by host_lock */
 	unsigned int host_eh_scheduled;    /* EH scheduled without command */
-    
+
 	unsigned int host_no;  /* Used for IOCTL_GET_IDLUN, /proc/scsi et al. */
 
 	/* next two fields are used to bound the time spent in error handling */
 	int eh_deadline;
 	unsigned long last_reset;
-
+#ifdef CONFIG_HUAWEI_DSM_IOMT_UFS_HOST
+	void *iomt_host_info;
+#endif
 
 	/*
 	 * These three parameters can be used to allow for wide scsi,
@@ -619,6 +698,21 @@ struct Scsi_Host {
 	 * is nr_hw_queues * can_queue.
 	 */
 	unsigned nr_hw_queues;
+#ifdef CONFIG_MAS_BLK
+	int mq_queue_depth;
+	int mq_reserved_queue_depth;
+	int mq_high_prio_queue_depth;
+	unsigned long queue_quirk_flag;
+	unsigned long mas_dev_quirk_flag;
+	/* record 10 latest scsi error handle times */
+	ktime_t last_scsi_eh_time[10];
+	ktime_t last_ufs_eh_time[10];
+	int last_scsi_eh_cnt;
+	int last_ufs_eh_cnt;
+	/* record 6 scsi_autopm interface */
+	ktime_t scsi_autopm_time[6];
+	int scsi_autopm_record[6];
+#endif
 	unsigned active_mode:2;
 	unsigned unchecked_isa_dma:1;
 
@@ -627,7 +721,7 @@ struct Scsi_Host {
 	 * time being.
 	 */
 	unsigned host_self_blocked:1;
-    
+
 	/*
 	 * Host uses correct SCSI ordering not PC ordering. The bit is
 	 * set for the minority of drivers whose authors actually read
@@ -699,6 +793,17 @@ struct Scsi_Host {
 	 * Needed just in case we have virtual hosts.
 	 */
 	struct device *dma_dev;
+
+#ifdef CONFIG_MAS_ORDER_PRESERVE
+	int order_enabled;
+#endif
+
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	bool unistore_enable;
+	unsigned int mas_sec_size;
+	unsigned int mas_pu_size;
+	int vcmd_set;
+#endif
 
 	/*
 	 * We should ensure that this is aligned, both for better performance
@@ -884,5 +989,29 @@ static inline unsigned char scsi_host_get_guard(struct Scsi_Host *shost)
 }
 
 extern int scsi_host_set_state(struct Scsi_Host *, enum scsi_host_state);
+extern void __set_quiesce_for_each_device(struct Scsi_Host *shost);
+extern void __clr_quiesce_for_each_device(struct Scsi_Host *shost);
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+bool scsi_unistore_is_datamove(struct scsi_cmnd *scmd);
+#endif
+#ifdef CONFIG_MAS_BLK
+enum autopm {
+	GET_DEVICE = 0,
+	PUT_DEVICE,
+	GET_TARGET,
+	PUT_TARGET,
+	GET_HOST,
+	PUT_HOST,
+};
 
+static inline void mas_blk_record_scsi_autopm(
+	struct Scsi_Host *host, enum autopm cur_autopm, int record)
+{
+	if (!host)
+		return;
+
+	host->scsi_autopm_time[cur_autopm] = ktime_get();
+	host->scsi_autopm_record[cur_autopm] = record;
+}
+#endif
 #endif /* _SCSI_SCSI_HOST_H */

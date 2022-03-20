@@ -228,6 +228,11 @@ void tcp_time_wait(struct sock *sk, int state, int timeo);
 /* TCP initial congestion window as per rfc6928 */
 #define TCP_INIT_CWND		10
 
+#ifdef CONFIG_HW_SYN_LINEAR_RETRY
+/* The rto of the 3 time retry remain unchanged */
+#define TCP_SYN_SENT_LINEAR_RETRIES 2
+#endif
+
 /* Bit Flags for sysctl_tcp_fastopen */
 #define	TFO_CLIENT_ENABLE	1
 #define	TFO_SERVER_ENABLE	2
@@ -258,6 +263,12 @@ extern int sysctl_tcp_use_userconfig;
 
 extern struct percpu_counter tcp_sockets_allocated;
 extern unsigned long tcp_memory_pressure;
+#ifdef CONFIG_HW_NETQOS_SCHED
+extern int sysctl_netqos_switch;
+extern int sysctl_netqos_debug;
+extern int sysctl_netqos_limit;
+extern int sysctl_netqos_period;
+#endif
 
 /* optimized version of sk_under_memory_pressure() for TCP sockets */
 static inline bool tcp_under_memory_pressure(const struct sock *sk)
@@ -317,6 +328,22 @@ extern struct proto tcp_prot;
 #define __TCP_INC_STATS(net, field)	__SNMP_INC_STATS((net)->mib.tcp_statistics, field)
 #define TCP_DEC_STATS(net, field)	SNMP_DEC_STATS((net)->mib.tcp_statistics, field)
 #define TCP_ADD_STATS(net, field, val)	SNMP_ADD_STATS((net)->mib.tcp_statistics, field, val)
+#ifdef CONFIG_HW_WIFIPRO
+#define WIFIPRO_TCP_INC_STATS(net, field)      SNMP_INC_STATS((net)->mib.wifipro_tcp_statistics, field)
+#define WIFIPRO_TCP_INC_STATS_BH(net, field)   raw_cpu_inc(((net)->mib.wifipro_tcp_statistics)->mibs[field])
+#define WIFIPRO_TCP_DEC_STATS(net, field)      SNMP_DEC_STATS((net)->mib.wifipro_tcp_statistics, field)
+#define WIFIPRO_TCP_ADD_STATS_USER(net, field, val)    SNMP_ADD_STATS((net)->mib.wifipro_tcp_statistics, field, val)
+#define WIFIPRO_TCP_ADD_STATS(net, field, val) SNMP_ADD_STATS((net)->mib.wifipro_tcp_statistics, field, val)
+#endif
+
+/* These states need RST on ABORT according to RFC793 */
+
+static inline bool tcp_need_reset(int state)
+{
+	return (1 << state) &
+	       (TCPF_ESTABLISHED | TCPF_CLOSE_WAIT | TCPF_FIN_WAIT1 |
+		TCPF_FIN_WAIT2 | TCPF_SYN_RECV | TCPF_SYN_SENT);
+}
 
 void tcp_tasklet_init(void);
 
@@ -2046,7 +2073,7 @@ void tcp_mark_skb_lost(struct sock *sk, struct sk_buff *skb);
 void tcp_newreno_mark_lost(struct sock *sk, bool snd_una_advanced);
 extern s32 tcp_rack_skb_timeout(struct tcp_sock *tp, struct sk_buff *skb,
 				u32 reo_wnd);
-extern void tcp_rack_mark_lost(struct sock *sk);
+extern bool tcp_rack_mark_lost(struct sock *sk);
 extern void tcp_rack_advance(struct tcp_sock *tp, u8 sacked, u32 end_seq,
 			     u64 xmit_time);
 extern void tcp_rack_reo_timeout(struct sock *sk);
