@@ -1,10 +1,27 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-2.0
 /*
+ * linux/drivers/staging/erofs/dir.c
+ *
  * Copyright (C) 2017-2018 HUAWEI, Inc.
  *             http://www.huawei.com/
  * Created by Gao Xiang <gaoxiang25@huawei.com>
+ *
+ * This file is subject to the terms and conditions of the GNU General Public
+ * License.  See the file COPYING in the main directory of the Linux
+ * distribution for more details.
  */
 #include "internal.h"
+
+static const unsigned char erofs_filetype_table[EROFS_FT_MAX] = {
+	[EROFS_FT_UNKNOWN]	= DT_UNKNOWN,
+	[EROFS_FT_REG_FILE]	= DT_REG,
+	[EROFS_FT_DIR]		= DT_DIR,
+	[EROFS_FT_CHRDEV]	= DT_CHR,
+	[EROFS_FT_BLKDEV]	= DT_BLK,
+	[EROFS_FT_FIFO]		= DT_FIFO,
+	[EROFS_FT_SOCK]		= DT_SOCK,
+	[EROFS_FT_SYMLINK]	= DT_LNK,
+};
 
 static void debug_one_dentry(unsigned char d_type, const char *de_name,
 			     unsigned int de_namelen)
@@ -16,12 +33,12 @@ static void debug_one_dentry(unsigned char d_type, const char *de_name,
 	memcpy(dbg_namebuf, de_name, de_namelen);
 	dbg_namebuf[de_namelen] = '\0';
 
-	erofs_dbg("found dirent %s de_len %u d_type %d", dbg_namebuf,
-		  de_namelen, d_type);
+	debugln("found dirent %s de_len %u d_type %d", dbg_namebuf,
+		de_namelen, d_type);
 #endif
 }
 
-static int erofs_fill_dentries(struct inode *dir, struct dir_context *ctx,
+static int erofs_fill_dentries(struct dir_context *ctx,
 			       void *dentry_blk, unsigned int *ofs,
 			       unsigned int nameoff, unsigned int maxsize)
 {
@@ -33,7 +50,10 @@ static int erofs_fill_dentries(struct inode *dir, struct dir_context *ctx,
 		unsigned int de_namelen;
 		unsigned char d_type;
 
-		d_type = fs_ftype_to_dtype(de->file_type);
+		if (de->file_type < EROFS_FT_MAX)
+			d_type = erofs_filetype_table[de->file_type];
+		else
+			d_type = DT_UNKNOWN;
 
 		nameoff = le16_to_cpu(de->nameoff);
 		de_name = (char *)dentry_blk + nameoff;
@@ -45,12 +65,10 @@ static int erofs_fill_dentries(struct inode *dir, struct dir_context *ctx,
 			de_namelen = le16_to_cpu(de[1].nameoff) - nameoff;
 
 		/* a corrupted entry is found */
-		if (nameoff + de_namelen > maxsize ||
-		    de_namelen > EROFS_NAME_LEN) {
-			erofs_err(dir->i_sb, "bogus dirent @ nid %llu",
-				  EROFS_I(dir)->nid);
+		if (unlikely(nameoff + de_namelen > maxsize ||
+			     de_namelen > EROFS_NAME_LEN)) {
 			DBG_BUGON(1);
-			return -EFSCORRUPTED;
+			return -EIO;
 		}
 
 		debug_one_dentry(d_type, de_name, de_namelen);
@@ -85,10 +103,9 @@ static int erofs_readdir(struct file *f, struct dir_context *ctx)
 			err = -ENOMEM;
 			break;
 		} else if (IS_ERR(dentry_page)) {
-			erofs_err(dir->i_sb,
-				  "fail to readdir of logical block %u of nid %llu",
-				  i, EROFS_I(dir)->nid);
-			err = -EFSCORRUPTED;
+			errln("fail to readdir of logical block %u of nid %llu",
+			      i, EROFS_V(dir)->nid);
+			err = PTR_ERR(dentry_page);
 			break;
 		}
 
@@ -96,12 +113,12 @@ static int erofs_readdir(struct file *f, struct dir_context *ctx)
 
 		nameoff = le16_to_cpu(de->nameoff);
 
-		if (nameoff < sizeof(struct erofs_dirent) ||
-		    nameoff >= PAGE_SIZE) {
-			erofs_err(dir->i_sb,
-				  "invalid de[0].nameoff %u @ nid %llu",
-				  nameoff, EROFS_I(dir)->nid);
-			err = -EFSCORRUPTED;
+		if (unlikely(nameoff < sizeof(struct erofs_dirent) ||
+			     nameoff >= PAGE_SIZE)) {
+			errln("%s, invalid de[0].nameoff %u",
+			      __func__, nameoff);
+
+			err = -EIO;
 			goto skip_this;
 		}
 
@@ -109,16 +126,15 @@ static int erofs_readdir(struct file *f, struct dir_context *ctx)
 				dirsize - ctx->pos + ofs, PAGE_SIZE);
 
 		/* search dirents at the arbitrary position */
-		if (initial) {
+		if (unlikely(initial)) {
 			initial = false;
 
 			ofs = roundup(ofs, sizeof(struct erofs_dirent));
-			if (ofs >= nameoff)
+			if (unlikely(ofs >= nameoff))
 				goto skip_this;
 		}
 
-		err = erofs_fill_dentries(dir, ctx, de, &ofs,
-					  nameoff, maxsize);
+		err = erofs_fill_dentries(ctx, de, &ofs, nameoff, maxsize);
 skip_this:
 		kunmap(dentry_page);
 
@@ -126,7 +142,7 @@ skip_this:
 
 		ctx->pos = blknr_to_addr(i) + ofs;
 
-		if (err)
+		if (unlikely(err))
 			break;
 		++i;
 		ofs = 0;

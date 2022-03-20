@@ -1440,7 +1440,13 @@ void kill_block_super(struct super_block *sb)
 	struct block_device *bdev = sb->s_bdev;
 	fmode_t mode = sb->s_mode;
 
+#ifdef CONFIG_F2FS_CHECK_FS
+	spin_lock(&bdev_access_info.lock);
 	bdev->bd_super = NULL;
+	spin_unlock(&bdev_access_info.lock);
+#else
+	bdev->bd_super = NULL;
+#endif
 	generic_shutdown_super(sb);
 	sync_blockdev(bdev);
 	WARN_ON_ONCE(!(mode & FMODE_EXCL));
@@ -1650,7 +1656,7 @@ int __sb_start_write(struct super_block *sb, int level, bool wait)
 	if (!wait)
 		return percpu_down_read_trylock(sb->s_writers.rw_sem + level-1);
 
-	percpu_down_read(sb->s_writers.rw_sem + level-1);
+		percpu_down_read(sb->s_writers.rw_sem + level-1);
 	return 1;
 }
 EXPORT_SYMBOL(__sb_start_write);

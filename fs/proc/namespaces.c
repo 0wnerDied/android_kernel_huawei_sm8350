@@ -101,7 +101,7 @@ static struct dentry *proc_ns_instantiate(struct dentry *dentry,
 	ei = PROC_I(inode);
 	inode->i_op = &proc_ns_link_inode_operations;
 	ei->ns_ops = ns_ops;
-	pid_update_inode(task, inode);
+	pid_update_inode(dentry, task, inode);
 
 	d_set_d_op(dentry, &pid_dentry_operations);
 	return d_splice_alias(inode, dentry);

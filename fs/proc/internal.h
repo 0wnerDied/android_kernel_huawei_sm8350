@@ -14,6 +14,12 @@
 #include <linux/sched/coredump.h>
 #include <linux/sched/task.h>
 
+#ifdef CONFIG_HUAWEI_SWAP_ZDATA
+#include <linux/mm.h>
+#include <linux/pagewalk.h>
+#include "process_reclaim_info.h"
+#endif
+
 struct ctl_table_header;
 struct mempolicy;
 
@@ -156,7 +162,7 @@ extern const struct dentry_operations pid_dentry_operations;
 extern int pid_getattr(const struct path *, struct kstat *, u32, unsigned int);
 extern int proc_setattr(struct dentry *, struct iattr *);
 extern struct inode *proc_pid_make_inode(struct super_block *, struct task_struct *, umode_t);
-extern void pid_update_inode(struct task_struct *, struct inode *);
+extern void pid_update_inode(struct dentry *, struct task_struct *, struct inode *);
 extern int pid_delete_dentry(const struct dentry *);
 extern int proc_pid_readdir(struct file *, struct dir_context *);
 struct dentry *proc_pid_lookup(struct dentry *, unsigned int);

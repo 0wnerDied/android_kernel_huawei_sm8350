@@ -235,11 +235,17 @@ static int ovl_lookup_single(struct dentry *base, struct ovl_lookup_data *d,
 			d->stop = true;
 			goto put_and_out;
 		}
-		err = ovl_check_metacopy_xattr(this);
-		if (err < 0)
-			goto out_err;
 
-		d->metacopy = err;
+		if (!d->last) {
+			err = ovl_check_metacopy_xattr(this);
+			if (err < 0)
+				goto out_err;
+
+			d->metacopy = err;
+		} else {
+			d->metacopy = 0;
+		}
+
 		d->stop = !d->metacopy;
 		if (!d->metacopy || d->last)
 			goto out;

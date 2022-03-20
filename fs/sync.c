@@ -225,6 +225,13 @@ static int do_fsync(unsigned int fd, int datasync)
 	return ret;
 }
 
+#ifdef CONFIG_BOOT_DETECTOR_QCOM
+long ksys_fsync(unsigned int fd)
+{
+	return (long)do_fsync(fd, 0);
+}
+#endif
+
 SYSCALL_DEFINE1(fsync, unsigned int, fd)
 {
 	return do_fsync(fd, 0);

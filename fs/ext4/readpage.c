@@ -281,12 +281,26 @@ int ext4_mpage_readpages(struct address_space *mapping,
 	struct block_device *bdev = inode->i_sb->s_bdev;
 	int length;
 	unsigned relative_block = 0;
+#ifdef CONFIG_BLK_CGROUP_IOSMART
+	unsigned io_submited = 0;
+#endif
 	struct ext4_map_blocks map;
 
 	map.m_pblk = 0;
 	map.m_lblk = 0;
 	map.m_len = 0;
 	map.m_flags = 0;
+
+#ifdef CONFIG_BLK_CGROUP_IOSMART
+	if (pages)
+		/*
+		 * Get one quota before read pages, when this ends,
+		 * get the rest of quotas according to how many bios
+		 * we submited in this routine.
+		 */
+		blk_throtl_get_quota(bdev, PAGE_SIZE,
+				     msecs_to_jiffies(100), true);
+#endif
 
 	for (; nr_pages; nr_pages--) {
 		int fully_mapped = 1;
@@ -409,6 +423,9 @@ int ext4_mpage_readpages(struct address_space *mapping,
 		if (bio && (last_block_in_bio != blocks[0] - 1 ||
 			    !fscrypt_mergeable_bio(bio, inode, next_block))) {
 		submit_and_realloc:
+#ifdef CONFIG_BLK_CGROUP_IOSMART
+			io_submited++;
+#endif
 			ext4_submit_bio_read(bio);
 			bio = NULL;
 		}
@@ -442,6 +459,9 @@ int ext4_mpage_readpages(struct address_space *mapping,
 		if (((map.m_flags & EXT4_MAP_BOUNDARY) &&
 		     (relative_block == map.m_len)) ||
 		    (first_hole != blocks_per_page)) {
+#ifdef CONFIG_BLK_CGROUP_IOSMART
+			io_submited++;
+#endif
 			ext4_submit_bio_read(bio);
 			bio = NULL;
 		} else
@@ -449,6 +469,9 @@ int ext4_mpage_readpages(struct address_space *mapping,
 		goto next_page;
 	confused:
 		if (bio) {
+#ifdef CONFIG_BLK_CGROUP_IOSMART
+			io_submited++;
+#endif
 			ext4_submit_bio_read(bio);
 			bio = NULL;
 		}
@@ -461,8 +484,20 @@ int ext4_mpage_readpages(struct address_space *mapping,
 			put_page(page);
 	}
 	BUG_ON(pages && !list_empty(pages));
-	if (bio)
+	if (bio) {
+#ifdef CONFIG_BLK_CGROUP_IOSMART
+		io_submited++;
+#endif
 		ext4_submit_bio_read(bio);
+	}
+
+#ifdef CONFIG_BLK_CGROUP_IOSMART
+	if (io_submited)
+		/* we have got one quota at the beginning, so sub 1 here */
+		blk_throtl_get_quotas(bdev, PAGE_SIZE,
+				      msecs_to_jiffies(100), true,
+				      io_submited - 1);
+#endif
 	return 0;
 }
 

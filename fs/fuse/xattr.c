@@ -11,6 +11,12 @@
 #include <linux/xattr.h>
 #include <linux/posix_acl_xattr.h>
 
+static inline bool is_xattr_user(const char *name)
+{
+	return name ? (strncmp(name, XATTR_USER_PREFIX,
+				XATTR_USER_PREFIX_LEN) == 0) : false;
+}
+
 int fuse_setxattr(struct inode *inode, const char *name, const void *value,
 		  size_t size, int flags)
 {
@@ -18,8 +24,10 @@ int fuse_setxattr(struct inode *inode, const char *name, const void *value,
 	FUSE_ARGS(args);
 	struct fuse_setxattr_in inarg;
 	int err;
+	bool is_user = is_xattr_user(name);
 
-	if (fc->no_setxattr)
+	if ((is_user && fc->no_setxattr_user) ||
+	    (!is_user && fc->no_setxattr))
 		return -EOPNOTSUPP;
 
 	memset(&inarg, 0, sizeof(inarg));
@@ -37,6 +45,8 @@ int fuse_setxattr(struct inode *inode, const char *name, const void *value,
 	err = fuse_simple_request(fc, &args);
 	if (err == -ENOSYS) {
 		fc->no_setxattr = 1;
+		if (is_user)
+			fc->no_setxattr_user = 1;
 		err = -EOPNOTSUPP;
 	}
 	if (!err) {
@@ -54,8 +64,10 @@ ssize_t fuse_getxattr(struct inode *inode, const char *name, void *value,
 	struct fuse_getxattr_in inarg;
 	struct fuse_getxattr_out outarg;
 	ssize_t ret;
+	bool is_user = is_xattr_user(name);
 
-	if (fc->no_getxattr)
+	if ((is_user && fc->no_getxattr_user) ||
+	    (!is_user && fc->no_getxattr))
 		return -EOPNOTSUPP;
 
 	memset(&inarg, 0, sizeof(inarg));
@@ -82,6 +94,8 @@ ssize_t fuse_getxattr(struct inode *inode, const char *name, void *value,
 		ret = min_t(ssize_t, outarg.size, XATTR_SIZE_MAX);
 	if (ret == -ENOSYS) {
 		fc->no_getxattr = 1;
+		if (is_user)
+			fc->no_getxattr_user = 1;
 		ret = -EOPNOTSUPP;
 	}
 	return ret;
@@ -153,8 +167,10 @@ int fuse_removexattr(struct inode *inode, const char *name)
 	struct fuse_conn *fc = get_fuse_conn(inode);
 	FUSE_ARGS(args);
 	int err;
+	bool is_user = is_xattr_user(name);
 
-	if (fc->no_removexattr)
+	if ((is_user && fc->no_removexattr_user) ||
+	    (!is_user && fc->no_removexattr))
 		return -EOPNOTSUPP;
 
 	args.opcode = FUSE_REMOVEXATTR;
@@ -165,6 +181,8 @@ int fuse_removexattr(struct inode *inode, const char *name)
 	err = fuse_simple_request(fc, &args);
 	if (err == -ENOSYS) {
 		fc->no_removexattr = 1;
+		if (is_user)
+			fc->no_removexattr_user = 1;
 		err = -EOPNOTSUPP;
 	}
 	if (!err) {

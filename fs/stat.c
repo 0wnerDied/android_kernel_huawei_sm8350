@@ -345,6 +345,20 @@ SYSCALL_DEFINE2(newstat, const char __user *, filename,
 	return cp_new_stat(&stat, statbuf);
 }
 
+#ifdef CONFIG_BOOT_DETECTOR_QCOM
+long ksys_newlstat(const char __user *filename, struct stat __user *statbuf)
+{
+	struct kstat stat;
+	int error;
+
+	error = vfs_lstat(filename, &stat);
+	if (error)
+		return error;
+
+	return cp_new_stat(&stat, statbuf);
+}
+#endif
+
 SYSCALL_DEFINE2(newlstat, const char __user *, filename,
 		struct stat __user *, statbuf)
 {
@@ -432,6 +446,12 @@ SYSCALL_DEFINE3(readlink, const char __user *, path, char __user *, buf,
 	return do_readlinkat(AT_FDCWD, path, buf, bufsiz);
 }
 
+#ifdef CONFIG_BOOT_DETECTOR_QCOM
+long ksys_readlink(const char __user *path, char __user *buf, int bufsiz)
+{
+	return do_readlinkat(AT_FDCWD, path, buf, bufsiz);
+}
+#endif
 
 /* ---------- LFS-64 ----------- */
 #if defined(__ARCH_WANT_STAT64) || defined(__ARCH_WANT_COMPAT_STAT64)
@@ -486,6 +506,19 @@ SYSCALL_DEFINE2(stat64, const char __user *, filename,
 
 	return error;
 }
+
+#ifdef CONFIG_BOOT_DETECTOR_QCOM
+long ksys_lstat64(const char __user *filename, struct stat64 __user *statbuf)
+{
+	struct kstat stat;
+	int error = vfs_lstat(filename, &stat);
+
+	if (!error)
+		error = cp_new_stat64(&stat, statbuf);
+
+	return error;
+}
+#endif
 
 SYSCALL_DEFINE2(lstat64, const char __user *, filename,
 		struct stat64 __user *, statbuf)

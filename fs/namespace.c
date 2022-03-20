@@ -30,6 +30,11 @@
 #include <uapi/linux/mount.h>
 #include <linux/fs_context.h>
 #include <linux/shmem_fs.h>
+#include <linux/pagecache_manage.h>
+
+#ifdef CONFIG_BOOT_DETECTOR_QCOM
+#include <hwbootfail/chipsets/common/bootfail_common.h>
+#endif
 
 #include "pnode.h"
 #include "internal.h"
@@ -1530,6 +1535,8 @@ static int do_umount(struct mount *mnt, int flags)
 	struct super_block *sb = mnt->mnt.mnt_sb;
 	int retval;
 
+	umounting_fs_register_pch(sb);
+
 	retval = security_sb_umount(&mnt->mnt, flags);
 	if (retval)
 		return retval;
@@ -1618,6 +1625,7 @@ static int do_umount(struct mount *mnt, int flags)
 out:
 	unlock_mount_hash();
 	namespace_unlock();
+	umounting_fs_register_pch(sb);
 	return retval;
 }
 
@@ -2801,6 +2809,8 @@ static int do_new_mount_fc(struct fs_context *fc, struct path *mountpoint,
 	error = do_add_mount(real_mount(mnt), mountpoint, mnt_flags);
 	if (error < 0)
 		mntput(mnt);
+	else
+		mount_fs_register_pch(mnt);
 	return error;
 }
 
@@ -3094,6 +3104,11 @@ long do_mount(const char *dev_name, const char __user *dir_name,
 	struct path path;
 	unsigned int mnt_flags = 0, sb_flags;
 	int retval = 0;
+
+#ifdef CONFIG_BOOT_DETECTOR_QCOM
+	if (process_data_mount_in_erecovery(dir_name) != 0)
+		return -EPERM;
+#endif
 
 	/* Discard magic */
 	if ((flags & MS_MGC_MSK) == MS_MGC_VAL)

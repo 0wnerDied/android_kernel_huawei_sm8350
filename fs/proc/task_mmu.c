@@ -26,6 +26,13 @@
 #include <asm/tlb.h>
 #include <asm/tlbflush.h>
 #include "internal.h"
+#ifdef CONFIG_HUAWEI_SWAP_ZDATA
+#include <linux/signal.h>
+#endif
+
+#ifdef CONFIG_HYPERHOLD_CORE
+#include <linux/hyperhold_inf.h>
+#endif
 
 #define SEQ_PUT_DEC(str, val) \
 		seq_put_decimal_ull_width(m, str, (val) << (PAGE_SHIFT-10), 8)
@@ -1721,7 +1728,12 @@ const struct file_operations proc_pagemap_operations = {
 static int reclaim_pte_range(pmd_t *pmd, unsigned long addr,
 				unsigned long end, struct mm_walk *walk)
 {
+#ifdef CONFIG_HUAWEI_SWAP_ZDATA
+	struct reclaim_param *rp = walk->private;
+	struct vm_area_struct *vma = rp->vma;
+#else
 	struct vm_area_struct *vma = walk->private;
+#endif
 	pte_t *pte, ptent;
 	spinlock_t *ptl;
 	struct page *page;
@@ -1732,6 +1744,10 @@ static int reclaim_pte_range(pmd_t *pmd, unsigned long addr,
 	if (pmd_trans_unstable(pmd))
 		return 0;
 cont:
+#ifdef CONFIG_HUAWEI_SWAP_ZDATA
+	if (process_reclaim_need_abort(walk))
+		return -EINTR;
+#endif
 	isolated = 0;
 	pte = pte_offset_map_lock(vma->vm_mm, pmd, addr, &ptl);
 	for (; addr != end; pte++, addr += PAGE_SIZE) {
@@ -1743,6 +1759,18 @@ cont:
 		if (!page)
 			continue;
 
+#if defined(CONFIG_TASK_PROTECT_LRU) || defined(CONFIG_MEMCG_PROTECT_LRU)
+		// don't reclaim page in protected.
+		if (PageProtect(page))
+			continue;
+#endif
+#ifdef CONFIG_HUAWEI_SWAP_ZDATA
+		if ((rp->type == RECLAIM_ANON) && !PageAnon(page))
+			continue;
+
+		if ((rp->type == RECLAIM_FILE) && PageAnon(page))
+			continue;
+#endif
 		if (isolate_lru_page(compound_head(page)))
 			continue;
 
@@ -1766,7 +1794,12 @@ cont:
 			break;
 	}
 	pte_unmap_unlock(pte - 1, ptl);
+#ifdef CONFIG_HUAWEI_SWAP_ZDATA
+	rp->nr_reclaimed += reclaim_pages_from_list(&page_list, vma,
+				rp->hiber, &rp->nr_writedblock);
+#else
 	reclaim_pages_from_list(&page_list, vma);
+#endif
 	if (addr != end)
 		goto cont;
 
@@ -1774,12 +1807,15 @@ cont:
 	return 0;
 }
 
-enum reclaim_type {
-	RECLAIM_FILE,
-	RECLAIM_ANON,
-	RECLAIM_ALL,
-	RECLAIM_RANGE,
-};
+#ifdef CONFIG_HUAWEI_SWAP_ZDATA
+void do_lru_gettimeofday(struct timeval *tv)
+{
+	struct timespec64 now;
+	ktime_get_real_ts64(&now);
+	tv->tv_sec = now.tv_sec;
+	tv->tv_usec = now.tv_nsec/1000;
+}
+#endif
 
 static ssize_t reclaim_write(struct file *file, const char __user *buf,
 				size_t count, loff_t *ppos)
@@ -1795,6 +1831,14 @@ static ssize_t reclaim_write(struct file *file, const char __user *buf,
 	const struct mm_walk_ops reclaim_walk_ops = {
 		.pmd_entry = reclaim_pte_range,
 	};
+#ifdef CONFIG_HUAWEI_SWAP_ZDATA
+	int walk_ret;
+	struct timeval start_time = {0,0};
+	struct timeval stop_time;
+	s64 elapsed_centisecs64;
+	struct reclaim_param rp;
+	rp.hiber = false;
+#endif
 
 	memset(buffer, 0, sizeof(buffer));
 	if (count > sizeof(buffer) - 1)
@@ -1810,6 +1854,18 @@ static ssize_t reclaim_write(struct file *file, const char __user *buf,
 		type = RECLAIM_ANON;
 	else if (!strcmp(type_buf, "all"))
 		type = RECLAIM_ALL;
+#ifdef CONFIG_HUAWEI_SWAP_ZDATA
+	else if (!strcmp(type_buf, "hiber")) {
+		type = RECLAIM_ALL;
+		rp.hiber = true;
+	} else if (!strcmp(type_buf, "hiber_anon")) {
+		type = RECLAIM_ANON;
+		rp.hiber = true;
+	} else if (!strcmp(type_buf, "hiber_file")) {
+		type = RECLAIM_FILE;
+		rp.hiber = true;
+	}
+#endif
 	else if (isdigit(*type_buf))
 		type = RECLAIM_RANGE;
 	else
@@ -1854,6 +1910,13 @@ static ssize_t reclaim_write(struct file *file, const char __user *buf,
 	if (!mm)
 		goto out;
 
+#ifdef CONFIG_HUAWEI_SWAP_ZDATA
+	rp.type = type;
+	rp.nr_reclaimed = 0;
+	rp.nr_writedblock = 0;
+	if (rp.hiber)
+		do_lru_gettimeofday(&start_time);
+#endif
 	down_read(&mm->mmap_sem);
 	if (type == RECLAIM_RANGE) {
 		vma = find_vma(mm, start);
@@ -1863,9 +1926,16 @@ static ssize_t reclaim_write(struct file *file, const char __user *buf,
 			if (is_vm_hugetlb_page(vma))
 				continue;
 
+#ifdef CONFIG_HUAWEI_SWAP_ZDATA
+			rp.vma = vma;
+			walk_page_range(mm, max(vma->vm_start, start),
+					min(vma->vm_end, end),
+					&reclaim_walk_ops, &rp);
+#else
 			walk_page_range(mm, max(vma->vm_start, start),
 					min(vma->vm_end, end),
 					&reclaim_walk_ops, vma);
+#endif
 			vma = vma->vm_next;
 		}
 	} else {
@@ -1873,6 +1943,13 @@ static ssize_t reclaim_write(struct file *file, const char __user *buf,
 			if (is_vm_hugetlb_page(vma))
 				continue;
 
+#ifdef CONFIG_HUAWEI_SWAP_ZDATA
+			rp.vma = vma;
+			walk_ret = walk_page_range(mm, vma->vm_start, vma->vm_end,
+				&reclaim_walk_ops, &rp);
+			if ((walk_ret == -EINTR) && rp.hiber)
+				break;
+#else
 			if (type == RECLAIM_ANON && vma->vm_file)
 				continue;
 
@@ -1881,12 +1958,23 @@ static ssize_t reclaim_write(struct file *file, const char __user *buf,
 
 			walk_page_range(mm, vma->vm_start, vma->vm_end,
 					&reclaim_walk_ops, vma);
+#endif
 		}
 	}
 
 	flush_tlb_mm(mm);
 	up_read(&mm->mmap_sem);
 	mmput(mm);
+#ifdef CONFIG_HUAWEI_SWAP_ZDATA
+	if (rp.hiber) {
+		do_lru_gettimeofday(&stop_time);
+		elapsed_centisecs64 = timeval_to_ns(&stop_time) -
+					timeval_to_ns(&start_time);
+
+		process_reclaim_result_write(task, (unsigned)rp.nr_reclaimed,
+			rp.nr_writedblock, elapsed_centisecs64);
+	}
+#endif
 out:
 	put_task_struct(task);
 	return count;
@@ -1897,6 +1985,40 @@ out_err:
 
 const struct file_operations proc_reclaim_operations = {
 	.write		= reclaim_write,
+	.llseek		= noop_llseek,
+};
+#endif
+
+#ifdef CONFIG_HYPERHOLD_CORE
+static ssize_t swapin_write(struct file *file, const char __user *buf,
+				size_t count, loff_t *ppos)
+{
+	char buffer[200];
+	struct task_struct *task = NULL;
+
+	memset(buffer, 0, sizeof(buffer));
+	if (count > sizeof(buffer) - 1)
+		count = sizeof(buffer) - 1;
+
+	if (unlikely(copy_from_user(buffer, buf, count)))
+		return -EFAULT;
+
+	pr_err("%s \r\n", __func__);
+
+	task = get_proc_task(file->f_path.dentry->d_inode);
+	if (unlikely(!task)) {
+		pr_err("%s get_proc_task failed !\r\n", __func__);
+		return -ESRCH;
+	}
+
+	if (unlikely(hyperhold_batch_out(NULL, 0, false)))
+		put_task_struct(task);
+
+	return count;
+}
+
+const struct file_operations proc_swapin_operations = {
+	.write		= swapin_write,
 	.llseek		= noop_llseek,
 };
 #endif

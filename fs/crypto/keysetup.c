@@ -12,6 +12,9 @@
 #include <linux/key.h>
 
 #include "fscrypt_private.h"
+#ifdef CONFIG_SDP_ENCRYPTION
+#include "sdp_internal.h"
+#endif
 
 struct fscrypt_mode fscrypt_modes[] = {
 	[FSCRYPT_MODE_AES_256_XTS] = {
@@ -504,15 +507,39 @@ int fscrypt_get_encryption_info(struct inode *inode)
 	union fscrypt_context ctx;
 	struct fscrypt_mode *mode;
 	struct key *master_key = NULL;
+#ifdef CONFIG_SDP_ENCRYPTION
+	int flag = 0;
+#endif
 	int res;
 
-	if (fscrypt_has_encryption_key(inode))
+	if (fscrypt_has_encryption_key(inode) &&
+		!inode->i_crypt_info->ci_hw_enc_flag)
 		return 0;
 
 	res = fscrypt_initialize(inode->i_sb->s_cop->flags);
 	if (res)
 		return res;
-
+#ifdef CONFIG_SDP_ENCRYPTION
+	if (inode->i_sb->s_cop && inode->i_sb->s_cop->get_keyinfo) {
+		res = inode->i_sb->s_cop->get_keyinfo(inode, NULL, &flag);
+		if (res != 0) {
+			pr_err("%s: get_keyinfo failed res:%d", __func__, res);
+			return res;
+		}
+		if (flag != 0) { /* get sdp or dps crypt info success */
+			if (inode->i_crypt_info) {
+				/* already setup file key do not setup again */
+				if (f2fs_inode_is_enabled_setup_key(
+					inode->i_crypt_info->ci_hw_enc_flag))
+					return 0;
+				crypt_info = inode->i_crypt_info;
+				crypt_info->ci_inode = inode;
+				inode->i_crypt_info = NULL;
+				goto sdp_info;
+			}
+		}
+	}
+#endif
 	res = inode->i_sb->s_cop->get_context(inode, &ctx, sizeof(ctx));
 	if (res < 0) {
 		const union fscrypt_context *dummy_ctx =
@@ -544,7 +571,9 @@ int fscrypt_get_encryption_info(struct inode *inode)
 
 	memcpy(crypt_info->ci_nonce, fscrypt_context_nonce(&ctx),
 	       FS_KEY_DERIVATION_NONCE_SIZE);
-
+#ifdef CONFIG_SDP_ENCRYPTION
+sdp_info:
+#endif
 	if (!fscrypt_supported_policy(&crypt_info->ci_policy, inode)) {
 		res = -EINVAL;
 		goto out;
@@ -573,6 +602,10 @@ int fscrypt_get_encryption_info(struct inode *inode)
 			list_add(&crypt_info->ci_master_key_link,
 				 &mk->mk_decrypted_inodes);
 			spin_unlock(&mk->mk_decrypted_inodes_lock);
+#ifdef CONFIG_SDP_ENCRYPTION
+			crypt_info->ci_hw_enc_flag |=
+				f2fs_inode_setup_key_flag(crypt_info->ci_hw_enc_flag);
+#endif
 		}
 		crypt_info = NULL;
 	}

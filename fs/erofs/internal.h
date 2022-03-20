@@ -1,11 +1,17 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
-/*
+/* SPDX-License-Identifier: GPL-2.0
+ *
+ * linux/drivers/staging/erofs/internal.h
+ *
  * Copyright (C) 2017-2018 HUAWEI, Inc.
  *             http://www.huawei.com/
  * Created by Gao Xiang <gaoxiang25@huawei.com>
+ *
+ * This file is subject to the terms and conditions of the GNU General Public
+ * License.  See the file COPYING in the main directory of the Linux
+ * distribution for more details.
  */
-#ifndef __EROFS_INTERNAL_H
-#define __EROFS_INTERNAL_H
+#ifndef __INTERNAL_H
+#define __INTERNAL_H
 
 #include <linux/fs.h>
 #include <linux/dcache.h>
@@ -13,7 +19,7 @@
 #include <linux/pagemap.h>
 #include <linux/bio.h>
 #include <linux/buffer_head.h>
-#include <linux/magic.h>
+#include <linux/cleancache.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include "erofs_fs.h"
@@ -22,50 +28,59 @@
 #undef pr_fmt
 #define pr_fmt(fmt) "erofs: " fmt
 
-__printf(3, 4) void _erofs_err(struct super_block *sb,
-			       const char *function, const char *fmt, ...);
-#define erofs_err(sb, fmt, ...)	\
-	_erofs_err(sb, __func__, fmt "\n", ##__VA_ARGS__)
-__printf(3, 4) void _erofs_info(struct super_block *sb,
-			       const char *function, const char *fmt, ...);
-#define erofs_info(sb, fmt, ...) \
-	_erofs_info(sb, __func__, fmt "\n", ##__VA_ARGS__)
+#define errln(x, ...)   pr_err(x "\n", ##__VA_ARGS__)
+#define infoln(x, ...)  pr_info(x "\n", ##__VA_ARGS__)
 #ifdef CONFIG_EROFS_FS_DEBUG
-#define erofs_dbg(x, ...)       pr_debug(x "\n", ##__VA_ARGS__)
+#define debugln(x, ...) pr_debug(x "\n", ##__VA_ARGS__)
+
+#define dbg_might_sleep         might_sleep
 #define DBG_BUGON               BUG_ON
 #else
-#define erofs_dbg(x, ...)       ((void)0)
+#define debugln(x, ...)         ((void)0)
+
+#define dbg_might_sleep()       ((void)0)
 #define DBG_BUGON(x)            ((void)(x))
-#endif	/* !CONFIG_EROFS_FS_DEBUG */
+#endif
+
+enum {
+	FAULT_KMALLOC,
+	FAULT_READ_IO,
+	FAULT_MAX,
+};
+
+#ifdef CONFIG_EROFS_FAULT_INJECTION
+extern const char *erofs_fault_name[FAULT_MAX];
+#define IS_FAULT_SET(fi, type) ((fi)->inject_type & (1 << (type)))
+
+struct erofs_fault_info {
+	atomic_t inject_ops;
+	unsigned int inject_rate;
+	unsigned int inject_type;
+};
+#endif
+
+#ifdef CONFIG_EROFS_FS_ZIP_CACHE_BIPOLAR
+#define EROFS_FS_ZIP_CACHE_LVL	(2)
+#elif defined(EROFS_FS_ZIP_CACHE_UNIPOLAR)
+#define EROFS_FS_ZIP_CACHE_LVL	(1)
+#else
+#define EROFS_FS_ZIP_CACHE_LVL	(0)
+#endif
+
+#if (!defined(EROFS_FS_HAS_MANAGED_CACHE) && (EROFS_FS_ZIP_CACHE_LVL > 0))
+#define EROFS_FS_HAS_MANAGED_CACHE
+#endif
 
 /* EROFS_SUPER_MAGIC_V1 to represent the whole file system */
 #define EROFS_SUPER_MAGIC   EROFS_SUPER_MAGIC_V1
 
 typedef u64 erofs_nid_t;
-typedef u64 erofs_off_t;
-/* data type for filesystem-wide blocks number */
-typedef u32 erofs_blk_t;
 
 struct erofs_sb_info {
-#ifdef CONFIG_EROFS_FS_ZIP
 	/* list for all registered superblocks, mainly for shrinker */
 	struct list_head list;
 	struct mutex umount_mutex;
 
-	/* the dedicated workstation for compression */
-	struct radix_tree_root workstn_tree;
-
-	/* threshold for decompression synchronously */
-	unsigned int max_sync_decompress_pages;
-
-	unsigned int shrinker_run_no;
-
-	/* current strategy of how to use managed cache */
-	unsigned char cache_strategy;
-
-	/* pseudo inode to manage cached pages */
-	struct inode *managed_cache;
-#endif	/* CONFIG_EROFS_FS_ZIP */
 	u32 blocks;
 	u32 meta_blkaddr;
 #ifdef CONFIG_EROFS_FS_XATTR
@@ -74,6 +89,24 @@ struct erofs_sb_info {
 
 	/* inode slot unit size in bit shift */
 	unsigned char islotbits;
+#ifdef CONFIG_EROFS_FS_ZIP
+	/* cluster size in bit shift */
+	unsigned char clusterbits;
+
+	/* the dedicated workstation for compression */
+	struct {
+		struct radix_tree_root tree;
+		spinlock_t lock;
+	} workstn;
+
+	/* threshold for decompression synchronously */
+	unsigned int max_sync_decompress_pages;
+
+#ifdef EROFS_FS_HAS_MANAGED_CACHE
+	struct inode *managed_cache;
+#endif
+
+#endif
 
 	u32 build_time_nsec;
 	u64 build_time;
@@ -85,10 +118,60 @@ struct erofs_sb_info {
 
 	u8 uuid[16];                    /* 128-bit uuid for volume */
 	u8 volume_name[16];             /* volume name */
-	u32 feature_incompat;
+	u32 requirements;
+
+	char *dev_name;
 
 	unsigned int mount_opt;
+	unsigned int shrinker_run_no;
+
+#ifdef CONFIG_EROFS_FAULT_INJECTION
+	struct erofs_fault_info fault_info;	/* For fault injection */
+#endif
 };
+
+#ifdef CONFIG_EROFS_FAULT_INJECTION
+#define erofs_show_injection_info(type)					\
+	infoln("inject %s in %s of %pS", erofs_fault_name[type],        \
+		__func__, __builtin_return_address(0))
+
+static inline bool time_to_inject(struct erofs_sb_info *sbi, int type)
+{
+	struct erofs_fault_info *ffi = &sbi->fault_info;
+
+	if (!ffi->inject_rate)
+		return false;
+
+	if (!IS_FAULT_SET(ffi, type))
+		return false;
+
+	atomic_inc(&ffi->inject_ops);
+	if (atomic_read(&ffi->inject_ops) >= ffi->inject_rate) {
+		atomic_set(&ffi->inject_ops, 0);
+		return true;
+	}
+	return false;
+}
+#else
+static inline bool time_to_inject(struct erofs_sb_info *sbi, int type)
+{
+	return false;
+}
+
+static inline void erofs_show_injection_info(int type)
+{
+}
+#endif
+
+static inline void *erofs_kmalloc(struct erofs_sb_info *sbi,
+					size_t size, gfp_t flags)
+{
+	if (time_to_inject(sbi, FAULT_KMALLOC)) {
+		erofs_show_injection_info(FAULT_KMALLOC);
+		return NULL;
+	}
+	return kmalloc(size, flags);
+}
 
 #define EROFS_SB(sb) ((struct erofs_sb_info *)(sb)->s_fs_info)
 #define EROFS_I_SB(inode) ((struct erofs_sb_info *)(inode)->i_sb->s_fs_info)
@@ -96,19 +179,17 @@ struct erofs_sb_info {
 /* Mount flags set via mount options or defaults */
 #define EROFS_MOUNT_XATTR_USER		0x00000010
 #define EROFS_MOUNT_POSIX_ACL		0x00000020
+#define EROFS_MOUNT_FAULT_INJECTION	0x00000040
+#define EROFS_MOUNT_LZ4ASM		0x01000000
+#define EROFS_MOUNT_Z_CACHE_TRYALLOC	0x02000000
 
 #define clear_opt(sbi, option)	((sbi)->mount_opt &= ~EROFS_MOUNT_##option)
 #define set_opt(sbi, option)	((sbi)->mount_opt |= EROFS_MOUNT_##option)
 #define test_opt(sbi, option)	((sbi)->mount_opt & EROFS_MOUNT_##option)
 
 #ifdef CONFIG_EROFS_FS_ZIP
-enum {
-	EROFS_ZIP_CACHE_DISABLED,
-	EROFS_ZIP_CACHE_READAHEAD,
-	EROFS_ZIP_CACHE_READAROUND
-};
-
-#define EROFS_LOCKED_MAGIC     (INT_MIN | 0xE0F510CCL)
+#define erofs_workstn_lock(sbi)         spin_lock(&(sbi)->workstn.lock)
+#define erofs_workstn_unlock(sbi)       spin_unlock(&(sbi)->workstn.lock)
 
 /* basic unit of the workstation of a super_block */
 struct erofs_workgroup {
@@ -118,6 +199,8 @@ struct erofs_workgroup {
 	/* overall workgroup reference count */
 	atomic_t refcount;
 };
+
+#define EROFS_LOCKED_MAGIC     (INT_MIN | 0xE0F510CCL)
 
 #if defined(CONFIG_SMP)
 static inline bool erofs_workgroup_try_to_freeze(struct erofs_workgroup *grp,
@@ -175,14 +258,50 @@ static inline int erofs_wait_on_workgroup_freezed(struct erofs_workgroup *grp)
 	DBG_BUGON(v == EROFS_LOCKED_MAGIC);
 	return v;
 }
-#endif	/* !CONFIG_SMP */
+#endif
 
-/* hard limit of pages per compressed cluster */
-#define Z_EROFS_CLUSTER_MAX_PAGES       (CONFIG_EROFS_FS_CLUSTER_PAGE_LIMIT)
-#define EROFS_PCPUBUF_NR_PAGES          Z_EROFS_CLUSTER_MAX_PAGES
+int erofs_workgroup_put(struct erofs_workgroup *grp);
+struct erofs_workgroup *erofs_find_workgroup(struct super_block *sb,
+					     pgoff_t index, bool *tag);
+int erofs_register_workgroup(struct super_block *sb,
+			     struct erofs_workgroup *grp, bool tag);
+unsigned long erofs_shrink_workstation(struct erofs_sb_info *sbi,
+				       unsigned long nr_shrink, bool cleanup);
+void erofs_workgroup_free_rcu(struct erofs_workgroup *grp);
+
+#ifdef EROFS_FS_HAS_MANAGED_CACHE
+int erofs_try_to_free_all_cached_pages(struct erofs_sb_info *sbi,
+				       struct erofs_workgroup *egrp);
+int erofs_try_to_free_cached_page(struct address_space *mapping,
+				  struct page *page);
+
+#define MNGD_MAPPING(sbi)	((sbi)->managed_cache->i_mapping)
+static inline bool erofs_page_is_managed(const struct erofs_sb_info *sbi,
+					 struct page *page)
+{
+	return page->mapping == MNGD_MAPPING(sbi);
+}
 #else
-#define EROFS_PCPUBUF_NR_PAGES          0
-#endif	/* !CONFIG_EROFS_FS_ZIP */
+#define MNGD_MAPPING(sbi)	(NULL)
+static inline bool erofs_page_is_managed(const struct erofs_sb_info *sbi,
+					 struct page *page) { return false; }
+#endif
+
+#define DEFAULT_MAX_SYNC_DECOMPRESS_PAGES	3
+
+static inline bool __should_decompress_synchronously(struct erofs_sb_info *sbi,
+						     unsigned int nr)
+{
+	return nr <= sbi->max_sync_decompress_pages;
+}
+
+int __init z_erofs_init_zip_subsystem(void);
+void z_erofs_exit_zip_subsystem(void);
+#else
+/* dummy initializer/finalizer for the decompression subsystem */
+static inline int z_erofs_init_zip_subsystem(void) { return 0; }
+static inline void z_erofs_exit_zip_subsystem(void) {}
+#endif
 
 /* we strictly follow PAGE_SIZE and no buffer head yet */
 #define LOG_BLOCK_SIZE		PAGE_SHIFT
@@ -201,6 +320,23 @@ static inline int erofs_wait_on_workgroup_freezed(struct erofs_workgroup *grp)
 
 #define ROOT_NID(sb)		((sb)->root_nid)
 
+#ifdef CONFIG_EROFS_FS_ZIP
+/* hard limit of pages per compressed cluster */
+#define Z_EROFS_CLUSTER_MAX_PAGES       (CONFIG_EROFS_FS_CLUSTER_PAGE_LIMIT)
+
+/* page count of a compressed cluster */
+#define erofs_clusterpages(sbi)         ((1 << (sbi)->clusterbits) / PAGE_SIZE)
+
+#define EROFS_PCPUBUF_NR_PAGES          Z_EROFS_CLUSTER_MAX_PAGES
+#else
+#define EROFS_PCPUBUF_NR_PAGES          0
+#endif
+
+typedef u64 erofs_off_t;
+
+/* data type for filesystem-wide blocks number */
+typedef u32 erofs_blk_t;
+
 #define erofs_blknr(addr)       ((addr) / EROFS_BLKSIZ)
 #define erofs_blkoff(addr)      ((addr) % EROFS_BLKSIZ)
 #define blknr_to_addr(nr)       ((erofs_off_t)(nr) * EROFS_BLKSIZ)
@@ -211,25 +347,25 @@ static inline erofs_off_t iloc(struct erofs_sb_info *sbi, erofs_nid_t nid)
 }
 
 /* atomic flag definitions */
-#define EROFS_I_EA_INITED_BIT	0
-#define EROFS_I_Z_INITED_BIT	1
+#define EROFS_V_EA_INITED_BIT	0
+#define EROFS_V_Z_INITED_BIT	1
 
 /* bitlock definitions (arranged in reverse order) */
-#define EROFS_I_BL_XATTR_BIT	(BITS_PER_LONG - 1)
-#define EROFS_I_BL_Z_BIT	(BITS_PER_LONG - 2)
+#define EROFS_V_BL_XATTR_BIT	(BITS_PER_LONG - 1)
+#define EROFS_V_BL_Z_BIT	(BITS_PER_LONG - 2)
 
-struct erofs_inode {
+struct erofs_vnode {
 	erofs_nid_t nid;
 
 	/* atomic flags (including bitlocks) */
 	unsigned long flags;
 
-	unsigned char datalayout;
+	unsigned char datamode;
 	unsigned char inode_isize;
 	unsigned short xattr_isize;
 
-	unsigned int xattr_shared_count;
-	unsigned int *xattr_shared_xattrs;
+	unsigned xattr_shared_count;
+	unsigned *xattr_shared_xattrs;
 
 	union {
 		erofs_blk_t raw_blkaddr;
@@ -240,39 +376,43 @@ struct erofs_inode {
 			unsigned char  z_logical_clusterbits;
 			unsigned char  z_physical_clusterbits[2];
 		};
-#endif	/* CONFIG_EROFS_FS_ZIP */
+#endif
 	};
 	/* the corresponding vfs inode */
 	struct inode vfs_inode;
 };
 
-#define EROFS_I(ptr)	\
-	container_of(ptr, struct erofs_inode, vfs_inode)
+#define EROFS_V(ptr)	\
+	container_of(ptr, struct erofs_vnode, vfs_inode)
 
-static inline unsigned long erofs_inode_datablocks(struct inode *inode)
+#define EROFS_I(ptr)	\
+	container_of(ptr, struct erofs_vnode, vfs_inode)
+
+#define __inode_advise(x, bit, bits) \
+	(((x) >> (bit)) & ((1 << (bits)) - 1))
+
+#define __inode_version(advise)	\
+	__inode_advise(advise, EROFS_I_VERSION_BIT,	\
+		EROFS_I_VERSION_BITS)
+
+#define __inode_data_mapping(advise)	\
+	__inode_advise(advise, EROFS_I_DATA_MAPPING_BIT,\
+		EROFS_I_DATA_MAPPING_BITS)
+
+static inline unsigned long inode_datablocks(struct inode *inode)
 {
 	/* since i_size cannot be changed */
 	return DIV_ROUND_UP(inode->i_size, EROFS_BLKSIZ);
 }
 
-static inline unsigned int erofs_bitrange(unsigned int value, unsigned int bit,
-					  unsigned int bits)
+static inline bool is_inode_layout_compression(struct inode *inode)
 {
-
-	return (value >> bit) & ((1 << bits) - 1);
+	return erofs_inode_is_data_compressed(EROFS_V(inode)->datamode);
 }
 
-
-static inline unsigned int erofs_inode_version(unsigned int value)
+static inline bool is_inode_flat_inline(struct inode *inode)
 {
-	return erofs_bitrange(value, EROFS_I_VERSION_BIT,
-			      EROFS_I_VERSION_BITS);
-}
-
-static inline unsigned int erofs_inode_datalayout(unsigned int value)
-{
-	return erofs_bitrange(value, EROFS_I_DATALAYOUT_BIT,
-			      EROFS_I_DATALAYOUT_BITS);
+	return EROFS_V(inode)->datamode == EROFS_INODE_FLAT_INLINE;
 }
 
 extern const struct super_operations erofs_sops;
@@ -340,19 +480,80 @@ int z_erofs_map_blocks_iter(struct inode *inode,
 			    struct erofs_map_blocks *map,
 			    int flags);
 #else
-static inline int z_erofs_fill_inode(struct inode *inode) { return -EOPNOTSUPP; }
+static inline int z_erofs_fill_inode(struct inode *inode) { return -ENOTSUPP; }
 static inline int z_erofs_map_blocks_iter(struct inode *inode,
 					  struct erofs_map_blocks *map,
 					  int flags)
 {
-	return -EOPNOTSUPP;
+	return -ENOTSUPP;
 }
-#endif	/* !CONFIG_EROFS_FS_ZIP */
+#endif
 
 /* data.c */
-struct page *erofs_get_meta_page(struct super_block *sb, erofs_blk_t blkaddr);
+static inline struct bio *
+erofs_grab_bio(struct super_block *sb,
+	       erofs_blk_t blkaddr, unsigned int nr_pages, void *bi_private,
+	       bio_end_io_t endio, bool nofail)
+{
+	const gfp_t gfp = GFP_NOIO;
+	struct bio *bio;
+
+	do {
+		if (nr_pages == 1) {
+			bio = bio_alloc(gfp | (nofail ? __GFP_NOFAIL : 0), 1);
+			if (unlikely(!bio)) {
+				DBG_BUGON(nofail);
+				return ERR_PTR(-ENOMEM);
+			}
+			break;
+		}
+		bio = bio_alloc(gfp, nr_pages);
+		nr_pages /= 2;
+	} while (unlikely(!bio));
+
+	bio->bi_end_io = endio;
+	bio_set_dev(bio, sb->s_bdev);
+	bio->bi_iter.bi_sector = (sector_t)blkaddr << LOG_SECTORS_PER_BLOCK;
+	bio->bi_private = bi_private;
+	return bio;
+}
+
+static inline void __submit_bio(struct bio *bio, unsigned op, unsigned op_flags)
+{
+	bio_set_op_attrs(bio, op, op_flags);
+	submit_bio(bio);
+}
+
+#ifndef CONFIG_EROFS_FS_IO_MAX_RETRIES
+#define EROFS_IO_MAX_RETRIES_NOFAIL	0
+#else
+#define EROFS_IO_MAX_RETRIES_NOFAIL	CONFIG_EROFS_FS_IO_MAX_RETRIES
+#endif
+
+struct page *__erofs_get_meta_page(struct super_block *sb, erofs_blk_t blkaddr,
+				   bool prio, bool nofail);
+
+static inline struct page *erofs_get_meta_page(struct super_block *sb,
+	erofs_blk_t blkaddr, bool prio)
+{
+	return __erofs_get_meta_page(sb, blkaddr, prio, false);
+}
+
+static inline struct page *erofs_get_meta_page_nofail(struct super_block *sb,
+	erofs_blk_t blkaddr, bool prio)
+{
+	return __erofs_get_meta_page(sb, blkaddr, prio, true);
+}
 
 int erofs_map_blocks(struct inode *, struct erofs_map_blocks *, int);
+
+static inline struct page *
+erofs_get_inline_page(struct inode *inode,
+		      erofs_blk_t blkaddr)
+{
+	return erofs_get_meta_page(inode->i_sb,
+		blkaddr, S_ISDIR(inode->i_mode));
+}
 
 /* inode.c */
 static inline unsigned long erofs_inode_hash(erofs_nid_t nid)
@@ -368,6 +569,16 @@ extern const struct inode_operations erofs_generic_iops;
 extern const struct inode_operations erofs_symlink_iops;
 extern const struct inode_operations erofs_fast_symlink_iops;
 
+static inline void set_inode_fast_symlink(struct inode *inode)
+{
+	inode->i_op = &erofs_fast_symlink_iops;
+}
+
+static inline bool is_inode_fast_symlink(struct inode *inode)
+{
+	return inode->i_op == &erofs_fast_symlink_iops;
+}
+
 struct inode *erofs_iget(struct super_block *sb, erofs_nid_t nid, bool dir);
 int erofs_getattr(const struct path *path, struct kstat *stat,
 		  u32 request_mask, unsigned int query_flags);
@@ -381,8 +592,37 @@ int erofs_namei(struct inode *dir, struct qstr *name,
 /* dir.c */
 extern const struct file_operations erofs_dir_fops;
 
-/* utils.c / zdata.c */
-struct page *erofs_allocpage(struct list_head *pool, gfp_t gfp, bool nofail);
+static inline void *erofs_vmap(struct page **pages, unsigned int count)
+{
+#ifdef CONFIG_EROFS_FS_USE_VM_MAP_RAM
+	int i = 0;
+
+	while (1) {
+		void *addr = vm_map_ram(pages, count, -1, PAGE_KERNEL);
+		/* retry two more times (totally 3 times) */
+		if (addr || ++i >= 3)
+			return addr;
+		vm_unmap_aliases();
+	}
+	return NULL;
+#else
+	return vmap(pages, count, VM_MAP, PAGE_KERNEL);
+#endif
+}
+
+static inline void erofs_vunmap(const void *mem, unsigned int count)
+{
+#ifdef CONFIG_EROFS_FS_USE_VM_MAP_RAM
+	vm_unmap_ram(mem, count);
+#else
+	vunmap(mem);
+#endif
+}
+
+/* utils.c */
+extern struct shrinker erofs_shrinker_info;
+
+struct page *erofs_allocpage(struct list_head *pool, gfp_t gfp);
 
 #if (EROFS_PCPUBUF_NR_PAGES > 0)
 void *erofs_get_pcpubuf(unsigned int pagenr);
@@ -393,39 +633,42 @@ void *erofs_get_pcpubuf(unsigned int pagenr);
 #else
 static inline void *erofs_get_pcpubuf(unsigned int pagenr)
 {
-	return ERR_PTR(-EOPNOTSUPP);
+	return ERR_PTR(-ENOTSUPP);
 }
 
 #define erofs_put_pcpubuf(buf) do {} while (0)
 #endif
 
-#ifdef CONFIG_EROFS_FS_ZIP
-int erofs_workgroup_put(struct erofs_workgroup *grp);
-struct erofs_workgroup *erofs_find_workgroup(struct super_block *sb,
-					     pgoff_t index, bool *tag);
-int erofs_register_workgroup(struct super_block *sb,
-			     struct erofs_workgroup *grp, bool tag);
-void erofs_workgroup_free_rcu(struct erofs_workgroup *grp);
-void erofs_shrinker_register(struct super_block *sb);
-void erofs_shrinker_unregister(struct super_block *sb);
-int __init erofs_init_shrinker(void);
-void erofs_exit_shrinker(void);
-int __init z_erofs_init_zip_subsystem(void);
-void z_erofs_exit_zip_subsystem(void);
-int erofs_try_to_free_all_cached_pages(struct erofs_sb_info *sbi,
-				       struct erofs_workgroup *egrp);
-int erofs_try_to_free_cached_page(struct address_space *mapping,
-				  struct page *page);
-#else
-static inline void erofs_shrinker_register(struct super_block *sb) {}
-static inline void erofs_shrinker_unregister(struct super_block *sb) {}
-static inline int erofs_init_shrinker(void) { return 0; }
-static inline void erofs_exit_shrinker(void) {}
-static inline int z_erofs_init_zip_subsystem(void) { return 0; }
-static inline void z_erofs_exit_zip_subsystem(void) {}
-#endif	/* !CONFIG_EROFS_FS_ZIP */
+void erofs_register_super(struct super_block *sb);
+void erofs_unregister_super(struct super_block *sb);
 
-#define EFSCORRUPTED    EUCLEAN         /* Filesystem is corrupted */
+#ifndef lru_to_page
+#define lru_to_page(head) (list_entry((head)->prev, struct page, lru))
+#endif
 
-#endif	/* __EROFS_INTERNAL_H */
+static inline void erofs_pagedump(struct page *page, const char *__caller_func__)
+{
+	void *out;
+
+	if (!page)
+		errln("%s, page (null)", __caller_func__);
+	else
+		errln("%s, page (%lx) %px count %x flags %lx mapping %px private %lx",
+			__caller_func__, page->index, page, page_count(page),
+			page->flags, page->mapping, page_private(page));
+
+	out = kmap_atomic(page);
+	print_hex_dump(KERN_ERR, "page data: ", DUMP_PREFIX_OFFSET,
+		16, 1, out, PAGE_SIZE, true);
+	kunmap_atomic(out);
+}
+
+#define PAGE_BUGON(condition, page) do { \
+	if (unlikely(condition)) { \
+		erofs_pagedump(page, __func__); \
+		BUG(); \
+	} \
+} while (0)
+
+#endif
 

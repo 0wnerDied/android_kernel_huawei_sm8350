@@ -577,6 +577,11 @@ int fscrypt_has_permitted_context(struct inode *parent, struct inode *child)
 {
 	union fscrypt_policy parent_policy, child_policy;
 	int err;
+#ifdef CONFIG_SDP_ENCRYPTION
+	const struct fscrypt_operations *cops = parent->i_sb->s_cop;
+	union fscrypt_context parent_ctx;
+	union fscrypt_context child_ctx;
+#endif
 
 	/* No restrictions on file types which are never encrypted */
 	if (!S_ISREG(child->i_mode) && !S_ISDIR(child->i_mode) &&
@@ -591,6 +596,17 @@ int fscrypt_has_permitted_context(struct inode *parent, struct inode *child)
 	if (!IS_ENCRYPTED(child))
 		return 0;
 
+	/* For SDP file we should use original CE context
+	 * since the ci_master_key in struct i_crypt_info is changed. This
+	 * should be done before fscrypt_get_encryption_info since it can be
+	 * called only once for sece file when lock.
+	 */
+#ifdef CONFIG_SDP_ENCRYPTION
+	if (child->i_sb->s_cop && child->i_sb->s_cop->is_file_sdp_encrypted) {
+		if (child->i_sb->s_cop->is_file_sdp_encrypted(child))
+			goto sdp_perm;
+	}
+#endif
 	/*
 	 * Both parent and child are encrypted, so verify they use the same
 	 * encryption policy.  Compare the fscrypt_info structs if the keys are
@@ -622,6 +638,26 @@ int fscrypt_has_permitted_context(struct inode *parent, struct inode *child)
 		return 0;
 
 	return fscrypt_policies_equal(&parent_policy, &child_policy);
+#ifdef CONFIG_SDP_ENCRYPTION
+sdp_perm:
+	err = cops->get_context(parent, &parent_ctx, sizeof(parent_ctx));
+	if (err != sizeof(parent_ctx))
+		return 0;
+
+	err = fscrypt_policy_from_context(&parent_policy, &parent_ctx, err);
+	if (err != 0)
+		return 0;
+
+	err = cops->get_context(child, &child_ctx, sizeof(child_ctx));
+	if (err != sizeof(child_ctx))
+		return 0;
+
+	err = fscrypt_policy_from_context(&child_policy, &child_ctx, err);
+	if (err != 0)
+		return 0;
+
+	return fscrypt_policies_equal(&parent_policy, &child_policy);
+#endif
 }
 EXPORT_SYMBOL(fscrypt_has_permitted_context);
 

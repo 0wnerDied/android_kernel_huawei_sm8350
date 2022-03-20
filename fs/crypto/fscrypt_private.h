@@ -250,6 +250,7 @@ struct fscrypt_info {
 
 	/* Hashed inode number.  Only set for IV_INO_LBLK_32 */
 	u32 ci_hashed_ino;
+	u8 ci_hw_enc_flag;
 };
 
 typedef enum {

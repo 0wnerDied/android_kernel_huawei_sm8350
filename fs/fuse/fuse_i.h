@@ -645,6 +645,15 @@ struct fuse_conn {
 	/** Is removexattr not implemented by fs? */
 	unsigned no_removexattr:1;
 
+	/** Is setxattr for user.* not implemented by fs? */
+	unsigned no_setxattr_user:1;
+
+	/** Is getxattr for user.* not implemented by fs? */
+	unsigned no_getxattr_user:1;
+
+	/** Is removexattr for user.* not implemented by fs? */
+	unsigned no_removexattr_user:1;
+
 	/** Are posix file locking primitives not implemented by fs? */
 	unsigned no_lock:1;
 

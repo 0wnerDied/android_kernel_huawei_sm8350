@@ -214,6 +214,9 @@ int ecryptfs_initialize_file(struct dentry *ecryptfs_dentry,
 	struct ecryptfs_crypt_stat *crypt_stat =
 		&ecryptfs_inode_to_private(ecryptfs_inode)->crypt_stat;
 	int rc = 0;
+	struct ecryptfs_inode_info *ecryptfs_info = NULL;
+	struct dentry *fp_dentry = NULL;
+	struct ecryptfs_mount_crypt_stat *mount_crypt_stat = NULL;
 
 	if (S_ISDIR(ecryptfs_inode->i_mode)) {
 		ecryptfs_printk(KERN_DEBUG, "This is a directory\n");
@@ -235,10 +238,41 @@ int ecryptfs_initialize_file(struct dentry *ecryptfs_dentry,
 			ecryptfs_dentry, rc);
 		goto out;
 	}
+
+#ifdef CONFIG_ECRYPT_FS_FILTER
+	mutex_lock(&crypt_stat->cs_mutex);
+	if (crypt_stat->flags & ECRYPTFS_ENCRYPTED) {
+		ecryptfs_info = ecryptfs_inode_to_private(ecryptfs_inode);
+		if (!ecryptfs_info) {
+			mutex_unlock(&crypt_stat->cs_mutex);
+			return -EINVAL;
+		}
+		fp_dentry = ecryptfs_info->lower_file->f_path.dentry;
+		mount_crypt_stat = &(ecryptfs_superblock_to_private(
+			ecryptfs_dentry->d_sb)->mount_crypt_stat);
+		if ((mount_crypt_stat->flags & ECRYPTFS_ENABLE_FILTERING) &&
+			(is_file_dir_match(mount_crypt_stat, fp_dentry))) {
+			crypt_stat->flags &= ~(
+				ECRYPTFS_I_SIZE_INITIALIZED |
+				ECRYPTFS_ENCRYPTED);
+			ecryptfs_put_lower_file(ecryptfs_inode);
+		} else {
+			rc = ecryptfs_write_metadata(
+				ecryptfs_dentry, ecryptfs_inode);
+			if (rc != 0)
+				ecryptfs_printk(KERN_ERR,
+					"ECRYPTFS_FILTER err writing headers "
+					"rc = [%d]\n", rc);
+			ecryptfs_put_lower_file(ecryptfs_inode);
+		}
+	}
+	mutex_unlock(&crypt_stat->cs_mutex);
+#else
 	rc = ecryptfs_write_metadata(ecryptfs_dentry, ecryptfs_inode);
 	if (rc)
 		printk(KERN_ERR "Error writing headers; rc = [%d]\n", rc);
 	ecryptfs_put_lower_file(ecryptfs_inode);
+#endif
 out:
 	return rc;
 }

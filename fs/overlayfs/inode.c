@@ -10,6 +10,7 @@
 #include <linux/xattr.h>
 #include <linux/posix_acl.h>
 #include <linux/ratelimit.h>
+#include <linux/security.h>
 #include "overlayfs.h"
 
 
@@ -513,6 +514,36 @@ static const struct address_space_operations ovl_aops = {
 	/* For O_DIRECT dentry_open() checks f_mapping->a_ops->direct_IO */
 	.direct_IO		= noop_direct_IO,
 };
+
+void ovl_copyattr(struct inode *from, struct inode *to)
+{
+#ifdef CONFIG_SECURITY
+	void *secctx = NULL;
+	u32 ctxlen;
+	int err = -1;
+
+	err = security_inode_getsecctx(from, &secctx, &ctxlen);
+	if (!err) {
+		/*
+		 * replace the fresh inode_security_struct because it should be
+		 * the same as the real underlying inode.
+		 */
+		err = security_inode_notifysecctx(to, secctx, ctxlen);
+		security_release_secctx(secctx, ctxlen);
+	}
+	if (err)
+		WARN(1, "cannot copy up security context err:%d\n", err);
+
+#endif
+	to->i_uid = from->i_uid;
+	to->i_gid = from->i_gid;
+	to->i_mode = from->i_mode;
+	to->i_atime = from->i_atime;
+	to->i_mtime = from->i_mtime;
+	to->i_ctime = from->i_ctime;
+	// copy the size attribute of lower indoe to merge layer
+	i_size_write(to, i_size_read(from));
+}
 
 /*
  * It is possible to stack overlayfs instance on top of another

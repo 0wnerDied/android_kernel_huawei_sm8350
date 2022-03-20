@@ -23,6 +23,9 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/types.h>
+#ifdef CONFIG_MAS_BLK
+#include <linux/delay.h>
+#endif
 #include <linux/fs.h>
 #include <linux/fscrypt.h>
 #include <linux/mm.h>
@@ -39,6 +42,9 @@
 #include <linux/uio.h>
 #include <linux/atomic.h>
 #include <linux/prefetch.h>
+#ifdef CONFIG_CGROUP_IOLIMIT
+#include <linux/iolimit_cgroup.h>
+#endif
 
 /*
  * How many user pages to map in one call to get_user_pages().  This determines
@@ -465,6 +471,7 @@ dio_bio_alloc(struct dio *dio, struct dio_submit *sdio,
  */
 static inline void dio_bio_submit(struct dio *dio, struct dio_submit *sdio)
 {
+	struct request_queue *queue = dio->inode->i_sb->s_bdev->bd_disk->queue;
 	struct bio *bio = sdio->bio;
 	unsigned long flags;
 
@@ -478,6 +485,13 @@ static inline void dio_bio_submit(struct dio *dio, struct dio_submit *sdio)
 		bio_set_pages_dirty(bio);
 
 	dio->bio_disk = bio->bi_disk;
+
+#ifdef CONFIG_BLK_CGROUP_IOSMART
+	/* throttle will conflict with LBA order in unistore */
+	if (!blk_queue_query_unistore_enable(queue))
+		blk_throtl_get_quota(dio->inode->i_sb->s_bdev, bio->bi_iter.bi_size,
+				msecs_to_jiffies(100), true);
+#endif
 
 	if (sdio->submit_io) {
 		sdio->submit_io(bio, dio->inode, sdio->logical_offset_in_bio);
@@ -522,9 +536,20 @@ static struct bio *dio_await_one(struct dio *dio)
 		__set_current_state(TASK_UNINTERRUPTIBLE);
 		dio->waiter = current;
 		spin_unlock_irqrestore(&dio->bio_lock, flags);
+#ifdef CONFIG_MAS_BLK
+		if (
+#else
 		if (!(dio->iocb->ki_flags & IOCB_HIPRI) ||
+#endif
 		    !blk_poll(dio->bio_disk->queue, dio->bio_cookie, true))
 			io_schedule();
+#ifdef CONFIG_MAS_BLK
+		else
+			/*
+			 * some delay to let end_io process get bio_lock
+			 */
+			udelay(1);
+#endif
 		/* wake up sets us TASK_RUNNING */
 		spin_lock_irqsave(&dio->bio_lock, flags);
 		dio->waiter = NULL;
@@ -677,6 +702,7 @@ static int get_more_blocks(struct dio *dio, struct dio_submit *sdio,
 	int create;
 	unsigned int i_blkbits = sdio->blkbits + sdio->blkfactor;
 	loff_t i_size;
+	struct request_queue *queue = dio->inode->i_sb->s_bdev->bd_disk->queue;
 
 	/*
 	 * If there was a memory error and we've overwritten all the
@@ -705,10 +731,12 @@ static int get_more_blocks(struct dio *dio, struct dio_submit *sdio,
 		 * buffer head.
 		 */
 		create = dio->op == REQ_OP_WRITE;
-		if (dio->flags & DIO_SKIP_HOLES) {
-			i_size = i_size_read(dio->inode);
-			if (i_size && fs_startblk <= (i_size - 1) >> i_blkbits)
-				create = 0;
+		if (!blk_queue_query_unistore_enable(queue)) {
+			if (dio->flags & DIO_SKIP_HOLES) {
+				i_size = i_size_read(dio->inode);
+				if (i_size && fs_startblk <= (i_size - 1) >> i_blkbits)
+					create = 0;
+			}
 		}
 
 		ret = (*sdio->get_block)(dio->inode, fs_startblk,
@@ -861,6 +889,7 @@ submit_page_section(struct dio *dio, struct dio_submit *sdio, struct page *page,
 		    struct buffer_head *map_bh)
 {
 	int ret = 0;
+	int boundary = sdio->boundary;  /* may clear in dio_send_cur_page */
 
 	if (dio->op == REQ_OP_WRITE) {
 		/*
@@ -899,10 +928,10 @@ submit_page_section(struct dio *dio, struct dio_submit *sdio, struct page *page,
 	sdio->cur_page_fs_offset = sdio->block_in_file << sdio->blkbits;
 out:
 	/*
-	 * If sdio->boundary then we want to schedule the IO now to
+	 * If boundary then we want to schedule the IO now to
 	 * avoid metadata seeks.
 	 */
-	if (sdio->boundary) {
+	if (boundary) {
 		ret = dio_send_cur_page(dio, sdio, map_bh);
 		if (sdio->bio)
 			dio_bio_submit(dio, sdio);
@@ -996,7 +1025,12 @@ static int do_direct_IO(struct dio *dio, struct dio_submit *sdio,
 			unsigned this_chunk_bytes;	/* # of bytes mapped */
 			unsigned this_chunk_blocks;	/* # of blocks */
 			unsigned u;
-
+#ifdef CONFIG_CGROUP_IOLIMIT
+			if (dio->op == REQ_OP_WRITE)
+				io_write_bandwidth_control(PAGE_SIZE);
+			else
+				io_read_bandwidth_control(PAGE_SIZE);
+#endif
 			if (sdio->blocks_available == 0) {
 				/*
 				 * Need to go and map some more disk

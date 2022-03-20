@@ -725,6 +725,18 @@ out:
 	return ret;
 }
 
+#ifdef CONFIG_MAS_STORAGE
+void submit_bio_first(struct page *page, struct writeback_control *wbc, void *data)
+{
+	struct mpage_data *mpd = (struct mpage_data *)data;
+
+	if (mpd && mpd->bio) {
+		int op_flags = (wbc->sync_mode == WB_SYNC_ALL ? REQ_SYNC : 0);
+		mpd->bio = mpage_bio_submit(REQ_OP_WRITE, op_flags, mpd->bio);
+	}
+}
+#endif
+
 /**
  * mpage_writepages - walk the list of dirty pages of the given address space & writepage() all of them
  * @mapping: address space structure to write

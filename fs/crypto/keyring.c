@@ -1151,3 +1151,41 @@ err_unregister_fscrypt:
 	unregister_key_type(&key_type_fscrypt);
 	return err;
 }
+
+#ifdef CONFIG_HYPERHOLD_CORE
+int hyperhold_get_keyring_key(u32 key_id, u8 *key_buffer,
+	u8 key_buffer_len, u32 *key_len)
+{
+	int ret = 0;
+	struct fscrypt_master_key_secret secret;
+
+	if (key_buffer_len < FSCRYPT_MAX_HW_WRAPPED_KEY_SIZE) {
+		pr_err("hyperhold_get_keyring_key len err\n");
+
+		return -EFAULT;
+	}
+
+	memset(&secret, 0, sizeof(struct fscrypt_master_key_secret));
+	secret.is_hw_wrapped = true;
+
+	ret = get_keyring_key(key_id, FSCRYPT_KEY_SPEC_TYPE_IDENTIFIER, &secret);
+	if (ret) {
+		pr_err("hyperhold_get_keyring_key fail %d\n", ret);
+		goto out_wipe_secret;
+	}
+
+	if (secret.size > FSCRYPT_MAX_KEY_SIZE && !secret.is_hw_wrapped) {
+		ret = -EFAULT;
+		pr_err("hyperhold_get_keyring_key size err %u\n", secret.size);
+		goto out_wipe_secret;
+	}
+
+	memcpy(key_buffer, secret.raw, secret.size);
+	*key_len = secret.size;
+
+out_wipe_secret:
+	wipe_master_key_secret(&secret);
+
+	return ret;
+}
+#endif

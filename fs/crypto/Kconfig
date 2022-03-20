@@ -30,3 +30,9 @@ config FS_ENCRYPTION_INLINE_CRYPT
 	depends on FS_ENCRYPTION && BLK_INLINE_ENCRYPTION
 	help
 	  Enable fscrypt to use inline encryption hardware if available.
+
+config SDP_ENCRYPTION
+	bool "FS Sensitive data protection Encryption (Per-file encryption)"
+	depends on FS_ENCRYPTION_INLINE_CRYPT
+	help
+	  Enable sdp encryption for files and directories.

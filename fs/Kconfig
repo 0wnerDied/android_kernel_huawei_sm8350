@@ -40,6 +40,8 @@ source "fs/ocfs2/Kconfig"
 source "fs/btrfs/Kconfig"
 source "fs/nilfs2/Kconfig"
 source "fs/f2fs/Kconfig"
+source "fs/hmfs/Kconfig"
+source "fs/hw_f2fs/Kconfig"
 
 config FS_DAX
 	bool "Direct Access (DAX) support"
@@ -265,7 +267,7 @@ source "fs/romfs/Kconfig"
 source "fs/pstore/Kconfig"
 source "fs/sysv/Kconfig"
 source "fs/ufs/Kconfig"
-source "fs/erofs/Kconfig"
+source "fs/erofs_4_14/Kconfig"
 
 endif # MISC_FILESYSTEMS
 
@@ -317,6 +319,7 @@ source "fs/cifs/Kconfig"
 source "fs/coda/Kconfig"
 source "fs/afs/Kconfig"
 source "fs/9p/Kconfig"
+source "fs/hmdfs/Kconfig"
 
 endif # NETWORK_FILESYSTEMS
 

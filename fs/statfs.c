@@ -187,6 +187,17 @@ static int do_statfs64(struct kstatfs *st, struct statfs64 __user *p)
 	return 0;
 }
 
+#ifdef CONFIG_BOOT_DETECTOR_QCOM
+long ksys_statfs(const char __user * path, struct statfs __user *buf)
+{
+	struct kstatfs st;
+	int error = user_statfs(path, &st);
+	if (!error)
+		error = do_statfs_native(&st, buf);
+	return (long)error;
+}
+#endif
+
 SYSCALL_DEFINE2(statfs, const char __user *, pathname, struct statfs __user *, buf)
 {
 	struct kstatfs st;
