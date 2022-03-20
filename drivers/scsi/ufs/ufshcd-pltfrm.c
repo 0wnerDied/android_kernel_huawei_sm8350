@@ -40,6 +40,9 @@
 #include "ufshcd.h"
 #include "ufshcd-pltfrm.h"
 #include "unipro.h"
+#ifdef CONFIG_MAS_BLK
+#include "mas_ufs.h"
+#endif
 
 #define UFSHCD_DEFAULT_LANES_PER_DIRECTION		2
 
@@ -255,7 +258,33 @@ out:
  */
 int ufshcd_pltfrm_suspend(struct device *dev)
 {
-	return ufshcd_system_suspend(dev_get_drvdata(dev));
+	int ret;
+#ifdef CONFIG_SCSI_MAS_UFS_MQ_DEFAULT
+	struct ufs_hba *hba = (struct ufs_hba *)dev_get_drvdata(dev);
+	struct Scsi_Host *host = hba->host;
+
+	if (host->queue_quirk_flag &
+		SHOST_QUIRK(SHOST_QUIRK_SCSI_QUIESCE_IN_LLD)) {
+#ifdef CONFIG_MAS_BLK
+		blk_generic_freeze(&(hba->host->tag_set.lld_func), BLK_LLD, true);
+#endif
+		__set_quiesce_for_each_device(hba->host);
+	}
+#endif
+
+	ret = ufshcd_system_suspend(dev_get_drvdata(dev));
+#ifdef CONFIG_SCSI_MAS_UFS_MQ_DEFAULT
+	if (ret) {
+		if (host->queue_quirk_flag &
+			SHOST_QUIRK(SHOST_QUIRK_SCSI_QUIESCE_IN_LLD)) {
+			__clr_quiesce_for_each_device(hba->host);
+#ifdef CONFIG_MAS_BLK
+		blk_generic_freeze(&(hba->host->tag_set.lld_func), BLK_LLD, true);
+#endif
+		}
+	}
+#endif
+	return ret;
 }
 EXPORT_SYMBOL_GPL(ufshcd_pltfrm_suspend);
 
@@ -268,7 +297,23 @@ EXPORT_SYMBOL_GPL(ufshcd_pltfrm_suspend);
  */
 int ufshcd_pltfrm_resume(struct device *dev)
 {
-	return ufshcd_system_resume(dev_get_drvdata(dev));
+	int ret;
+#ifdef CONFIG_SCSI_MAS_UFS_MQ_DEFAULT
+	struct ufs_hba *hba = (struct ufs_hba *)dev_get_drvdata(dev);
+	struct Scsi_Host *host = hba->host;
+#endif
+
+	ret = ufshcd_system_resume(dev_get_drvdata(dev));
+#ifdef CONFIG_SCSI_MAS_UFS_MQ_DEFAULT
+	if (host->queue_quirk_flag &
+		SHOST_QUIRK(SHOST_QUIRK_SCSI_QUIESCE_IN_LLD)) {
+		__clr_quiesce_for_each_device(hba->host);
+#ifdef CONFIG_MAS_BLK
+		blk_generic_freeze(&(hba->host->tag_set.lld_func), BLK_LLD, true);
+#endif
+	}
+#endif
+	return ret;
 }
 EXPORT_SYMBOL_GPL(ufshcd_pltfrm_resume);
 
@@ -294,6 +339,22 @@ EXPORT_SYMBOL_GPL(ufshcd_pltfrm_runtime_idle);
 
 void ufshcd_pltfrm_shutdown(struct platform_device *pdev)
 {
+#ifdef CONFIG_SCSI_MAS_UFS_MQ_DEFAULT
+	struct ufs_hba *hba = (struct ufs_hba *)platform_get_drvdata(pdev);
+	struct Scsi_Host *host = hba->host;
+
+	if (host->queue_quirk_flag &
+		SHOST_QUIRK(SHOST_QUIRK_SCSI_QUIESCE_IN_LLD)) {
+#ifdef CONFIG_MAS_BLK
+		blk_generic_freeze(&(hba->host->tag_set.lld_func), BLK_LLD, true);
+#endif
+		/*
+		 * set all scsi device state to quiet to
+		 * forbid io form blk level
+		 */
+		__set_quiesce_for_each_device(hba->host);
+	}
+#endif
 	ufshcd_shutdown((struct ufs_hba *)platform_get_drvdata(pdev));
 }
 EXPORT_SYMBOL_GPL(ufshcd_pltfrm_shutdown);

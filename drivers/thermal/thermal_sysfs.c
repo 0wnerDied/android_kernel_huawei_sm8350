@@ -19,8 +19,14 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/jiffies.h>
+#include <trace/events/thermal.h>
+#include <linux/thermal.h>
+#include <securec.h>
+#include <linux/hw/hw_thermal.h>
 
 #include "thermal_core.h"
+
+#include "thermal_sysfs_hw.c"
 
 /* sys I/F for thermal zone */
 
@@ -213,6 +219,12 @@ mode_show(struct device *dev, struct device_attribute *attr, char *buf)
 	if (result)
 		return result;
 
+#ifdef CONFIG_HW_IPA_THERMAL
+	if (is_ipa_thermal(tz))
+		return snprintf_s(buf, PAGE_SIZE, PAGE_SIZE - 1, "%d\n",
+					mode == THERMAL_DEVICE_ENABLED ? 1 : 0);
+	else
+#endif
 	return sprintf(buf, "%s\n", mode == THERMAL_DEVICE_ENABLED ? "enabled"
 		       : "disabled");
 }
@@ -247,10 +259,30 @@ mode_store(struct device *dev, struct device_attribute *attr,
 {
 	struct thermal_zone_device *tz = to_thermal_zone(dev);
 	int result;
+#ifdef CONFIG_HW_IPA_THERMAL
+	u32 mode;
+#endif
 
 	if (!tz->ops->set_mode)
 		return -EPERM;
 
+#ifdef CONFIG_HW_IPA_THERMAL
+	if (is_ipa_thermal(tz)) {
+		if (kstrtou32(buf, 10, &mode))
+			return -EINVAL;
+
+		restore_actor_weights(tz);
+		if (mode > 0) {
+			result = tz->ops->set_mode(tz, THERMAL_DEVICE_ENABLED);
+		} else {
+#ifdef CONFIG_QTI_THERMAL
+			result = thermal_zone_device_clear(tz);
+#else
+			result = tz->ops->set_mode(tz, THERMAL_DEVICE_DISABLED);
+#endif
+		}
+	} else {
+#endif
 	if (!strncmp(buf, "enabled", sizeof("enabled") - 1))
 		result = tz->ops->set_mode(tz, THERMAL_DEVICE_ENABLED);
 	else if (!strncmp(buf, "disabled", sizeof("disabled") - 1))
@@ -261,10 +293,20 @@ mode_store(struct device *dev, struct device_attribute *attr,
 #endif
 	else
 		result = -EINVAL;
+#ifdef CONFIG_HW_IPA_THERMAL
+	}
+#endif
 
 	if (result)
 		return result;
 
+#ifdef CONFIG_HW_IPA_THERMAL
+	if (!strncmp(tz->governor->name, POWER_ALLOCATOR_GOVERNOR, THERMAL_NAME_LENGTH)) {
+		mutex_lock(&tz->lock);
+		ipa_freq_limit_reset(tz);
+		mutex_unlock(&tz->lock);
+	}
+#endif
 	return count;
 }
 
@@ -291,6 +333,24 @@ trip_point_type_show(struct device *dev, struct device_attribute *attr,
 		return sprintf(buf, "critical\n");
 	case THERMAL_TRIP_HOT:
 		return sprintf(buf, "hot\n");
+#if defined(CONFIG_HW_THERMAL_TSENSOR) || defined(CONFIG_HW_THERMAL_PERIPHERAL)
+	case THERMAL_TRIP_CONFIGURABLE_HI:
+		return snprintf_s(buf, PAGE_SIZE, PAGE_SIZE - 1, "configurable_hi\n");
+	case THERMAL_TRIP_CONFIGURABLE_LOW:
+		return snprintf_s(buf, PAGE_SIZE, PAGE_SIZE - 1, "configurable_low\n");
+	case THERMAL_TRIP_CRITICAL_LOW:
+		return snprintf_s(buf, PAGE_SIZE, PAGE_SIZE - 1, "critical_low\n");
+#endif
+#ifdef CONFIG_HW_THERMAL_TRIP
+	case THERMAL_TRIP_THROTTLING:
+		return snprintf_s(buf, PAGE_SIZE, PAGE_SIZE - 1, "throttling\n");
+	case THERMAL_TRIP_SHUTDOWN:
+		return snprintf_s(buf, PAGE_SIZE, PAGE_SIZE - 1, "shutdown\n");
+	case THERMAL_TRIP_BELOW_VR_MIN:
+		return snprintf_s(buf, PAGE_SIZE, PAGE_SIZE - 1, "below_vr_min\n");
+	case THERMAL_TRIP_OVER_SKIN:
+		return snprintf_s(buf, PAGE_SIZE, PAGE_SIZE - 1, "over_skin\n");
+#endif
 	case THERMAL_TRIP_PASSIVE:
 		return sprintf(buf, "passive\n");
 	case THERMAL_TRIP_ACTIVE:
@@ -318,6 +378,9 @@ trip_point_temp_store(struct device *dev, struct device_attribute *attr,
 		return -EINVAL;
 
 	ret = tz->ops->set_trip_temp(tz, trip, temperature);
+#ifdef CONFIG_HW_IPA_THERMAL
+	update_pid_value(tz);
+#endif
 	if (ret)
 		return ret;
 
@@ -484,6 +547,9 @@ emul_temp_store(struct device *dev, struct device_attribute *attr,
 	if (kstrtoint(buf, 10, &temperature))
 		return -EINVAL;
 
+#ifdef CONFIG_HW_IPA_THERMAL
+	temperature = thermal_zone_temp_check(temperature);
+#endif
 	if (!tz->ops->set_emul_temp) {
 		mutex_lock(&tz->lock);
 		tz->emul_temperature = temperature;
@@ -527,9 +593,14 @@ sustainable_power_store(struct device *dev, struct device_attribute *devattr,
 
 	tz->tzp->sustainable_power = sustainable_power;
 
+#ifdef CONFIG_HW_IPA_THERMAL
+        update_pid_value(tz);
+#endif
+
 	return count;
 }
 
+#define MAX_S16 0x7FFF
 #define create_s32_tzp_attr(name)					\
 	static ssize_t							\
 	name##_show(struct device *dev, struct device_attribute *devattr, \
@@ -556,7 +627,12 @@ sustainable_power_store(struct device *dev, struct device_attribute *devattr,
 		if (kstrtos32(buf, 10, &value))				\
 			return -EINVAL;					\
 									\
-		tz->tzp->name = value;					\
+		if (value > MAX_S16)					\
+			tz->tzp->name = MAX_S16;			\
+		else if (value < -MAX_S16)				\
+			tz->tzp->name = -MAX_S16;			\
+		else							\
+			tz->tzp->name = value;				\
 									\
 		return count;						\
 	}								\
@@ -609,6 +685,12 @@ static struct attribute *thermal_zone_dev_attrs[] = {
 	&dev_attr_integral_cutoff.attr,
 	&dev_attr_slope.attr,
 	&dev_attr_offset.attr,
+#ifdef CONFIG_HW_IPA_THERMAL
+	&dev_attr_boost.attr,
+	&dev_attr_boost_timeout.attr,
+	&dev_attr_cur_power.attr,
+	&dev_attr_cur_enable.attr,
+#endif
 	NULL,
 };
 
@@ -745,6 +827,16 @@ static int create_trip_attrs(struct thermal_zone_device *tz, int mask)
 						tz->trip_type_attrs[indx].name;
 		tz->trip_type_attrs[indx].attr.attr.mode = S_IRUGO;
 		tz->trip_type_attrs[indx].attr.show = trip_point_type_show;
+#ifdef CONFIG_HW_THERMAL_TSENSOR
+		if (IS_ENABLED(CONFIG_THERMAL_WRITABLE_TRIPS) &&
+			(mask & (1 << indx))) {
+			if (tz->ops->activate_trip_type) {
+				tz->trip_type_attrs[indx].attr.attr.mode |= S_IWUSR;
+				tz->trip_type_attrs[indx].attr.store =
+								trip_point_type_activate;
+			}
+		}
+#endif
 		attrs[indx] = &tz->trip_type_attrs[indx].attr.attr;
 
 		/* create trip temp attribute */
@@ -1241,6 +1333,11 @@ ssize_t weight_store(struct device *dev, struct device_attribute *attr,
 		return ret;
 
 	instance = container_of(attr, struct thermal_instance, weight_attr);
+#ifdef CONFIG_HW_IPA_THERMAL
+	ret = ipa_thermal_cooling_device_weight_store(dev, instance, weight);
+	if (ret)
+		return ret;
+#endif
 	instance->weight = weight;
 
 	return count;

@@ -9,6 +9,7 @@
 #include <linux/errno.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
+#include <linux/suspend.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/types.h>
@@ -18,6 +19,9 @@
 #include <linux/uaccess.h>
 #include <linux/soc/qcom/smem.h>
 #include <asm/arch_timer.h>
+#ifdef CONFIG_HUAWEI_DUBAI
+#include <huawei_platform/log/hwlog_kernel.h>
+#endif
 #include "rpmh_master_stat.h"
 
 #define UNIT_DIST 0x14
@@ -115,6 +119,18 @@ static ssize_t msm_rpmh_master_stats_print_data(char *prvbuf, ssize_t length,
 				(__arch_counter_get_cntvct()
 				- record->last_entered);
 
+	pr_err("\n%s\n\tVersion:0x%x\n"
+		"\tSleep Count:0x%x\n"
+		"\tSleep Last Entered At:0x%llx\n"
+		"\tSleep Last Exited At:0x%llx\n"
+		"\tSleep Accumulated Duration:0x%llx\n\n",
+		name, record->version_id, record->counts,
+		record->last_entered, record->last_exited,
+		accumulated_duration);
+#ifdef CONFIG_HUAWEI_DUBAI
+	HWDUBAI_LOGE("DUBAI_TAG_RPMH_STATS", "name=%s count=%d duration=%ld", name, record->counts,
+		record->accumulated_duration);
+#endif
 	return scnprintf(prvbuf, length, "%s\n\tVersion:0x%x\n"
 			"\tSleep Count:0x%x\n"
 			"\tSleep Last Entered At:0x%llx\n"
@@ -206,6 +222,48 @@ void msm_rpmh_master_stats_update(void)
 }
 EXPORT_SYMBOL(msm_rpmh_master_stats_update);
 
+static int msm_rpmh_pm_notify(struct notifier_block *nb, unsigned long mode, void *data)
+{
+	char *buf = NULL;
+
+	switch (mode) {
+	case PM_SUSPEND_PREPARE:
+		break;
+	case PM_POST_SUSPEND:
+		buf = kmalloc(PAGE_SIZE, GFP_KERNEL);
+		if (buf == NULL) {
+			pr_err("Failed to call kmalloc size= %d", PAGE_SIZE);
+			return -1;
+		}
+		msm_rpmh_master_stats_show(NULL, NULL, buf);
+		kfree(buf);
+		buf = NULL;
+		break;
+	default:
+		break;
+	}
+
+	return 0;
+}
+
+static struct notifier_block msm_rpmh_pm_nb = {
+	.notifier_call = msm_rpmh_pm_notify,
+};
+
+void msm_rpmh_sr_init(void)
+{
+	int ret;
+
+	ret = register_pm_notifier(&msm_rpmh_pm_nb);
+	if (ret)
+		pr_err("Failed to register pm notifier");
+}
+
+void msm_rpmh_sr_exit(void)
+{
+	unregister_pm_notifier(&msm_rpmh_pm_nb);
+}
+
 static int msm_rpmh_master_stats_probe(struct platform_device *pdev)
 {
 	struct rpmh_master_stats_prv_data *prvdata = NULL;
@@ -244,6 +302,8 @@ static int msm_rpmh_master_stats_probe(struct platform_device *pdev)
 
 	apss_master_stats.version_id = 0x1;
 	platform_set_drvdata(pdev, prvdata);
+	msm_rpmh_sr_init();
+
 	return ret;
 
 fail_sysfs:
@@ -255,6 +315,7 @@ static int msm_rpmh_master_stats_remove(struct platform_device *pdev)
 {
 	struct rpmh_master_stats_prv_data *prvdata;
 
+	msm_rpmh_sr_exit();
 	prvdata = (struct rpmh_master_stats_prv_data *)
 				platform_get_drvdata(pdev);
 

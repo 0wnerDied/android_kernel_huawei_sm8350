@@ -108,6 +108,8 @@ source "drivers/usb/Kconfig"
 
 source "drivers/mmc/Kconfig"
 
+source "drivers/iomt_host/Kconfig"
+
 source "drivers/memstick/Kconfig"
 
 source "drivers/leds/Kconfig"
@@ -228,6 +230,81 @@ source "drivers/slimbus/Kconfig"
 
 source "drivers/interconnect/Kconfig"
 
+source "drivers/hwusb/Kconfig"
+
+source "drivers/hwpower/Kconfig"
+
+source "drivers/log/Kconfig"
+
+source "drivers/dsm/Kconfig"
+
+source "drivers/huawei_platform/Kconfig"
+
+source "drivers/devkit/audiokit/Kconfig"
+
+source "drivers/devkit/tpkit/Kconfig"
+
+source "drivers/devkit/lcdkit/Kconfig"
+
 source "drivers/counter/Kconfig"
 
+source "drivers/irda/Kconfig"
+
+source "drivers/reclaim_acct/Kconfig"
+
+source "drivers/dp/Kconfig"
+
+source "drivers/hwmanufac/Kconfig"
+
+source "drivers/modem_reset/Kconfig"
+
+source "drivers/vibrator/Kconfig"
+
+source "drivers/booster/Kconfig"
+
+source "drivers/hwmemcheck/Kconfig"
+
+source "drivers/chr/Kconfig"
+
+source "drivers/hw_dpi_mark/Kconfig"
+
+source "drivers/network_aware/Kconfig"
+
+source "drivers/rmeminspect/Kconfig"
+
+source "drivers/hwnet/Kconfig"
+
+source "drivers/hwzerohung/Kconfig"
+
+source "drivers/antenna_cable/Kconfig"
+
+source "drivers/cpuload/Kconfig"
+
+source "drivers/hwsensor/Kconfig"
+
+source "drivers/hwsensors/Kconfig"
+
+source "drivers/mmonitor/Kconfig"
+
+source "drivers/hw_page_tracker/Kconfig"
+
+source "drivers/hwdps/Kconfig"
+
+source "drivers/card_tray/Kconfig"
+
+source "drivers/blpwm/Kconfig"
+
+source "drivers/emcom/Kconfig"
+
+source "drivers/cfi/Kconfig"
+
+source "drivers/boottime/Kconfig"
+
+source "drivers/hw_wlan/Kconfig"
+
+source "drivers/hw_btfm/Kconfig"
+
+source "drivers/perf_ctrl/Kconfig"
+
+source "drivers/perfhub/Kconfig"
 endmenu

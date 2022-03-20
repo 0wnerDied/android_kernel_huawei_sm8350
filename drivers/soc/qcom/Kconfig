@@ -1112,8 +1112,8 @@ config QCOM_WDOG_BITE_EARLY_PANIC
 config QCOM_WATCHDOG_BARK_TIME
 	depends on QCOM_WDT_CORE
 	int "Qualcomm Technologies, Inc. Watchdog bark time in ms"
-	default 11000
-	range 11000 11000
+	default 15000
+	range 11000 20000
 	help
 	  The amount of time, in milliseconds, that should elapse after
 	  a watchdog timer reset before a bark interrupt is sent from the
@@ -1328,6 +1328,7 @@ config MSM_SEB_RPMSG
 	  channel is closed by remote processor.
 
 source "drivers/soc/qcom/icnss2/Kconfig"
+source "drivers/soc/qcom/pil-q6v5-mss/Kconfig"
 
 source "drivers/soc/qcom/gnsssirf/Kconfig"
 endmenu

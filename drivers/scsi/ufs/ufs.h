@@ -49,6 +49,8 @@
 #define QUERY_DESC_MAX_SIZE       255
 #define QUERY_DESC_MIN_SIZE       2
 #define QUERY_DESC_HDR_SIZE       2
+#define QUERY_DESC_SNUM_XHFZ      6
+#define QUERY_DESC_SNUM_XHFZ_SEC  18
 #define QUERY_OSF_SIZE            (GENERAL_UPIU_REQUEST_SIZE - \
 					(sizeof(struct utp_upiu_header)))
 #define UFS_SENSE_SIZE	18
@@ -118,6 +120,10 @@ enum {
 /* UPIU Read/Write flags */
 enum {
 	UPIU_CMD_FLAGS_NONE	= 0x00,
+#ifdef CONFIG_MAS_BLK
+	/* UPIU Command Priority */
+	UPIU_CMD_PRIO	= 0x04,
+#endif
 	UPIU_CMD_FLAGS_WRITE	= 0x20,
 	UPIU_CMD_FLAGS_READ	= 0x40,
 };
@@ -174,8 +180,14 @@ enum attr_idn {
 	QUERY_ATTR_IDN_SECONDS_PASSED		= 0x0F,
 	QUERY_ATTR_IDN_CNTX_CONF		= 0x10,
 	QUERY_ATTR_IDN_CORR_PRG_BLK_NUM		= 0x11,
+#ifdef CONFIG_MAS_UFS_MANUAL_BKOPS
+	/* Hynix GC related idn */
+	QUERY_ATTR_IDN_M_GC_START_STOP		= 0x12,
+	QUERY_ATTR_IDN_M_GC_STATUS		= 0x13,
+#else
 	QUERY_ATTR_IDN_RESERVED2		= 0x12,
 	QUERY_ATTR_IDN_RESERVED3		= 0x13,
+#endif
 	QUERY_ATTR_IDN_FFU_STATUS		= 0x14,
 	QUERY_ATTR_IDN_PSA_STATE		= 0x15,
 	QUERY_ATTR_IDN_PSA_DATA_SIZE		= 0x16,
@@ -198,6 +210,10 @@ enum desc_idn {
 	QUERY_DESC_IDN_GEOMETRY		= 0x7,
 	QUERY_DESC_IDN_POWER		= 0x8,
 	QUERY_DESC_IDN_HEALTH           = 0x9,
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	QUERY_DESC_IDN_DEVICE_UNISTORE  = 0xFE,
+	QUERY_DESC_IDN_UNIT_UNISTORE    = 0xFF,
+#endif
 	QUERY_DESC_IDN_MAX,
 };
 
@@ -214,6 +230,11 @@ enum ufs_desc_def_size {
 	QUERY_DESC_GEOMETRY_DEF_SIZE		= 0x48,
 	QUERY_DESC_POWER_DEF_SIZE		= 0x62,
 	QUERY_DESC_HEALTH_DEF_SIZE		= 0x25,
+	QUERY_DESC_HEALTH_MAX_SIZE		= 0x37,
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	QUERY_DESC_DEVICE_UNISTORE_MAX_SIZE 	= 0x1A,
+	QUERY_DESC_UINT_UNISTORE_MAX_SIZE	= 0x20,
+#endif
 };
 
 /* Unit descriptor parameters offsets in bytes*/
@@ -235,6 +256,9 @@ enum unit_desc_param {
 	UNIT_DESC_PARAM_PHY_MEM_RSRC_CNT	= 0x18,
 	UNIT_DESC_PARAM_CTX_CAPABILITIES	= 0x20,
 	UNIT_DESC_PARAM_LARGE_UNIT_SIZE_M1	= 0x22,
+	UNIT_DESC_PARAM_MAX_ACTIVE_HPB_REGIONS	= 0x23,
+	UNIT_DESC_PARAM_PINNED_REGION_STARTIDX 	= 0x25,
+	UNIT_DESC_PARAM_NUM_PINNED_REGIONS	= 0x27,
 	UNIT_DESC_PARAM_WB_BUF_ALLOC_UNITS	= 0x29,
 };
 
@@ -275,10 +299,15 @@ enum device_desc_param {
 	DEVICE_DESC_PARAM_PSA_MAX_DATA		= 0x25,
 	DEVICE_DESC_PARAM_PSA_TMT		= 0x29,
 	DEVICE_DESC_PARAM_PRDCT_REV		= 0x2A,
+	DEVICE_DESC_PARAM_HPB_VERSION		= 0x40,
+	DEVICE_DESC_PARAM_HPB_CONTROL		= 0x42,
 	DEVICE_DESC_PARAM_EXT_UFS_FEATURE_SUP	= 0x4F,
 	DEVICE_DESC_PARAM_WB_PRESRV_USRSPC_EN	= 0x53,
 	DEVICE_DESC_PARAM_WB_TYPE		= 0x54,
 	DEVICE_DESC_PARAM_WB_SHARED_ALLOC_UNITS = 0x55,
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	DEVICE_DESC_PARAM_FEATURE		= 0xF0,
+#endif
 };
 
 /* Interconnect descriptor parameters offsets in bytes*/
@@ -323,6 +352,10 @@ enum geometry_desc_param {
 	GEOMETRY_DESC_PARAM_ENM4_MAX_NUM_UNITS	= 0x3E,
 	GEOMETRY_DESC_PARAM_ENM4_CAP_ADJ_FCTR	= 0x42,
 	GEOMETRY_DESC_PARAM_OPT_LOG_BLK_SIZE	= 0x44,
+	GEOMETRY_DESC_PARAM_HPB_REGION_SIZE	= 0x48,
+	GEOMETRY_DESC_PARAM_HPB_LU_NUMBER	= 0x49,
+	GEOMETRY_DESC_PARAM_HPB_SUBREGION_SIZE	= 0x4A,
+	GEOMETRY_DESC_PARAM_HPB_MAX_ACT_REGIONS	= 0x4B,
 	GEOMETRY_DESC_PARAM_WB_MAX_ALLOC_UNITS	= 0x4F,
 	GEOMETRY_DESC_PARAM_WB_MAX_WB_LUNS	= 0x53,
 	GEOMETRY_DESC_PARAM_WB_BUFF_CAP_ADJ	= 0x54,
@@ -391,6 +424,9 @@ enum power_desc_param_offset {
 enum {
 	MASK_EE_STATUS		= 0xFFFF,
 	MASK_EE_URGENT_BKOPS	= (1 << 2),
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	MASK_EE_BAD_BLOCK_OCCUR	= (1 << 14),
+#endif
 };
 
 /* Background operation status */
@@ -413,6 +449,17 @@ enum query_opcode {
 	UPIU_QUERY_OPCODE_SET_FLAG	= 0x6,
 	UPIU_QUERY_OPCODE_CLEAR_FLAG	= 0x7,
 	UPIU_QUERY_OPCODE_TOGGLE_FLAG	= 0x8,
+#ifdef CONFIG_MAS_UFS_MANUAL_BKOPS
+	/* Hi1861 specific manual GC OPCODE */
+	UPIU_QUERY_OPCODE_M_GC_START	= 0xF0,
+	UPIU_QUERY_OPCODE_M_GC_STOP	= 0xF1,
+	UPIU_QUERY_OPCODE_M_GC_CHECK	= 0xF2,
+#endif /* CONFIG_MAS_UFS_MANUAL_BKOPS */
+	UPIU_QUERY_OPCODE_READ_HI1861_FSR = 0xF3, /*for hi1861*/
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	UPIU_QUERY_OPCODE_VENDOR_READ = 0xF8,
+	UPIU_QUERY_OPCODE_VENDOR_WRITE = 0xF9,
+#endif
 #ifdef CONFIG_SCSI_UFSHCD_QTI
 	UPIU_QUERY_OPCODE_MAX,
 #endif
@@ -584,6 +631,8 @@ enum {
 };
 #endif
 
+#define MAX_MODEL_LEN 16
+
 struct ufs_dev_info {
 	bool f_power_on_wp_en;
 	/* Keeps information if any of the LU is power on write protected */
@@ -601,13 +650,20 @@ struct ufs_dev_info {
 	/*UFS device Product Name */
 	u8 *model;
 	u16 wspecversion;
+	char model_name[MAX_MODEL_LEN + 1];
 	u32 clk_gating_wait_us;
 	u32 d_ext_ufs_feature_sup;
 	u8 b_wb_buffer_type;
 	u32 d_wb_alloc_units;
 	bool b_rpm_dev_flush_capable;
 	u8 b_presrv_uspc_en;
+	u16 w_manufacturer_id;
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	uint32_t vendor_feature;
+#endif
 };
+
+#define UFS_MODEL_SS6100	"SS6100"
 
 /**
  * ufs_is_valid_unit_desc_lun - checks if the given LUN has a unit descriptor

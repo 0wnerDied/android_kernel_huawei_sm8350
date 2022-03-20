@@ -36,6 +36,9 @@
 
 #include "hub.h"
 #include "otg_whitelist.h"
+#ifdef CONFIG_HUAWEI_POWER_EMBEDDED_ISOLATION
+#include <chipset_common/hwpower/common_module/power_event_ne.h>
+#endif /* CONFIG_HUAWEI_POWER_EMBEDDED_ISOLATION */
 
 #define USB_VENDOR_GENESYS_LOGIC		0x05e3
 #define USB_VENDOR_SMSC				0x0424
@@ -3568,8 +3571,8 @@ int usb_port_resume(struct usb_device *udev, pm_message_t msg)
 		/* drive resume for USB_RESUME_TIMEOUT msec */
 		dev_dbg(&udev->dev, "usb %sresume\n",
 				(PMSG_IS_AUTO(msg) ? "auto-" : ""));
-		usleep_range(USB_RESUME_TIMEOUT * 1000,
-				(USB_RESUME_TIMEOUT + 1) * 1000);
+			usleep_range(USB_RESUME_TIMEOUT * 1000,
+					(USB_RESUME_TIMEOUT + 1) * 1000);
 
 		/* Virtual root hubs can trigger on GET_PORT_STATUS to
 		 * stop resume signaling.  Then finish the resume
@@ -4612,6 +4615,10 @@ hub_port_init(struct usb_hub *hub, struct usb_device *udev, int port1,
 		speed = "variable speed Wireless";
 	else
 		speed = usb_speed_string(udev->speed);
+
+#ifdef CONFIG_HUAWEI_POWER_EMBEDDED_ISOLATION
+	power_event_bnc_notify(POWER_BNT_HW_USB, POWER_NE_HW_USB_SPEED, &udev->speed);
+#endif /* CONFIG_HUAWEI_POWER_EMBEDDED_ISOLATION */
 
 	/*
 	 * The controller driver may be NULL if the controller device

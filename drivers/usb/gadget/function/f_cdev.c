@@ -38,6 +38,9 @@
 #include <linux/module.h>
 #include <asm/ioctls.h>
 #include <asm-generic/termios.h>
+#ifdef CONFIG_HUAWEI_USB
+#include <linux/usb/huawei_usb.h>
+#endif
 
 #define DEVICE_NAME "at_usb"
 #define MODULE_NAME "msm_usb_bridge"
@@ -147,6 +150,23 @@ struct f_cdev_opts {
 	u8 proto;
 };
 
+#ifdef CONFIG_HUAWEI_USB
+#define GSERIAL_NO_PORTS 3
+static unsigned char usb_if_protocol_table[GSERIAL_NO_PORTS] = {
+	USB_IF_PROTOCOL_HW_PCUI, /* hw PCUI for AT command */
+	USB_IF_PROTOCOL_HW_MODEM, /* hw modem interface */
+	USB_IF_PROTOCOL_NOPNP
+};
+
+static unsigned char acm_get_type(unsigned int port_num)
+{
+	if (port_num < GSERIAL_NO_PORTS)
+		return usb_if_protocol_table[port_num];
+
+	return (unsigned char)USB_IF_PROTOCOL_NOPNP;
+}
+#endif
+
 static int major, minors;
 struct class *fcdev_classp;
 static DEFINE_IDA(chardev_ida);
@@ -166,10 +186,17 @@ static struct usb_interface_descriptor cser_interface_desc = {
 	.bDescriptorType =	USB_DT_INTERFACE,
 	/* .bInterfaceNumber = DYNAMIC */
 	.bNumEndpoints =	3,
+#ifndef CONFIG_HUAWEI_USB
 	.bInterfaceClass =	USB_CLASS_VENDOR_SPEC,
 	.bInterfaceSubClass =	USB_SUBCLASS_VENDOR_SPEC,
 	/* .bInterfaceProtocol = DYNAMIC */
 	/* .iInterface = DYNAMIC */
+#else
+	.bInterfaceClass = USB_IF_CLASS_HW_PNP21,
+	.bInterfaceSubClass = USB_IF_SUBCLASS_HW_PNP21,
+	.bInterfaceProtocol = 0,
+	/* .iInterface = DYNAMIC */
+#endif
 };
 
 static struct usb_cdc_header_desc cser_header_desc  = {
@@ -800,8 +827,10 @@ static int usb_cser_bind(struct usb_configuration *c, struct usb_function *f)
 	struct f_cdev *port = func_to_port(f);
 	int status;
 	struct usb_ep *ep;
+#ifndef CONFIG_HUAWEI_USB
 	struct f_cdev_opts *opts =
 			container_of(f->fi, struct f_cdev_opts, func_inst);
+#endif
 
 	if (cser_string_defs[0].id == 0) {
 		status = usb_string_id(c->cdev);
@@ -815,7 +844,12 @@ static int usb_cser_bind(struct usb_configuration *c, struct usb_function *f)
 		goto fail;
 	port->port_usb.data_id = status;
 	cser_interface_desc.bInterfaceNumber = status;
+#ifndef CONFIG_HUAWEI_USB
 	cser_interface_desc.bInterfaceProtocol = opts->proto;
+#else
+	cser_interface_desc.bInterfaceProtocol = acm_get_type(port->port_num);
+	pr_info("port_num = %d\n", port->port_num);
+#endif
 
 	status = -ENODEV;
 	ep = usb_ep_autoconfig(cdev->gadget, &cser_fs_in_desc);

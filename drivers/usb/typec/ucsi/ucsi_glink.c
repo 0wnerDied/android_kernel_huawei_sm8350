@@ -16,6 +16,9 @@
 #include <linux/usb/ucsi_glink.h>
 
 #include "ucsi.h"
+#ifdef CONFIG_HUAWEI_POWER_EMBEDDED_ISOLATION
+#include <huawei_platform/usb/hw_pd_dev.h>
+#endif /* CONFIG_HUAWEI_POWER_EMBEDDED_ISOLATION */
 
 /* PPM specific definitions */
 #define MSG_OWNER_UC			32779
@@ -248,6 +251,10 @@ static int ucsi_callback(void *priv, void *data, size_t len)
 	pr_debug("owner: %u type: %u opcode: %u len:%zu\n", hdr->owner,
 		hdr->type, hdr->opcode, len);
 
+#ifdef CONFIG_HUAWEI_POWER_EMBEDDED_ISOLATION
+	pd_dpm_set_glink_status();
+#endif /* CONFIG_HUAWEI_POWER_EMBEDDED_ISOLATION */
+
 	if (hdr->opcode == UC_UCSI_READ_BUF_REQ)
 		handle_ucsi_read_ack(udev, data, len);
 	else if (hdr->opcode == UC_UCSI_WRITE_BUF_REQ)
@@ -404,7 +411,7 @@ static void ucsi_qti_notify(struct ucsi_dev *udev, unsigned int offset,
 			break;
 		case UCSI_CONSTAT_PARTNER_TYPE_DEBUG:
 			udev->constat_info.acc = TYPEC_ACCESSORY_DEBUG;
-			break;
+			/* fallthrough */
 		case UCSI_CONSTAT_PARTNER_TYPE_UFP:
 		case UCSI_CONSTAT_PARTNER_TYPE_CABLE:
 		case UCSI_CONSTAT_PARTNER_TYPE_CABLE_AND_UFP:

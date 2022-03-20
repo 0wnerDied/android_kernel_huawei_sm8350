@@ -6,6 +6,9 @@
 #include <linux/console.h>
 #include <linux/serial_core.h>
 #include <linux/io.h>
+#ifdef CONFIG_RAINBOW_HIMNTN
+#include <linux/himntn_kernel.h>
+#endif
 
 
 #define SE_UART_TX_TRANS_CFG		(0x25C)
@@ -135,6 +138,10 @@
 #define TX_FIFO_WIDTH_SHFT	(24)
 #define TX_FIFO_DEPTH_MSK	(GENMASK(21, 16))
 #define TX_FIFO_DEPTH_SHFT	(16)
+
+#ifdef CONFIG_RAINBOW_HIMNTN
+static bool himntn_switch;
+#endif
 
 enum se_protocol_types {
 	NONE,
@@ -485,6 +492,14 @@ msm_geni_serial_earlycon_setup(struct earlycon_device *dev,
 	int clk_div;
 	unsigned long clk_rate;
 	unsigned long cfg0, cfg1;
+
+#ifdef CONFIG_RAINBOW_HIMNTN
+	himntn_switch = cmd_himntn_item_switch(HIMNTN_ID_UART_LOG_SWITCH);
+	pr_info("himntn_switch = %d\n", himntn_switch);
+	if (!himntn_switch)
+		return -ENOMEM;
+#endif
+
 
 	if (!uport->membase) {
 		ret = -ENOMEM;

@@ -23,7 +23,9 @@
 #include <net/netlink.h>
 #include <net/genetlink.h>
 #include <linux/suspend.h>
+#include <linux/hw/hw_thermal.h>
 
+#include <securec.h>
 #define CREATE_TRACE_POINTS
 #include <trace/events/thermal.h>
 
@@ -140,9 +142,16 @@ int thermal_register_governor(struct thermal_governor *governor)
 
 		err = 0;
 		list_add(&governor->governor_list, &thermal_governor_list);
+#ifdef CONFIG_HW_IPA_THERMAL
+		match_default = !strncmp(governor->name,
+					 DEFAULT_THERMAL_GOVERNOR,
+					 min((strlen(DEFAULT_THERMAL_GOVERNOR) + 1),
+					 (size_t)THERMAL_NAME_LENGTH));
+#else
 		match_default = !strncmp(governor->name,
 					 DEFAULT_THERMAL_GOVERNOR,
 					 THERMAL_NAME_LENGTH);
+#endif
 
 		if (!def_governor && match_default)
 			def_governor = governor;
@@ -563,6 +572,8 @@ static void thermal_zone_device_reset(struct thermal_zone_device *tz)
 	thermal_zone_device_init(tz);
 }
 
+#include "thermal_core_hw.c"
+
 void thermal_zone_device_update(struct thermal_zone_device *tz,
 				enum thermal_notify_event event)
 {
@@ -584,6 +595,10 @@ void thermal_zone_device_update(struct thermal_zone_device *tz,
 	thermal_zone_set_trips(tz);
 
 	tz->notify_event = event;
+
+#ifdef CONFIG_HW_IPA_THERMAL
+	update_actor_weights(tz);
+#endif
 
 	for (count = 0; count < tz->trips; count++)
 		handle_thermal_trip(tz, count);
@@ -1024,10 +1039,12 @@ static void __bind(struct thermal_zone_device *tz, int mask,
 
 			upper = THERMAL_NO_LIMIT;
 			lower = THERMAL_NO_LIMIT;
+#ifndef CONFIG_HW_IPA_THERMAL
 			if (limits) {
 				lower = limits[i * 2];
 				upper = limits[i * 2 + 1];
 			}
+#endif
 			ret = thermal_zone_bind_cooling_device(tz, i, cdev,
 							       upper, lower,
 							       weight);
@@ -1430,7 +1447,11 @@ thermal_zone_device_register(const char *type, int trips, int mask,
 		return ERR_PTR(-EINVAL);
 	}
 
+#ifdef CONFIG_HW_IPA_THERMAL
+	if (trips > 0 && !ops->get_trip_type)
+#else
 	if (trips > 0 && (!ops->get_trip_type || !ops->get_trip_temp))
+#endif
 		return ERR_PTR(-EINVAL);
 
 	tz = kzalloc(sizeof(*tz), GFP_KERNEL);
@@ -1465,6 +1486,10 @@ thermal_zone_device_register(const char *type, int trips, int mask,
 	/* A new thermal zone needs to be updated anyway. */
 	atomic_set(&tz->need_update, 1);
 
+#ifdef CONFIG_HW_IPA_THERMAL
+	set_tz_type(tz);
+#endif
+
 	dev_set_name(&tz->device, "thermal_zone%d", tz->id);
 	result = device_register(&tz->device);
 	if (result)
@@ -1473,8 +1498,13 @@ thermal_zone_device_register(const char *type, int trips, int mask,
 	for (count = 0; count < trips; count++) {
 		if (tz->ops->get_trip_type(tz, count, &trip_type))
 			set_bit(count, &tz->trips_disabled);
+#ifdef CONFIG_HW_IPA_THERMAL
+		if (tz->ops->get_trip_temp && tz->ops->get_trip_temp(tz, count, &trip_temp))
+			set_bit(count, &tz->trips_disabled);
+#else
 		if (tz->ops->get_trip_temp(tz, count, &trip_temp))
 			set_bit(count, &tz->trips_disabled);
+#endif
 		/* Check for bogus trip points */
 		if (trip_temp == 0)
 			set_bit(count, &tz->trips_disabled);
@@ -1753,9 +1783,18 @@ static int thermal_pm_notify(struct notifier_block *nb,
 				continue;
 #endif
 
+#ifdef CONFIG_HW_IPA_THERMAL
+			if (strncmp(tz->governor->name, USER_SPACE_GOVERNOR,
+				strlen(USER_SPACE_GOVERNOR))) {
+				thermal_zone_device_init(tz);
+				thermal_zone_device_update(tz,
+						   THERMAL_EVENT_UNSPECIFIED);
+			}
+#else
 			thermal_zone_device_init(tz);
 			thermal_zone_device_update(tz,
 						   THERMAL_EVENT_UNSPECIFIED);
+#endif
 		}
 		break;
 	default:
@@ -1791,9 +1830,32 @@ static int __init thermal_init(void)
 	if (result)
 		goto unregister_governors;
 
+#ifdef CONFIG_HW_IPA_THERMAL
+	result = of_parse_thermal_zone_info();
+	if (result) {
+		pr_err("%s:parse_thermal_zone_info error.\n", __func__);
+	}
+
+	result = of_parse_ipa_sensor_index_table();
+	if (result) {
+		pr_err("%s:ipa_sensor_init error, use default value.\n", __func__);
+	}
+
+	result = ipa_cluster_state_limit_init();
+	if (result) {
+		pr_err("%s:ipa_cluster_state_limit_init error, use default value.\n", __func__);
+	}
+#endif
+
 	result = of_parse_thermal_zones();
 	if (result)
 		goto unregister_class;
+
+#ifdef CONFIG_HW_IPA_THERMAL
+	if (ipa_weights_cfg_init()) {
+		pr_err("%s:ipa_weights_init error, use default value.\n", __func__);
+	}
+#endif
 
 	result = register_pm_notifier(&thermal_pm_nb);
 	if (result)
@@ -1815,6 +1877,9 @@ error:
 	mutex_destroy(&thermal_list_lock);
 	mutex_destroy(&thermal_governor_lock);
 	mutex_destroy(&poweroff_lock);
+#ifdef CONFIG_HW_IPA_THERMAL
+	mutex_destroy(&thermal_boost_lock);
+#endif
 	return result;
 }
 
@@ -1831,6 +1896,9 @@ static void thermal_exit(void)
 	ida_destroy(&thermal_cdev_ida);
 	mutex_destroy(&thermal_list_lock);
 	mutex_destroy(&thermal_governor_lock);
+#ifdef CONFIG_HW_IPA_THERMAL
+	mutex_destroy(&thermal_boost_lock);
+#endif
 }
 
 static int __init thermal_netlink_init(void)
@@ -1862,6 +1930,18 @@ static int __init thermal_init(void)
 	if (result)
 		goto unregister_governors;
 
+#ifdef CONFIG_HW_IPA_THERMAL
+	result = of_parse_thermal_zone_info();
+	if (result) {
+		pr_err("%s:parse_thermal_zone_info error.\n", __func__);
+	}
+
+	result = of_parse_ipa_sensor_index_table();
+	if (result) {
+		pr_err("%s:ipa_sensor_init error, use default value.\n", __func__);
+	}
+#endif
+
 	result = genetlink_init();
 	if (result)
 		goto unregister_class;
@@ -1869,6 +1949,12 @@ static int __init thermal_init(void)
 	result = of_parse_thermal_zones();
 	if (result)
 		goto exit_netlink;
+
+#ifdef CONFIG_HW_IPA_THERMAL
+	if (ipa_weights_cfg_init()) {
+		pr_err("%s:ipa_weights_init error, use default value.\n", __func__);
+	}
+#endif
 
 	result = register_pm_notifier(&thermal_pm_nb);
 	if (result)
@@ -1889,6 +1975,9 @@ error:
 	mutex_destroy(&thermal_list_lock);
 	mutex_destroy(&thermal_governor_lock);
 	mutex_destroy(&poweroff_lock);
+#ifdef CONFIG_HW_IPA_THERMAL
+	mutex_destroy(&thermal_boost_lock);
+#endif
 	return result;
 }
 fs_initcall(thermal_init);

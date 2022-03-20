@@ -39,7 +39,13 @@
 #include "scsi_debugfs.h"
 #include "scsi_priv.h"
 #include "scsi_logging.h"
+#ifdef CONFIG_HUAWEI_DSM_IOMT_UFS_HOST
+#include <linux/iomt_host/dsm_iomt_ufs_host.h>
+#endif
 
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+#include "scsi_unistore.h"
+#endif
 /*
  * Size of integrity metadata is usually small, 1 inline sg should
  * cover normal cases.
@@ -154,6 +160,10 @@ scsi_set_blocked(struct scsi_cmnd *cmd, int reason)
 
 static void scsi_mq_requeue_cmd(struct scsi_cmnd *cmd)
 {
+#ifdef CONFIG_MAS_BLK
+	mas_blk_latency_req_check_ufs(
+		cmd->request, REQ_PROC_STAGE_SCSI_FINISH_REQUEUE);
+#endif
 	if (cmd->request->rq_flags & RQF_DONTPREP) {
 		cmd->request->rq_flags &= ~RQF_DONTPREP;
 		scsi_mq_uninit_cmd(cmd);
@@ -178,7 +188,10 @@ static void scsi_mq_requeue_cmd(struct scsi_cmnd *cmd)
 static void __scsi_queue_insert(struct scsi_cmnd *cmd, int reason, bool unbusy)
 {
 	struct scsi_device *device = cmd->device;
-
+#ifdef CONFIG_MAS_BLK
+	if (cmd->request)
+		mas_blk_latency_req_check_ufs(cmd->request, REQ_PROC_STAGE_SCSI_INSERT);
+#endif
 	SCSI_LOG_MLQUEUE(1, scmd_printk(KERN_INFO, cmd,
 		"Inserting command %p into mlqueue\n", cmd));
 
@@ -272,12 +285,16 @@ int __scsi_execute(struct scsi_device *sdev, const unsigned char *cmd,
 	req->timeout = timeout;
 	req->cmd_flags |= flags;
 	req->rq_flags |= rq_flags | RQF_QUIET;
-
+#ifdef CONFIG_MAS_BLK
+	mas_blk_latency_req_check_ufs(req, REQ_PROC_STAGE_SCSI_RQ_BEFORE);
+#endif
 	/*
 	 * head injection *required* here otherwise quiesce won't work
 	 */
 	blk_execute_rq(req->q, NULL, req, 1);
-
+#ifdef CONFIG_MAS_BLK
+	mas_blk_latency_req_check_ufs(req, REQ_PROC_STAGE_SCSI_RQ_AFTER);
+#endif
 	/*
 	 * Some devices (USB mass-storage in particular) may transfer
 	 * garbage data together with a residue indicating that the data
@@ -353,7 +370,10 @@ void scsi_device_unbusy(struct scsi_device *sdev)
 
 	if (starget->can_queue > 0)
 		atomic_dec(&starget->target_busy);
-
+#ifdef CONFIG_MAS_BLK
+	if (shost->queue_quirk_flag & SHOST_QUIRK(SHOST_QUIRK_MAS_UFS_MQ))
+		mas_blk_queue_put_budget(sdev->request_queue);
+#endif
 	atomic_dec(&sdev->device_busy);
 }
 
@@ -666,6 +686,27 @@ static blk_status_t scsi_result_to_blk_status(struct scsi_cmnd *cmd, int result)
 	}
 }
 
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+static bool scsi_disorder_check_unistore(struct scsi_cmnd *cmd,
+	struct scsi_sense_hdr *sshdr)
+{
+	if (!scsi_unistore(cmd))
+		return false;
+
+	/* disorder when asc = 0x6A, ascq = 0x05 || 0x1x */
+	return ((sshdr->asc == 0x6A) && ((sshdr->ascq == 0x05) ||
+		((sshdr->ascq >= 0x10) && (sshdr->ascq < 0x20))));
+}
+
+static void scsi_io_completion_dump_unistore(struct scsi_cmnd *cmd,
+	struct request_queue *q, struct scsi_sense_hdr *sshdr, bool *sense_valid)
+{
+	if (sense_valid && sshdr->sense_key == 0x09 && q &&
+		scsi_disorder_check_unistore(cmd, sshdr))
+		mas_blk_dump_unistore(q, "100E");
+}
+#endif
+
 /* Helper for scsi_io_completion() when "reprep" action required. */
 static void scsi_io_completion_reprep(struct scsi_cmnd *cmd,
 				      struct request_queue *q)
@@ -683,6 +724,11 @@ static void scsi_io_completion_action(struct scsi_cmnd *cmd, int result)
 	enum {ACTION_FAIL, ACTION_REPREP, ACTION_RETRY,
 	      ACTION_DELAYED_RETRY} action;
 	unsigned long wait_for = (cmd->allowed + 1) * req->timeout;
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	struct scsi_device *sdev = NULL;
+	struct scsi_target *starget = NULL;
+	struct Scsi_Host *shost = NULL;
+#endif
 	struct scsi_sense_hdr sshdr;
 	bool sense_valid;
 	bool sense_current = true;      /* false implies "deferred sense" */
@@ -780,6 +826,16 @@ static void scsi_io_completion_action(struct scsi_cmnd *cmd, int result)
 			/* See SSC3rXX or current. */
 			action = ACTION_FAIL;
 			break;
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+		case VENDOR_SPECIFIC:
+			/* None Connective Order */
+			if ((sshdr.asc == 0x68 && sshdr.ascq == 0x00) ||
+				scsi_disorder_check_unistore(cmd, &sshdr))
+				action = ACTION_REPREP;
+			else
+				action = ACTION_FAIL;
+			break;
+#endif
 		default:
 			action = ACTION_FAIL;
 			break;
@@ -790,6 +846,34 @@ static void scsi_io_completion_action(struct scsi_cmnd *cmd, int result)
 	if (action != ACTION_FAIL &&
 	    time_before(cmd->jiffies_at_alloc + wait_for, jiffies))
 		action = ACTION_FAIL;
+
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	if ((action == ACTION_REPREP || action == ACTION_RETRY ||
+			action == ACTION_DELAYED_RETRY) &&
+			cmd->request && scsi_is_order_cmd(cmd) &&
+			scsi_order_enable(cmd)) {
+
+		scsi_io_completion_dump_unistore(cmd, q, &sshdr, &sense_valid);
+
+		sdev = cmd->device;
+		starget = scsi_target(sdev);
+		shost = sdev->host;
+
+		sdev_printk(KERN_ERR, cmd->device,
+			"%s, error_from_host_byte, "
+			"error=%d, cmd=%u cmd_order=%u\n",
+				__func__, blk_stat, cmd->cmnd[0],
+				cmd->request->mas_req.protocol_nr);
+
+		atomic_inc(&sdev->device_busy);
+		atomic_inc(&shost->host_busy);
+		if (starget->can_queue > 0)
+			atomic_inc(&starget->target_busy);
+
+		scsi_eh_scmd_add(cmd);
+		return;
+	}
+#endif
 
 	switch (action) {
 	case ACTION_FAIL:
@@ -844,6 +928,11 @@ static int scsi_io_completion_nz_result(struct scsi_cmnd *cmd, int result,
 	bool sense_current = true;	/* false implies "deferred sense" */
 	struct request *req = cmd->request;
 	struct scsi_sense_hdr sshdr;
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	struct scsi_device *sdev = NULL;
+	struct scsi_target *starget = NULL;
+	struct Scsi_Host *shost = NULL;
+#endif
 
 	sense_valid = scsi_command_normalize_sense(cmd, &sshdr);
 	if (sense_valid)
@@ -902,6 +991,44 @@ static int scsi_io_completion_nz_result(struct scsi_cmnd *cmd, int result,
 		result = 0;
 		*blk_statp = BLK_STS_OK;
 	}
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	if (sense_valid && (sshdr.sense_key == VENDOR_SPECIFIC))
+		/*lint -save -e644*/
+		sdev_printk(KERN_ERR, cmd->device,
+			"%s, vendor_specific err, asc = %x, ascq = %x\n",
+			__func__, sshdr.asc, sshdr.ascq);
+		/*lint -restore*/
+
+	if ((*blk_statp) && cmd->request && scsi_is_order_cmd(cmd) &&
+			scsi_order_enable(cmd)) {
+		if ((cmd->cmnd[0] == SECURITY_PROTOCOL_OUT) &&
+			!(blk_rq_bytes(req) == 0 && (*blk_statp)) &&
+			(cmd->eh_eflags & SCSI_EH_IN_FLUSH_DONE_Q)) {
+			sdev_printk(KERN_ERR, cmd->device,
+				"%s, during eh flush done q\n", __func__);
+			scsi_end_request(req, *blk_statp, blk_rq_bytes(req));
+			return result;
+		}
+
+		sdev_printk(KERN_ERR, cmd->device,
+			"%s, error_from_host_byte, passthrough or no data cmd, "
+			"error=%d, cmd=%u cmd_order=%u\n",
+				__func__, (*blk_statp), cmd->cmnd[0],
+				cmd->request->mas_req.protocol_nr);
+
+		sdev = cmd->device;
+		starget = scsi_target(sdev);
+		shost = sdev->host;
+
+		atomic_inc(&sdev->device_busy);
+		atomic_inc(&shost->host_busy);
+		if (starget->can_queue > 0)
+			atomic_inc(&starget->target_busy);
+
+		scsi_eh_scmd_add(cmd);
+		return result;
+	}
+#endif
 	return result;
 }
 
@@ -1322,7 +1449,7 @@ out_dec:
  * @sdev: scsi device on starget to check.
  */
 static inline int scsi_target_queue_ready(struct Scsi_Host *shost,
-					   struct scsi_device *sdev)
+					   struct scsi_device *sdev, struct request *req)
 {
 	struct scsi_target *starget = scsi_target(sdev);
 	unsigned int busy;
@@ -1378,17 +1505,27 @@ out_dec:
  */
 static inline int scsi_host_queue_ready(struct request_queue *q,
 				   struct Scsi_Host *shost,
-				   struct scsi_device *sdev)
+				   struct scsi_device *sdev, struct request *req)
 {
 	unsigned int busy;
 
-	if (scsi_host_in_recovery(shost))
+	if (scsi_host_in_recovery(shost)) {
+#ifdef CONFIG_MAS_BLK
+		mas_blk_latency_req_check_ufs(req,
+			REQ_PROC_STAGE_SCSI_QUEUE_RECOVERY);
+#endif
 		return 0;
+	}
 
 	busy = atomic_inc_return(&shost->host_busy) - 1;
 	if (atomic_read(&shost->host_blocked) > 0) {
-		if (busy)
+		if (busy) {
+#ifdef CONFIG_MAS_BLK
+			mas_blk_latency_req_check_ufs(req,
+				REQ_PROC_STAGE_SCSI_QUEUE_HBB);
+#endif
 			goto starved;
+		}
 
 		/*
 		 * unblock after host_blocked iterates to zero
@@ -1401,10 +1538,20 @@ static inline int scsi_host_queue_ready(struct request_queue *q,
 				     "unblocking host at zero depth\n"));
 	}
 
-	if (shost->can_queue > 0 && busy >= shost->can_queue)
+	if (shost->can_queue > 0 && busy >= shost->can_queue) {
+#ifdef CONFIG_MAS_BLK
+		mas_blk_latency_req_check_ufs(req,
+			REQ_PROC_STAGE_SCSI_QUEUE_CAN);
+#endif
 		goto starved;
-	if (shost->host_self_blocked)
+	}
+	if (shost->host_self_blocked) {
+#ifdef CONFIG_MAS_BLK
+		mas_blk_latency_req_check_ufs(req,
+			REQ_PROC_STAGE_SCSI_QUEUE_SELF_BLOCKED);
+#endif
 		goto starved;
+	}
 
 	/* We're OK to process the command, so we can't be starved */
 	if (!list_empty(&sdev->starved_entry)) {
@@ -1465,7 +1612,15 @@ static void scsi_softirq_done(struct request *rq)
 	struct scsi_cmnd *cmd = blk_mq_rq_to_pdu(rq);
 	unsigned long wait_for = (cmd->allowed + 1) * rq->timeout;
 	int disposition;
+#ifdef CONFIG_MAS_BLK
+	struct Scsi_Host *shost = cmd->device->host;
+	struct scatterlist *sgl = scsi_sglist(cmd);
 
+	mas_blk_latency_req_check_ufs(rq, REQ_PROC_STAGE_DONE_SFTIRQ_IN);
+	if ((shost->queue_quirk_flag & SHOST_QUIRK(SHOST_QUIRK_UNMAP_IN_SOFTIRQ))
+			&& sgl && sgl->dma_address)
+		scsi_dma_unmap(cmd);
+#endif
 	INIT_LIST_HEAD(&cmd->eh_entry);
 
 	atomic_inc(&cmd->device->iodone_cnt);
@@ -1473,6 +1628,9 @@ static void scsi_softirq_done(struct request *rq)
 		atomic_inc(&cmd->device->ioerr_cnt);
 
 	disposition = scsi_decide_disposition(cmd);
+#ifdef CONFIG_MAS_BLK
+	mas_blk_latency_req_check_ufs(rq, REQ_PROC_STAGE_DONE_SFTIRQ_DECIDE);
+#endif
 	if (disposition != SUCCESS &&
 	    time_before(cmd->jiffies_at_alloc + wait_for, jiffies)) {
 		scmd_printk(KERN_ERR, cmd,
@@ -1482,7 +1640,15 @@ static void scsi_softirq_done(struct request *rq)
 	}
 
 	scsi_log_completion(cmd, disposition);
-
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	if ((disposition != SUCCESS) && scsi_is_order_cmd(cmd) &&
+			scsi_order_enable(cmd)) {
+			mas_blk_latency_req_check_ufs(rq, REQ_PROC_STAGE_DONE_SFTIRQ_UNISTORE);
+			blk_power_off_flush(0);
+			scsi_eh_scmd_add(cmd);
+			return;
+	}
+#endif
 	switch (disposition) {
 		case SUCCESS:
 			scsi_finish_command(cmd);
@@ -1583,8 +1749,13 @@ static int scsi_dispatch_cmd(struct scsi_cmnd *cmd)
 /* Size in bytes of the sg-list stored in the scsi-mq command-private data. */
 static unsigned int scsi_mq_inline_sgl_size(struct Scsi_Host *shost)
 {
-	return min_t(unsigned int, shost->sg_tablesize, SCSI_INLINE_SG_CNT) *
-		sizeof(struct scatterlist);
+#ifdef CONFIG_SCSI_UFS_CUST_MAX_SECTORS
+	if (shost->queue_quirk_flag & SHOST_QUIRK(SHOST_QUIRK_MAS_UFS_MQ))
+		return shost->sg_tablesize * sizeof(struct scatterlist);
+	else
+#endif
+		return min_t(unsigned int, shost->sg_tablesize, SCSI_INLINE_SG_CNT) *
+			sizeof(struct scatterlist);
 }
 
 static blk_status_t scsi_mq_prep_fn(struct request *req)
@@ -1635,7 +1806,10 @@ static void scsi_mq_put_budget(struct blk_mq_hw_ctx *hctx)
 {
 	struct request_queue *q = hctx->queue;
 	struct scsi_device *sdev = q->queuedata;
-
+#ifdef CONFIG_MAS_BLK
+	if (sdev->host->queue_quirk_flag & SHOST_QUIRK(SHOST_QUIRK_MAS_UFS_MQ))
+		mas_blk_queue_put_budget(q);
+#endif
 	atomic_dec(&sdev->device_busy);
 }
 
@@ -1643,7 +1817,10 @@ static bool scsi_mq_get_budget(struct blk_mq_hw_ctx *hctx)
 {
 	struct request_queue *q = hctx->queue;
 	struct scsi_device *sdev = q->queuedata;
-
+#ifdef CONFIG_MAS_BLK
+	if (sdev->host->queue_quirk_flag & SHOST_QUIRK(SHOST_QUIRK_MAS_UFS_MQ))
+		mas_blk_queue_get_budget(q);
+#endif
 	if (scsi_dev_queue_ready(q, sdev))
 		return true;
 
@@ -1669,15 +1846,30 @@ static blk_status_t scsi_queue_rq(struct blk_mq_hw_ctx *hctx,
 	 */
 	if (unlikely(sdev->sdev_state != SDEV_RUNNING)) {
 		ret = scsi_prep_state_check(sdev, req);
-		if (ret != BLK_STS_OK)
+		if (ret != BLK_STS_OK) {
+#ifdef CONFIG_MAS_BLK
+			mas_blk_latency_req_check_ufs(req,
+				REQ_PROC_STAGE_SCSI_QUEUE_PREP);
+#endif
 			goto out_put_budget;
+		}
 	}
 
 	ret = BLK_STS_RESOURCE;
-	if (!scsi_target_queue_ready(shost, sdev))
+	if (!scsi_target_queue_ready(shost, sdev, req)) {
+#ifdef CONFIG_MAS_BLK
+		mas_blk_latency_req_check_ufs(req,
+			REQ_PROC_STAGE_SCSI_QUEUE_TARGET);
+#endif
 		goto out_put_budget;
-	if (!scsi_host_queue_ready(q, shost, sdev))
+	}
+	if (!scsi_host_queue_ready(q, shost, sdev, req)) {
+#ifdef CONFIG_MAS_BLK
+		mas_blk_latency_req_check_ufs(req,
+			REQ_PROC_STAGE_SCSI_QUEUE_HOST);
+#endif
 		goto out_dec_target_busy;
+	}
 
 	if (!(req->rq_flags & RQF_DONTPREP)) {
 		ret = scsi_mq_prep_fn(req);
@@ -1689,6 +1881,13 @@ static blk_status_t scsi_queue_rq(struct blk_mq_hw_ctx *hctx,
 		blk_mq_start_request(req);
 	}
 
+#ifdef CONFIG_HUAWEI_DSM_IOMT_UFS_HOST
+	if(shost->iomt_host_info)
+		iomt_host_stat_rw_size(
+			(struct iomt_host_info *)shost->iomt_host_info,
+			(unsigned long)blk_rq_sectors(req),
+			rq_data_dir(req)==READ ? IOMT_DIR_READ : IOMT_DIR_WRITE);
+#endif
 	cmd->flags &= SCMD_PRESERVED_FLAGS;
 	if (sdev->simple_tags)
 		cmd->flags |= SCMD_TAGGED;
@@ -1718,8 +1917,12 @@ out_put_budget:
 	case BLK_STS_OK:
 		break;
 	case BLK_STS_RESOURCE:
+#ifdef CONFIG_MAS_BLK
+		if (shost->queue_quirk_flag | SHOST_QUIRK(SHOST_QUIRK_MAS_UFS_MQ))
+			break;
+#endif
 		if (atomic_read(&sdev->device_busy) ||
-		    scsi_device_blocked(sdev))
+			scsi_device_blocked(sdev))
 			ret = BLK_STS_DEV_RESOURCE;
 		break;
 	default:
@@ -1831,6 +2034,27 @@ void __scsi_init_queue(struct Scsi_Host *shost, struct request_queue *q)
 	 * Devices that require a bigger alignment can increase it later.
 	 */
 	blk_queue_dma_alignment(q, max(4, dma_get_cache_alignment()) - 1);
+#ifdef CONFIG_MAS_BLK
+#ifdef CONFIG_MAS_BUFFERED_READAHEAD
+	if (shost->queue_quirk_flag & SHOST_QUIRK(SHOST_QUIRK_MAS_UFS_MQ))
+		q->backing_dev_info->ra_pages_cr =
+			(VM_MAX_READAHEAD_CR * 1024) / PAGE_SIZE;
+#endif
+#ifdef CONFIG_SCSI_UFS_INLINE_CRYPTO
+	/*
+	* We set the inline crypto flag here because ufs driver update the host
+	* flag until the ufs probe complete.
+	*/
+	blk_queue_set_inline_crypto_flag(q, shost->crypto_enabled);
+#endif
+#ifdef CONFIG_MAS_ORDER_PRESERVE
+	blk_queue_order_enable(q, shost->order_enabled);
+#endif
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	mas_blk_set_up_unistore_env(q, shost->mas_sec_size, shost->mas_pu_size,
+		shost->unistore_enable);
+#endif
+#endif /* CONFIG_MAS_BLK */
 }
 EXPORT_SYMBOL_GPL(__scsi_init_queue);
 
@@ -1891,6 +2115,46 @@ struct request_queue *scsi_mq_alloc_queue(struct scsi_device *sdev)
 	return sdev->request_queue;
 }
 
+#ifdef CONFIG_MAS_BLK
+static void scsi_dump_status(
+	struct request_queue *q, enum blk_dump_scene dump_type)
+{
+	struct scsi_device *sdev = q->queuedata;
+	struct Scsi_Host *shost = sdev->host;
+	if (sdev->host->hostt->dump_status)
+		sdev->host->hostt->dump_status(shost, dump_type);
+}
+
+static int scsi_direct_flush(struct request_queue *q)
+{
+	struct scsi_device *sdev = q->queuedata;
+	if (sdev->type != TYPE_DISK || sdev->host->hostt->direct_flush == NULL)
+		return -1;
+	if (sdev->host->host_self_blocked || sdev->sdev_state != SDEV_RUNNING)
+		return -1;
+	return sdev->host->hostt->direct_flush(sdev);
+}
+#endif /* CONFIG_MAS_BLK */
+
+#ifdef CONFIG_MAS_BLK
+#ifdef CONFIG_HYPERHOLD_CORE
+static int scsi_health_query(struct request_queue *q, u8 *pre_eol_info,
+	u8 *life_time_est_a, u8 *life_time_est_b)
+{
+	struct scsi_device *sdev = q->queuedata;
+
+	if (sdev->type != TYPE_DISK || !sdev->host->hostt->get_health_info)
+		return -EINVAL;
+
+	if (sdev->host->host_self_blocked || sdev->sdev_state != SDEV_RUNNING)
+		return -EINVAL;
+
+	return sdev->host->hostt->get_health_info(sdev, pre_eol_info,
+		life_time_est_a, life_time_est_b);
+}
+#endif
+#endif
+
 int scsi_mq_setup_tags(struct Scsi_Host *shost)
 {
 	unsigned int cmd_size, sgl_size;
@@ -1915,6 +2179,46 @@ int scsi_mq_setup_tags(struct Scsi_Host *shost)
 	shost->tag_set.flags |=
 		BLK_ALLOC_POLICY_TO_MQ_FLAG(shost->hostt->tag_alloc_policy);
 	shost->tag_set.driver_data = shost;
+#ifdef CONFIG_MAS_BLK
+	if (shost->queue_quirk_flag & SHOST_QUIRK_MAS_UFS_MQ) {
+		shost->tag_set.flags |= BLK_MQ_F_NO_SCHED;
+		shost->tag_set.queue_depth = shost->mq_queue_depth ?
+						     shost->mq_queue_depth :
+						     shost->can_queue;
+		shost->tag_set.reserved_tags = shost->mq_reserved_queue_depth;
+		shost->tag_set.high_prio_tags = shost->mq_high_prio_queue_depth;
+	}
+
+	blk_mq_tagset_dump_register(&shost->tag_set,
+		shost->hostt->dump_status ? scsi_dump_status
+					  : (lld_dump_status_fn)NULL);
+	if (shost->queue_quirk_flag &
+		SHOST_QUIRK(SHOST_QUIRK_IO_LATENCY_WARNING))
+		blk_mq_tagset_latency_warning_set(&shost->tag_set, 1000);
+	blk_mq_tagset_busyidle_enable(&shost->tag_set,
+		(shost->queue_quirk_flag &
+			SHOST_QUIRK(SHOST_QUIRK_BUSY_IDLE_ENABLE)));
+	blk_mq_tagset_hw_idle_notify_enable(&shost->tag_set,
+		(shost->queue_quirk_flag &
+			SHOST_QUIRK(SHOST_QUIRK_BUSY_IDLE_INTR_ENABLE)));
+	blk_mq_tagset_direct_flush_register(&shost->tag_set,
+		shost->hostt->direct_flush ? scsi_direct_flush
+					   : (blk_direct_flush_fn)NULL);
+#ifdef CONFIG_HYPERHOLD_CORE
+	blk_mq_tagset_health_query_register(&shost->tag_set,
+		shost->hostt->get_health_info ? scsi_health_query : NULL);
+#endif
+
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	scsi_dev_unistore_register(shost);
+#endif
+
+	blk_mq_tagset_flush_reduce_config(&shost->tag_set,
+		!!(shost->queue_quirk_flag &
+			SHOST_QUIRK(SHOST_QUIRK_FLUSH_REDUCING)));
+	blk_mq_tagset_ufs_mq_iosched_enable(&shost->tag_set,
+		shost->queue_quirk_flag & SHOST_QUIRK(SHOST_QUIRK_MAS_UFS_MQ));
+#endif /* CONFIG_MAS_BLK */
 
 	return blk_mq_alloc_tag_set(&shost->tag_set);
 }
@@ -2158,13 +2462,12 @@ scsi_mode_sense(struct scsi_device *sdev, int dbd, int modepage,
 	 * ILLEGAL REQUEST sense return identifies the actual command
 	 * byte as the problem.  MODE_SENSE commands can return
 	 * ILLEGAL REQUEST if the code page isn't supported */
-
 	if (use_10_for_ms && !scsi_status_is_good(result) &&
 	    driver_byte(result) == DRIVER_SENSE) {
 		if (scsi_sense_valid(sshdr)) {
 			if ((sshdr->sense_key == ILLEGAL_REQUEST) &&
 			    (sshdr->asc == 0x20) && (sshdr->ascq == 0)) {
-				/* 
+				/*
 				 * Invalid command operation code
 				 */
 				sdev->use_10_for_ms = 0;
@@ -3113,7 +3416,7 @@ int scsi_vpd_lun_id(struct scsi_device *sdev, char *id, size_t id_len)
 			if (d[3] > id_len) {
 				prio = 2;
 				if (cur_id_prio > prio)
-					break;
+				break;
 			}
 			cur_id_prio = prio;
 			cur_id_size = id_size = d[3];

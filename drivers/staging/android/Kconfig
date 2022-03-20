@@ -22,7 +22,41 @@ config ANDROID_VSOC
 	  a 'cuttlefish' Android image inside QEmu. The driver interacts with
 	  a QEmu ivshmem device. If built as a module, it will be called vsoc.
 
+config ANDROID_LOW_MEMORY_KILLER
+	bool "Android Low Memory Killer"
+	---help---
+	  Registers processes to be killed when low memory conditions, this is useful
+	  as there is no particular swap space on android.
+
+	  The registered process will kill according to the priorities in android init
+	  scripts (/init.rc), and it defines priority values with minimum free memory size
+	  for each priority.
+
+config HUAWEI_LMK_DBG
+        bool "HUAWEI Low Memory Killer debug"
+        default n
+        depends on ANDROID_LOW_MEMORY_KILLER
+        ---help---
+          print processes info when lmk happen per several seconds
+config HUAWEI_RCC
+	tristate "RAM Compress and Clean"
+	depends on SYSFS && SWAP
+	default n
+	help
+	  Creates background thread for compress and clean used RAM
+	  dynamiclly,enabled by write 1 to /sys/kernel/rcc/enable.
+
+config HUAWEI_RCC_DEBUG
+	bool "RAM Compress and Clean debug support"
+	depends on HUAWEI_RCC
+	default n
+	help
+	  This option adds additional debugging code to the
+	  RAM Compress and Clean module.
+
 source "drivers/staging/android/ion/Kconfig"
+
+source "drivers/staging/android/hwlogger/Kconfig"
 
 endif # if ANDROID
 

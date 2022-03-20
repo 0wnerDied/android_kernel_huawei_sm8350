@@ -62,7 +62,7 @@ struct pmic_glink_dev {
 	struct idr		client_idr;
 	struct mutex		client_lock;
 	spinlock_t		rx_lock;
-	struct work_struct	rx_work;
+	struct delayed_work     rx_work;
 	struct work_struct	init_work;
 	struct workqueue_struct	*rx_wq;
 	struct list_head	rx_list;
@@ -439,7 +439,7 @@ int pmic_glink_unregister_client(struct pmic_glink_client *client)
 }
 EXPORT_SYMBOL(pmic_glink_unregister_client);
 
-static void pmic_glink_rx_callback(struct pmic_glink_dev *pgdev,
+static int pmic_glink_rx_callback(struct pmic_glink_dev *pgdev,
 					struct pmic_glink_buf *pbuf)
 {
 	struct pmic_glink_client *client;
@@ -453,7 +453,7 @@ static void pmic_glink_rx_callback(struct pmic_glink_dev *pgdev,
 
 	if (!client || !client->msg_cb) {
 		pr_err("No client present for %u\n", hdr->owner);
-		return;
+		return -EINVAL;
 	}
 
 	if (pgdev->log_enable) {
@@ -465,21 +465,31 @@ static void pmic_glink_rx_callback(struct pmic_glink_dev *pgdev,
 	}
 
 	client->msg_cb(client->priv, pbuf->buf, pbuf->len);
+
+	return 0;
 }
 
 static void pmic_glink_rx_work(struct work_struct *work)
 {
 	struct pmic_glink_dev *pdev = container_of(work, struct pmic_glink_dev,
-						rx_work);
+						rx_work.work);
 	struct pmic_glink_buf *pbuf, *tmp;
 	unsigned long flags;
+	int ret;
+	static int retry_counter = 0;
 
 	spin_lock_irqsave(&pdev->rx_lock, flags);
 	if (!list_empty(&pdev->rx_list)) {
 		list_for_each_entry_safe(pbuf, tmp, &pdev->rx_list, node) {
 			spin_unlock_irqrestore(&pdev->rx_lock, flags);
-			pmic_glink_rx_callback(pdev, pbuf);
+			ret = pmic_glink_rx_callback(pdev, pbuf);
 			spin_lock_irqsave(&pdev->rx_lock, flags);
+			/* try 10 times */
+			if (ret && retry_counter++ < 10) {
+				pr_err("pmic_glink_rx_callback failed, need retry");
+				queue_delayed_work(pdev->rx_wq, &pdev->rx_work, msecs_to_jiffies(50)); /* delay 50ms */
+				break;
+			}
 			list_del(&pbuf->node);
 			kfree(pbuf);
 		}
@@ -511,7 +521,7 @@ static int pmic_glink_rpmsg_callback(struct rpmsg_device *rpdev, void *data,
 	list_add_tail(&pbuf->node, &pdev->rx_list);
 	spin_unlock_irqrestore(&pdev->rx_lock, flags);
 
-	queue_work(pdev->rx_wq, &pdev->rx_work);
+	queue_delayed_work(pdev->rx_wq, &pdev->rx_work, 0);
 	return 0;
 }
 
@@ -705,7 +715,7 @@ static int pmic_glink_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	}
 
-	INIT_WORK(&pgdev->rx_work, pmic_glink_rx_work);
+	INIT_DELAYED_WORK(&pgdev->rx_work, pmic_glink_rx_work);
 	INIT_WORK(&pgdev->init_work, pmic_glink_init_work);
 	INIT_LIST_HEAD(&pgdev->client_dev_list);
 	INIT_LIST_HEAD(&pgdev->rx_list);

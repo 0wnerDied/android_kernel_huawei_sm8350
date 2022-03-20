@@ -15,6 +15,10 @@
 #include <linux/slab.h>
 #include <linux/err.h>
 #include "thermal_hwmon.h"
+#ifdef CONFIG_HW_IPA_THERMAL
+#include <asm/page.h>
+#include <securec.h>
+#endif
 
 /* hwmon sys I/F */
 /* thermal zone devices with the same type share one hwmon device */
@@ -79,7 +83,11 @@ temp_crit_show(struct device *dev, struct device_attribute *attr, char *buf)
 	if (ret)
 		return ret;
 
+#ifdef CONFIG_HW_IPA_THERMAL
+	return snprintf_s(buf, PAGE_SIZE, PAGE_SIZE - 1, "%d\n", temperature); /* unsafe_function_ignore: snprintf */
+#else
 	return sprintf(buf, "%d\n", temperature);
+#endif
 }
 
 

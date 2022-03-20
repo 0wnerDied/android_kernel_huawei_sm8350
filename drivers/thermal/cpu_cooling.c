@@ -22,6 +22,7 @@
 #include <linux/cpu_cooling.h>
 
 #include <trace/events/thermal.h>
+#include <linux/hw/hw_thermal.h>
 
 /*
  * Cooling state <-> CPUFreq frequency
@@ -89,11 +90,20 @@ struct cpufreq_cooling_device {
 	struct list_head node;
 	struct time_in_idle *idle_time;
 	struct freq_qos_request qos_req;
+#ifdef CONFIG_HW_THERMAL_SPM
+	struct freq_qos_request qos_req_min;
+#endif
+#ifdef CONFIG_HW_IPA_THERMAL
+	get_static_t plat_get_static_power;
+#endif
 };
 
 static DEFINE_IDA(cpufreq_ida);
+static DEFINE_MUTEX(cooling_cpufreq_lock);
 static DEFINE_MUTEX(cooling_list_lock);
 static LIST_HEAD(cpufreq_cdev_list);
+
+#include "cpu_cooling_hw.c"
 
 /* Below code defines functions to be used for cpufreq as cooling device */
 
@@ -184,8 +194,14 @@ static int update_freq_table(struct cpufreq_cooling_device *cpufreq_cdev,
 		power = (u64)capacitance * freq_mhz * voltage_mv * voltage_mv;
 		do_div(power, 1000000000);
 
+		pr_err("%s, freq=%lu, voltage=%lu, power=%lu, capacitance=%lu\n", __func__, freq, voltage_mv, power, capacitance);
+
 		/* power is stored in mW */
 		freq_table[i].power = power;
+
+#ifdef CONFIG_HW_IPA_THERMAL
+		ipa_calc_static_power(cpufreq_cdev, voltage_mv, freq_mhz, freq_table[i].power);
+#endif
 	}
 
 	return 0;
@@ -320,19 +336,49 @@ static int cpufreq_set_cur_state(struct thermal_cooling_device *cdev,
 				 unsigned long state)
 {
 	struct cpufreq_cooling_device *cpufreq_cdev = cdev->devdata;
+#ifdef CONFIG_HW_THERMAL_SPM
+	int actor;
+	unsigned int freq, min_freq;
+	int clustermask[MAX_THERMAL_CLUSTER_NUM] = {0};
+#endif
 
 	/* Request state should be less than max_level */
 	if (WARN_ON(state > cpufreq_cdev->max_level))
 		return -EINVAL;
+
+#ifdef CONFIG_HW_IPA_THERMAL
+	if (nametoactor(cdev->type) != -1)
+		state = ipa_cpufreq_set_cur_state(cpufreq_cdev, state);
+#endif
 
 	/* Check if the old cooling action is same as new cooling action */
 	if (cpufreq_cdev->cpufreq_state == state)
 		return 0;
 
 	cpufreq_cdev->cpufreq_state = state;
+#ifdef CONFIG_HW_IPA_THERMAL
+	if (nametoactor(cdev->type) != -1)
+		ipa_set_freq_limit(cpufreq_cdev, cpufreq_cdev->freq_table[state].frequency);
+	trace_cpu_update_policy(cpufreq_cdev->policy->cpu, cpufreq_cdev->freq_table[state].frequency);
+#endif
 
+#ifndef CONFIG_HW_THERMAL_SPM
 	return freq_qos_update_request(&cpufreq_cdev->qos_req,
 				cpufreq_cdev->freq_table[state].frequency);
+#else
+	ipa_get_clustermask(clustermask, MAX_THERMAL_CLUSTER_NUM);
+	if (is_spm_mode_enabled()) {
+		actor = topology_physical_package_id(cpufreq_cdev->policy->cpu);
+		freq = get_powerhal_profile(clustermask[actor]);
+		min_freq = get_minfreq_profile(clustermask[actor]);
+
+		return freq_qos_update_request(&cpufreq_cdev->qos_req, freq) &&
+		       freq_qos_update_request(&cpufreq_cdev->qos_req_min, min_freq);
+	} else {
+		return freq_qos_update_request(&cpufreq_cdev->qos_req,
+					cpufreq_cdev->freq_table[state].frequency);
+	}
+#endif
 }
 
 /**
@@ -368,10 +414,27 @@ static int cpufreq_get_requested_power(struct thermal_cooling_device *cdev,
 	struct cpufreq_cooling_device *cpufreq_cdev = cdev->devdata;
 	struct cpufreq_policy *policy = cpufreq_cdev->policy;
 	u32 *load_cpu = NULL;
+#ifdef CONFIG_HW_IPA_THERMAL
+	u32 dynamic_power;
+	u32 static_power = 0;
+	u32 max_load = 0;
+	int ret;
+#endif
 
 	freq = cpufreq_quick_get(policy->cpu);
+#ifdef CONFIG_HW_IPA_THERMAL
+	/* policy->cur equals 0, means the policy data of this cpu was NULL,
+	*  return early to avoid find voltage of freq(0) in the opp
+	*/
+	if (!freq) {
+		*power = 0;
+		return 0;
+	}
 
+	if (1) {
+#else
 	if (trace_thermal_power_cpu_get_power_enabled()) {
+#endif
 		u32 ncpus = cpumask_weight(policy->related_cpus);
 
 		load_cpu = kcalloc(ncpus, sizeof(*load_cpu), GFP_KERNEL);
@@ -386,6 +449,10 @@ static int cpufreq_get_requested_power(struct thermal_cooling_device *cdev,
 			load = 0;
 
 		total_load += load;
+#ifdef CONFIG_HW_IPA_THERMAL
+		if (load > max_load)
+			max_load = load;
+#endif
 		if (load_cpu)
 			load_cpu[i] = load;
 
@@ -394,14 +461,40 @@ static int cpufreq_get_requested_power(struct thermal_cooling_device *cdev,
 
 	cpufreq_cdev->last_load = total_load;
 
+#ifdef CONFIG_HW_IPA_THERMAL
+	dynamic_power = get_dynamic_power(cpufreq_cdev, freq);
+	ret = get_static_power(cpufreq_cdev, tz, freq, &static_power);
+	if (ret) {
+		kfree(load_cpu);
+		return ret;
+	}
+	*power = static_power + dynamic_power;
+	cdev->current_freq = freq;
+	if (load_cpu != NULL)
+		cdev->current_load = max_load;
+#else
 	*power = get_dynamic_power(cpufreq_cdev, freq);
+#endif
 
 	if (load_cpu) {
+#ifdef CONFIG_HW_IPA_THERMAL
+		trace_thermal_power_cpu_get_power(policy->related_cpus, freq,
+						load_cpu, i, dynamic_power, static_power);
+		if (tz->is_soc_thermal)
+			trace_IPA_actor_cpu_get_power(policy->related_cpus, freq,
+							load_cpu, (unsigned long)((long)i), dynamic_power,
+							static_power, (static_power + dynamic_power));
+#else
 		trace_thermal_power_cpu_get_power(policy->related_cpus, freq,
 						  load_cpu, i, *power);
+#endif
 
 		kfree(load_cpu);
 	}
+
+#ifdef CONFIG_HW_IPA_THERMAL_DEBUG
+	print_cpu_freq_table(cpufreq_cdev);
+#endif
 
 	return 0;
 }
@@ -427,6 +520,11 @@ static int cpufreq_state2power(struct thermal_cooling_device *cdev,
 {
 	unsigned int freq, num_cpus;
 	struct cpufreq_cooling_device *cpufreq_cdev = cdev->devdata;
+#ifdef CONFIG_HW_IPA_THERMAL
+	u32 dynamic_power;
+	u32 static_power = 0;
+	int ret;
+#endif
 
 	/* Request state should be less than max_level */
 	if (WARN_ON(state > cpufreq_cdev->max_level))
@@ -435,7 +533,15 @@ static int cpufreq_state2power(struct thermal_cooling_device *cdev,
 	num_cpus = cpumask_weight(cpufreq_cdev->policy->cpus);
 
 	freq = cpufreq_cdev->freq_table[state].frequency;
+#ifdef CONFIG_HW_IPA_THERMAL
+	dynamic_power = cpu_freq_to_power(cpufreq_cdev, freq) * num_cpus;
+	ret = get_static_power(cpufreq_cdev, tz, freq, &static_power);
+	if (ret)
+		return ret;
+	*power = static_power + dynamic_power;
+#else
 	*power = cpu_freq_to_power(cpufreq_cdev, freq) * num_cpus;
+#endif
 
 	return 0;
 }
@@ -468,14 +574,43 @@ static int cpufreq_power2state(struct thermal_cooling_device *cdev,
 	u32 last_load, normalised_power;
 	struct cpufreq_cooling_device *cpufreq_cdev = cdev->devdata;
 	struct cpufreq_policy *policy = cpufreq_cdev->policy;
+#ifdef CONFIG_HW_IPA_THERMAL
+	unsigned int cur_freq;
+	u32 static_power = 0;
+	s32 dyn_power;
+	int ret;
+#endif
+
+#ifdef CONFIG_HW_IPA_THERMAL
+	cur_freq = cpufreq_quick_get(policy->cpu);
+	if (!cur_freq)
+		return -EINVAL;
+
+	ret = get_static_power(cpufreq_cdev, tz, cur_freq, &static_power);
+	if (ret)
+		return ret;
+
+	dyn_power = power - static_power;
+	dyn_power = (dyn_power > 0) ? dyn_power : 0;
+#else
+	power = (power > 0) ? power : 0;
+#endif
 
 	last_load = cpufreq_cdev->last_load ?: 1;
+#ifdef CONFIG_HW_IPA_THERMAL
+	normalised_power = (dyn_power * 100) / last_load;
+#else
 	normalised_power = (power * 100) / last_load;
+#endif
 	target_freq = cpu_power_to_freq(cpufreq_cdev, normalised_power);
 
 	*state = get_level(cpufreq_cdev, target_freq);
 	trace_thermal_power_cpu_limit(policy->related_cpus, target_freq, *state,
 				      power);
+#ifdef CONFIG_HW_IPA_THERMAL
+	trace_IPA_actor_cpu_limit(policy->related_cpus, target_freq,
+					*state, power);
+#endif
 	return 0;
 }
 
@@ -527,7 +662,12 @@ static unsigned int find_next_max(struct cpufreq_frequency_table *table,
  */
 static struct thermal_cooling_device *
 __cpufreq_cooling_register(struct device_node *np,
+#ifdef CONFIG_HW_IPA_THERMAL
+			struct cpufreq_policy *policy, u32 capacitance,
+			get_static_t plat_static_func, bool is_ipa)
+#else
 			struct cpufreq_policy *policy, u32 capacitance)
+#endif
 {
 	struct thermal_cooling_device *cdev;
 	struct cpufreq_cooling_device *cpufreq_cdev;
@@ -542,7 +682,6 @@ __cpufreq_cooling_register(struct device_node *np,
 		pr_warn("No cpu device for cpu %d\n", policy->cpu);
 		return ERR_PTR(-ENODEV);
 	}
-
 
 	if (IS_ERR_OR_NULL(policy)) {
 		pr_err("%s: cpufreq policy isn't valid: %p\n", __func__, policy);
@@ -586,7 +725,14 @@ __cpufreq_cooling_register(struct device_node *np,
 		cdev = ERR_PTR(ret);
 		goto free_table;
 	}
+#ifdef CONFIG_HW_IPA_THERMAL
+	if (is_ipa)
+		cpufreq_cdev->id = policy->cpu + 1;
+	else
+		cpufreq_cdev->id = policy->cpu;
+#else
 	cpufreq_cdev->id = policy->cpu;
+#endif
 
 	snprintf(dev_name, sizeof(dev_name), "thermal-cpufreq-%d",
 		 cpufreq_cdev->id);
@@ -604,6 +750,9 @@ __cpufreq_cooling_register(struct device_node *np,
 	}
 
 	if (capacitance) {
+#ifdef CONFIG_HW_IPA_THERMAL
+		cpufreq_cdev->plat_get_static_power = plat_static_func;
+#endif
 		ret = update_freq_table(cpufreq_cdev, capacitance);
 		if (ret) {
 			cdev = ERR_PTR(ret);
@@ -625,10 +774,26 @@ __cpufreq_cooling_register(struct device_node *np,
 		goto remove_ida;
 	}
 
+#ifdef CONFIG_HW_THERMAL_SPM
+	ret = freq_qos_add_request(&policy->constraints,
+				   &cpufreq_cdev->qos_req_min, FREQ_QOS_MIN,
+				   cpufreq_cdev->freq_table[cpufreq_cdev->max_level].frequency);
+	if (ret < 0) {
+		pr_err("%s: Failed to add freq_min constraint (%d)\n", __func__,
+		       ret);
+		cdev = ERR_PTR(ret);
+		goto remove_qos_req;
+	}
+#endif
+
 	cdev = thermal_of_cooling_device_register(np, dev_name, cpufreq_cdev,
 						  cooling_ops);
 	if (IS_ERR(cdev))
+#ifdef CONFIG_HW_THERMAL_SPM
+		goto remove_qos_req_min;
+#else
 		goto remove_qos_req;
+#endif
 
 	mutex_lock(&cooling_list_lock);
 	list_add(&cpufreq_cdev->node, &cpufreq_cdev_list);
@@ -636,6 +801,10 @@ __cpufreq_cooling_register(struct device_node *np,
 
 	return cdev;
 
+#ifdef CONFIG_HW_THERMAL_SPM
+remove_qos_req_min:
+	freq_qos_remove_request(&cpufreq_cdev->qos_req_min);
+#endif
 remove_qos_req:
 	freq_qos_remove_request(&cpufreq_cdev->qos_req);
 remove_ida:
@@ -663,7 +832,11 @@ free_cdev:
 struct thermal_cooling_device *
 cpufreq_cooling_register(struct cpufreq_policy *policy)
 {
+#ifdef CONFIG_HW_IPA_THERMAL
+	return __cpufreq_cooling_register(NULL, policy, 0, NULL, false);
+#else
 	return __cpufreq_cooling_register(NULL, policy, 0);
+#endif
 }
 EXPORT_SYMBOL_GPL(cpufreq_cooling_register);
 
@@ -703,7 +876,11 @@ of_cpufreq_cooling_register(struct cpufreq_policy *policy)
 		of_property_read_u32(np, "dynamic-power-coefficient",
 				     &capacitance);
 
+#ifdef CONFIG_HW_IPA_THERMAL
+		cdev = __cpufreq_cooling_register(np, policy, capacitance, NULL, false);
+#else
 		cdev = __cpufreq_cooling_register(np, policy, capacitance);
+#endif
 		if (IS_ERR(cdev)) {
 			pr_err("cpu_cooling: cpu%d failed to register as cooling device: %ld\n",
 			       policy->cpu, PTR_ERR(cdev));
@@ -737,6 +914,9 @@ void cpufreq_cooling_unregister(struct thermal_cooling_device *cdev)
 
 	thermal_cooling_device_unregister(cdev);
 	freq_qos_remove_request(&cpufreq_cdev->qos_req);
+#ifdef CONFIG_HW_THERMAL_SPM
+	freq_qos_remove_request(&cpufreq_cdev->qos_req_min);
+#endif
 	ida_simple_remove(&cpufreq_ida, cpufreq_cdev->id);
 	kfree(cpufreq_cdev->idle_time);
 	kfree(cpufreq_cdev->freq_table);

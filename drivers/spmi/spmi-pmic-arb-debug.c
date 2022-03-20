@@ -328,6 +328,7 @@ static int spmi_pmic_arb_debug_probe(struct platform_device *pdev)
 
 err_put_ctrl:
 	spmi_controller_put(ctrl);
+
 	return rc;
 }
 

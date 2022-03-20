@@ -235,6 +235,11 @@ static void scsi_eh_inc_host_failed(struct rcu_head *head)
 	struct Scsi_Host *shost = scmd->device->host;
 	unsigned long flags;
 
+#ifdef CONFIG_MAS_BLK
+	if (scmd->request)
+		mas_blk_latency_req_check_ufs(scmd->request,
+			REQ_PROC_STAGE_SCSI_EH_INC);
+#endif
 	spin_lock_irqsave(shost->host_lock, flags);
 	shost->host_failed++;
 	scsi_eh_wakeup(shost);
@@ -252,7 +257,12 @@ void scsi_eh_scmd_add(struct scsi_cmnd *scmd)
 	int ret;
 
 	WARN_ON_ONCE(!shost->ehandler);
-
+#ifdef CONFIG_MAS_BLK
+	if (scmd->request)
+		mas_blk_latency_req_check_ufs(scmd->request, REQ_PROC_STAGE_SCSI_EH_ADD);
+	shost->last_scsi_eh_time[shost->last_scsi_eh_cnt % 10] = ktime_get();
+	shost->last_scsi_eh_cnt++;
+#endif
 	spin_lock_irqsave(shost->host_lock, flags);
 	if (scsi_host_set_state(shost, SHOST_RECOVERY)) {
 		ret = scsi_host_set_state(shost, SHOST_CANCEL_RECOVERY);
@@ -311,7 +321,8 @@ enum blk_eh_timer_return scsi_times_out(struct request *req)
 		 */
 		if (test_and_set_bit(SCMD_STATE_COMPLETE, &scmd->state))
 			return BLK_EH_RESET_TIMER;
-		if (scsi_abort_command(scmd) != SUCCESS) {
+		if (blk_queue_query_unistore_enable(req->q) ||
+			(scsi_abort_command(scmd) != SUCCESS)) {
 			set_host_byte(scmd, DID_TIME_OUT);
 			scsi_eh_scmd_add(scmd);
 		}
@@ -1226,7 +1237,12 @@ int scsi_eh_get_sense(struct list_head *work_q,
 	 */
 	list_for_each_entry_safe(scmd, next, work_q, eh_entry) {
 		if ((scmd->eh_eflags & SCSI_EH_ABORT_SCHEDULED) ||
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+		    SCSI_SENSE_VALID(scmd) || (scsi_is_order_cmd(scmd) &&
+		    		scsi_order_enable(scmd)))
+#else
 		    SCSI_SENSE_VALID(scmd))
+#endif
 			continue;
 
 		shost = scmd->device->host;
@@ -1415,12 +1431,22 @@ static int scsi_eh_stu(struct Scsi_Host *shost,
 			break;
 		}
 		stu_scmd = NULL;
-		list_for_each_entry(scmd, work_q, eh_entry)
+		list_for_each_entry(scmd, work_q, eh_entry) {
+#ifdef CONFIG_MAS_BLK
+			if (scmd && scmd->request)
+				mas_blk_latency_req_check_ufs(
+					scmd->request, REQ_PROC_STAGE_SCSI_EH_STU);
+#endif
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+			if (scsi_is_order_cmd(scmd) && scsi_order_enable(scmd))
+				continue;
+#endif
 			if (scmd->device == sdev && SCSI_SENSE_VALID(scmd) &&
 			    scsi_check_sense(scmd) == FAILED ) {
 				stu_scmd = scmd;
 				break;
 			}
+		}
 
 		if (!stu_scmd)
 			continue;
@@ -1481,11 +1507,22 @@ static int scsi_eh_bus_device_reset(struct Scsi_Host *shost,
 			break;
 		}
 		bdr_scmd = NULL;
-		list_for_each_entry(scmd, work_q, eh_entry)
+		list_for_each_entry(scmd, work_q, eh_entry) {
+#ifdef CONFIG_MAS_BLK
+			if (scmd && scmd->request)
+				mas_blk_latency_req_check_ufs(
+					scmd->request, REQ_PROC_STAGE_SCSI_EH_DEVICE);
+#endif
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+			if (scsi_is_order_cmd(scmd) &&
+					scsi_order_enable(scmd))
+				continue;
+#endif
 			if (scmd->device == sdev) {
 				bdr_scmd = scmd;
 				break;
 			}
+		}
 
 		if (!bdr_scmd)
 			continue;
@@ -1557,6 +1594,11 @@ static int scsi_eh_target_reset(struct Scsi_Host *shost,
 			shost_printk(KERN_INFO, shost,
 				     "%s: Sending target reset to target %d\n",
 				     current->comm, id));
+#ifdef CONFIG_MAS_BLK
+		if (scmd->request)
+			mas_blk_latency_req_check_ufs(
+				scmd->request, REQ_PROC_STAGE_SCSI_EH_TARGET);
+#endif
 		rtn = scsi_try_target_reset(scmd);
 		if (rtn != SUCCESS && rtn != FAST_IO_FAIL)
 			SCSI_LOG_ERROR_RECOVERY(3,
@@ -1564,6 +1606,10 @@ static int scsi_eh_target_reset(struct Scsi_Host *shost,
 					     "%s: Target reset failed"
 					     " target: %d\n",
 					     current->comm, id));
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+		if (scsi_is_order_cmd(scmd) && scsi_order_enable(scmd))
+			rtn = FAILED;
+#endif
 		list_for_each_entry_safe(scmd, next, &tmp_list, eh_entry) {
 			if (scmd_id(scmd) != id)
 				continue;
@@ -1631,7 +1677,16 @@ static int scsi_eh_bus_reset(struct Scsi_Host *shost,
 			shost_printk(KERN_INFO, shost,
 				     "%s: Sending BRST chan: %d\n",
 				     current->comm, channel));
+#ifdef CONFIG_MAS_BLK
+		if (chan_scmd->request)
+			mas_blk_latency_req_check_ufs(
+				chan_scmd->request, REQ_PROC_STAGE_SCSI_EH_BUS);
+#endif
 		rtn = scsi_try_bus_reset(chan_scmd);
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+		if (scsi_is_order_cmd(scmd) && scsi_order_enable(scmd))
+			rtn = FAILED;
+#endif
 		if (rtn == SUCCESS || rtn == FAST_IO_FAIL) {
 			list_for_each_entry_safe(scmd, next, work_q, eh_entry) {
 				if (channel == scmd_channel(scmd)) {
@@ -1675,7 +1730,11 @@ static int scsi_eh_host_reset(struct Scsi_Host *shost,
 			shost_printk(KERN_INFO, shost,
 				     "%s: Sending HRST\n",
 				     current->comm));
-
+#ifdef CONFIG_MAS_BLK
+		if (scmd->request)
+			mas_blk_latency_req_check_ufs(
+				scmd->request, REQ_PROC_STAGE_SCSI_EH_HOST);
+#endif
 		rtn = scsi_try_host_reset(scmd);
 		if (rtn == SUCCESS) {
 			list_splice_init(work_q, &check_list);
@@ -1708,7 +1767,11 @@ static void scsi_eh_offline_sdevs(struct list_head *work_q,
 		sdev_printk(KERN_INFO, scmd->device, "Device offlined - "
 			    "not ready after error recovery\n");
 		sdev = scmd->device;
-
+#ifdef CONFIG_MAS_BLK
+		if (scmd->request)
+			mas_blk_latency_req_check_ufs(
+				scmd->request, REQ_PROC_STAGE_SCSI_EH_OFFLINE);
+#endif
 		mutex_lock(&sdev->state_mutex);
 		scsi_device_set_state(sdev, SDEV_OFFLINE);
 		mutex_unlock(&sdev->state_mutex);
@@ -1784,6 +1847,11 @@ int scsi_decide_disposition(struct scsi_cmnd *scmd)
 			"%s: device offline - report as SUCCESS\n", __func__));
 		return SUCCESS;
 	}
+
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	if (scsi_unistore_is_datamove(scmd))
+		return SUCCESS;
+#endif
 
 	/*
 	 * first check the host byte, to see if there is anything in there
@@ -2087,6 +2155,11 @@ void scsi_eh_flush_done_q(struct list_head *done_q)
 	struct scsi_cmnd *scmd, *next;
 
 	list_for_each_entry_safe(scmd, next, done_q, eh_entry) {
+#ifdef CONFIG_MAS_BLK
+		if (scmd && scmd->request)
+			mas_blk_latency_req_check_ufs(scmd->request,
+				REQ_PROC_STAGE_SCSI_EH_FLUSH);
+#endif
 		list_del_init(&scmd->eh_entry);
 		if (scsi_device_online(scmd->device) &&
 		    !scsi_noretry_cmd(scmd) &&
@@ -2108,7 +2181,15 @@ void scsi_eh_flush_done_q(struct list_head *done_q)
 				scmd_printk(KERN_INFO, scmd,
 					     "%s: flush finish cmd\n",
 					     current->comm));
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+			if (scsi_is_order_cmd(scmd) && scsi_order_enable(scmd))
+				scmd->eh_eflags |= SCSI_EH_IN_FLUSH_DONE_Q;
 			scsi_finish_command(scmd);
+			if (scsi_is_order_cmd(scmd) && scsi_order_enable(scmd))
+				scmd->eh_eflags &= (~SCSI_EH_IN_FLUSH_DONE_Q);
+#else
+			scsi_finish_command(scmd);
+#endif
 		}
 	}
 }
@@ -2159,6 +2240,24 @@ static void scsi_unjam_host(struct Scsi_Host *shost)
 	scsi_eh_flush_done_q(&eh_done_q);
 }
 
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+static int scsi_eh_send_request_sense(struct scsi_device *sdev)
+{
+	int ret;
+	struct Scsi_Host *shost = sdev->host;
+	unsigned int timeout_ms = 1500;
+
+	if (!shost->hostt->send_request_sense_directly)
+		return FAILED;
+
+	ret = shost->hostt->send_request_sense_directly(sdev, timeout_ms, false);
+	if (ret)
+		pr_err("%s, queuecommand fail, ret=%d \n", __func__, ret);
+
+	return ret;
+}
+#endif
+
 /**
  * scsi_error_handler - SCSI error handler thread
  * @data:	Host for which we are running.
@@ -2170,6 +2269,9 @@ static void scsi_unjam_host(struct Scsi_Host *shost)
 int scsi_error_handler(void *data)
 {
 	struct Scsi_Host *shost = data;
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	struct scsi_device *sdev = NULL;
+#endif
 
 	/*
 	 * We use TASK_INTERRUPTIBLE so that the thread is not
@@ -2211,6 +2313,10 @@ int scsi_error_handler(void *data)
 		 * what we need to do to get it up and online again (if we can).
 		 * If we fail, we end up taking the thing offline.
 		 */
+#ifdef CONFIG_MAS_BLK
+		if (!shost->eh_noresume)
+			mas_blk_record_scsi_autopm(shost, GET_HOST, 1);
+#endif
 		if (!shost->eh_noresume && scsi_autopm_get_host(shost) != 0) {
 			SCSI_LOG_ERROR_RECOVERY(1,
 				shost_printk(KERN_ERR, shost,
@@ -2226,7 +2332,13 @@ int scsi_error_handler(void *data)
 
 		/* All scmds have been handled */
 		shost->host_failed = 0;
-
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+		if (shost->unistore_enable) {
+			shost_for_each_device(sdev, shost) {
+				scsi_eh_send_request_sense(sdev);
+			}
+		}
+#endif
 		/*
 		 * Note - if the above fails completely, the action is to take
 		 * individual devices offline and flush the queue of any
@@ -2235,8 +2347,12 @@ int scsi_error_handler(void *data)
 		 * which are still online.
 		 */
 		scsi_restart_operations(shost);
-		if (!shost->eh_noresume)
+		if (!shost->eh_noresume) {
+#ifdef CONFIG_MAS_BLK
+			mas_blk_record_scsi_autopm(shost, PUT_HOST, 1);
+#endif
 			scsi_autopm_put_host(shost);
+		}
 	}
 	__set_current_state(TASK_RUNNING);
 
@@ -2345,6 +2461,9 @@ scsi_ioctl_reset(struct scsi_device *dev, int __user *arg)
 	if (error)
 		return error;
 
+#ifdef CONFIG_MAS_BLK
+	mas_blk_record_scsi_autopm(shost, GET_HOST, 2);
+#endif
 	if (scsi_autopm_get_host(shost) < 0)
 		return -EIO;
 
@@ -2421,6 +2540,9 @@ scsi_ioctl_reset(struct scsi_device *dev, int __user *arg)
 	kfree(rq);
 
 out_put_autopm_host:
+#ifdef CONFIG_MAS_BLK
+	mas_blk_record_scsi_autopm(shost, PUT_HOST, 2);
+#endif
 	scsi_autopm_put_host(shost);
 	return error;
 }

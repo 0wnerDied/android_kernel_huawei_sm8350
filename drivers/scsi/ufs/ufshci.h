@@ -489,6 +489,11 @@ struct ufshcd_sg_entry {
 	 */
 };
 
+#define MAX_DATA_USED_SPACE    (8 + 32) /* 1861 FSR 4K */
+#ifdef CONFIG_SCSI_UFS_CUST_MAX_SECTORS
+#define UFS_SG_MAX_COUNT	256
+#endif
+
 /**
  * struct utp_transfer_cmd_desc - UFS Command Descriptor structure
  * @command_upiu: Command UPIU Frame address
@@ -498,12 +503,21 @@ struct ufshcd_sg_entry {
  */
 struct utp_transfer_cmd_desc {
 	u8 command_upiu[ALIGNED_UPIU_SIZE];
+#ifdef CONFIG_SCSI_UFS_HI1861_VCMD
+	u8 response_upiu[ALIGNED_UPIU_SIZE * MAX_DATA_USED_SPACE];
+#else
 	u8 response_upiu[ALIGNED_UPIU_SIZE];
+#endif
 	u8 prd_table[];
 };
 
+#ifdef CONFIG_SCSI_UFS_CUST_MAX_SECTORS
+#define sizeof_utp_transfer_cmd_desc(hba)	\
+	(sizeof(struct utp_transfer_cmd_desc) + UFS_SG_MAX_COUNT * (hba)->sg_entry_size)
+#else
 #define sizeof_utp_transfer_cmd_desc(hba)	\
 	(sizeof(struct utp_transfer_cmd_desc) + SG_ALL * (hba)->sg_entry_size)
+#endif
 
 /**
  * struct request_desc_header - Descriptor Header common to both UTRD and UTMRD

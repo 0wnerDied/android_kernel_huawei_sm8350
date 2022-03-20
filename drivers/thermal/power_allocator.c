@@ -18,6 +18,7 @@
 #include <linux/rculist.h>
 #include <linux/slab.h>
 #include <linux/thermal.h>
+#include <linux/hw/hw_thermal.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/thermal_power_allocator.h>
@@ -97,13 +98,19 @@ static u32 estimate_sustainable_power(struct thermal_zone_device *tz)
 	struct power_allocator_params *params = tz->governor_data;
 
 	list_for_each_entry(instance, &tz->thermal_instances, tz_node) {
-		struct thermal_cooling_device *cdev = instance->cdev;
 		u32 min_power;
 
+		if (!params || !params->trip_max_desired_temperature) {
+			return sustainable_power;
+		}
+
+		if (!instance || !instance->trip || !instance->cdev) {
+			continue;
+		}
 		if (instance->trip != params->trip_max_desired_temperature)
 			continue;
 
-		if (power_actor_get_min_power(cdev, tz, &min_power))
+		if (power_actor_get_min_power(instance->cdev, tz, &min_power))
 			continue;
 
 		sustainable_power += min_power;
@@ -144,6 +151,7 @@ static void estimate_pid_constants(struct thermal_zone_device *tz,
 		switch_on_temp = 0;
 
 	temperature_threshold = control_temp - switch_on_temp;
+
 	/*
 	 * estimate_pid_constants() tries to find appropriate default
 	 * values for thermal zones that don't provide them. If a
@@ -165,11 +173,14 @@ static void estimate_pid_constants(struct thermal_zone_device *tz,
 
 	if (!tz->tzp->k_i || force)
 		tz->tzp->k_i = int_to_frac(10) / 1000;
+
 	/*
 	 * The default for k_d and integral_cutoff is 0, so we can
 	 * leave them as they are.
 	 */
 }
+
+#include "power_allocator_hw.c"
 
 /**
  * pid_controller() - PID controller
@@ -229,6 +240,9 @@ static u32 pid_controller(struct thermal_zone_device *tz,
 		if (abs(i_next) < max_power_frac) {
 			i = i_next;
 			params->err_integral += err;
+#ifdef CONFIG_HW_IPA_THERMAL
+			ipa_adjust_err_integral(params);
+#endif
 		}
 	}
 
@@ -239,9 +253,13 @@ static u32 pid_controller(struct thermal_zone_device *tz,
 	 * error (i.e. driving closer to the line) results in less
 	 * power being applied, slowing down the controller)
 	 */
-	d = mul_frac(tz->tzp->k_d, err - params->prev_err);
-	d = div_frac(d, tz->passive_delay);
-	params->prev_err = err;
+	if (tz->passive_delay != 0) {
+		d = mul_frac(tz->tzp->k_d, err - params->prev_err);
+		d = div_frac(d, tz->passive_delay);
+		params->prev_err = err;
+	} else {
+		d = 0;
+	}
 
 	power_range = p + i + d;
 
@@ -254,6 +272,13 @@ static u32 pid_controller(struct thermal_zone_device *tz,
 					  frac_to_int(params->err_integral),
 					  frac_to_int(p), frac_to_int(i),
 					  frac_to_int(d), power_range);
+
+#ifdef CONFIG_HW_IPA_THERMAL
+	trace_IPA_allocator_pid(tz, frac_to_int(err),
+				frac_to_int(params->err_integral),
+				frac_to_int(p), frac_to_int(i),
+				frac_to_int(d), power_range);
+#endif
 
 	return power_range;
 }
@@ -301,7 +326,7 @@ static void divvy_up_power(u32 *req_power, u32 *max_power, int num_actors,
 	capped_extra_power = 0;
 	extra_power = 0;
 	for (i = 0; i < num_actors; i++) {
-		u64 req_range = (u64)req_power[i] * power_range;
+		u64 req_range = (u64)req_power[i] * (u64)power_range;
 
 		granted_power[i] = DIV_ROUND_CLOSEST_ULL(req_range,
 							 total_req_power);
@@ -330,18 +355,33 @@ static void divvy_up_power(u32 *req_power, u32 *max_power, int num_actors,
 }
 
 static int allocate_power(struct thermal_zone_device *tz,
-			  int control_temp)
+#ifndef CONFIG_HW_IPA_THERMAL
+				int control_temp)
+#else
+				int control_temp, int switch_temp)
+#endif
 {
 	struct thermal_instance *instance;
-	struct power_allocator_params *params = tz->governor_data;
+	struct power_allocator_params *params = NULL;
 	u32 *req_power, *max_power, *granted_power, *extra_actor_power;
 	u32 *weighted_req_power;
 	u32 total_req_power, max_allocatable_power, total_weighted_req_power;
 	u32 total_granted_power, power_range;
 	int i, num_actors, total_weight, ret = 0;
-	int trip_max_desired_temperature = params->trip_max_desired_temperature;
+	int trip_max_desired_temperature;
+#ifdef CONFIG_HW_IPA_THERMAL
+	u32 cur_enable;
+	u32 soc_sustainable_power = 0;
+#endif
 
 	mutex_lock(&tz->lock);
+	if (tz->governor_data == NULL) {
+		mutex_unlock(&tz->lock);
+		return -EINVAL;
+	}
+
+	params = tz->governor_data;
+	trip_max_desired_temperature = params->trip_max_desired_temperature;
 
 	num_actors = 0;
 	total_weight = 0;
@@ -350,8 +390,13 @@ static int allocate_power(struct thermal_zone_device *tz,
 		    cdev_is_power_actor(instance->cdev)) {
 			num_actors++;
 			total_weight += instance->weight;
+#ifdef CONFIG_HW_IPA_THERMAL
+			instance->cdev->ipa_enabled = true;
+#endif
 		}
 	}
+
+	trace_allocate_power_actors(num_actors, total_weight);
 
 	if (!num_actors) {
 		ret = -ENODEV;
@@ -384,10 +429,19 @@ static int allocate_power(struct thermal_zone_device *tz,
 	total_weighted_req_power = 0;
 	total_req_power = 0;
 	max_allocatable_power = 0;
+#ifdef CONFIG_HW_IPA_THERMAL
+	cur_enable = tz->tzp->cur_enable;
+#endif
 
 	list_for_each_entry(instance, &tz->thermal_instances, tz_node) {
 		int weight;
 		struct thermal_cooling_device *cdev = instance->cdev;
+
+		trace_allocate_power_instances(cdev, instance->trip, trip_max_desired_temperature);
+
+#ifdef CONFIG_HW_IPA_THERMAL
+		instance->cdev->ipa_enabled = true;
+#endif
 
 		if (instance->trip != trip_max_desired_temperature)
 			continue;
@@ -411,9 +465,20 @@ static int allocate_power(struct thermal_zone_device *tz,
 		total_req_power += req_power[i];
 		max_allocatable_power += max_power[i];
 		total_weighted_req_power += weighted_req_power[i];
+#ifdef CONFIG_HW_IPA_THERMAL
+		if (cur_enable > 0)
+			cdev->cdev_cur_power += req_power[i];
+#endif
 
 		i++;
 	}
+
+#ifdef CONFIG_HW_IPA_THERMAL
+	if (cur_enable > 0) {
+		tz->tzp->cur_ipa_total_power += total_req_power;
+		tz->tzp->check_cnt++;
+	}
+#endif
 
 	power_range = pid_controller(tz, control_temp, max_allocatable_power);
 
@@ -430,8 +495,13 @@ static int allocate_power(struct thermal_zone_device *tz,
 		if (!cdev_is_power_actor(instance->cdev))
 			continue;
 
+#ifdef CONFIG_HW_IPA_THERMAL
+		power_actor_set_powers(tz, instance, &soc_sustainable_power, granted_power[i]);
+#else
 		power_actor_set_power(instance->cdev, instance,
 				      granted_power[i]);
+#endif
+
 		total_granted_power += granted_power[i];
 
 		i++;
@@ -443,6 +513,11 @@ static int allocate_power(struct thermal_zone_device *tz,
 				      max_allocatable_power, tz->temperature,
 				      control_temp - tz->temperature);
 
+#ifdef CONFIG_HW_IPA_THERMAL
+	trace_IPA_allocator(tz, tz->temperature, control_temp, switch_temp,
+			    num_actors, power_range, req_power, total_req_power,
+			    max_power, max_allocatable_power, granted_power, total_granted_power);
+#endif
 	kfree(req_power);
 unlock:
 	mutex_unlock(&tz->lock);
@@ -530,6 +605,11 @@ static void allow_maximum_power(struct thermal_zone_device *tz)
 			continue;
 
 		instance->target = 0;
+
+#ifdef CONFIG_HW_IPA_THERMAL
+		trace_pid_reset(params->err_integral, params->prev_err, instance->cdev, instance->tz, instance->target);
+#endif
+
 		mutex_lock(&instance->cdev->lock);
 		instance->cdev->updated = false;
 		mutex_unlock(&instance->cdev->lock);
@@ -609,6 +689,7 @@ static void power_allocator_unbind(struct thermal_zone_device *tz)
 	tz->governor_data = NULL;
 }
 
+#ifndef CONFIG_HW_IPA_THERMAL
 static int power_allocator_throttle(struct thermal_zone_device *tz, int trip)
 {
 	int ret;
@@ -644,6 +725,7 @@ static int power_allocator_throttle(struct thermal_zone_device *tz, int trip)
 
 	return allocate_power(tz, control_temp);
 }
+#endif
 
 static struct thermal_governor thermal_gov_power_allocator = {
 	.name		= "power_allocator",

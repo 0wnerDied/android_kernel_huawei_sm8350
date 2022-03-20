@@ -1512,6 +1512,10 @@ config SCSI_VIRTIO
           This is the virtual HBA driver for virtio.  If the kernel will
           be used in a virtual machine, say Y or M.
 
+config HUAWEI_QCOM_DISK_PARTITION_DRIFT
+	tristate "huawei qcom disk partition drift"
+	depends on SCSI
+
 source "drivers/scsi/csiostor/Kconfig"
 
 source "drivers/scsi/pcmcia/Kconfig"

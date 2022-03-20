@@ -7,6 +7,7 @@
 #include <linux/time.h>
 #include <linux/of.h>
 #include <linux/bitfield.h>
+#include <linux/bootdevice.h>
 #include <linux/platform_device.h>
 #include <linux/phy/phy.h>
 #include <linux/gpio/consumer.h>
@@ -25,9 +26,20 @@
 #include "ufshci.h"
 #include "ufs_quirks.h"
 #include "ufshcd-crypto-qti.h"
+#include "ufs-vendor-mode.h"
+#include "ufs-vendor-cmd.h"
+#include "ufs_device_vendor_modify.h"
+
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+#include "ufs_unistore.h"
+#endif
 
 #define UFS_QCOM_DEFAULT_DBG_PRINT_EN	\
 	(UFS_QCOM_DBG_PRINT_REGS_EN | UFS_QCOM_DBG_PRINT_TEST_BUS_EN)
+#ifdef CONFIG_MAS_UFS_MANUAL_BKOPS
+#include "mas-ufs-bkops.h"
+#endif
+
 
 #define UFS_DDR "ufs-ddr"
 #define CPU_UFS "cpu-ufs"
@@ -1619,28 +1631,27 @@ static void ufs_qcom_dev_ref_clk_ctrl(struct ufs_qcom_host *host, bool enable)
 #if defined(CONFIG_SCSI_UFSHCD_QTI)
 static void ufs_qcom_set_adapt(struct ufs_hba *hba)
 {
-	u32 peer_rx_hs_adapt_initial_cap;
-	int ret;
-
-	ret = ufshcd_dme_peer_get(hba,
-			  UIC_ARG_MIB_SEL(RX_HS_ADAPT_INITIAL_CAPABILITY,
-					  UIC_ARG_MPHY_RX_GEN_SEL_INDEX(0)),
-				  &peer_rx_hs_adapt_initial_cap);
-	if (ret) {
-		dev_err(hba->dev,
-			"%s: RX_HS_ADAPT_INITIAL_CAP get failed %d\n",
-			__func__, ret);
-		peer_rx_hs_adapt_initial_cap =
-			PA_PEERRXHSADAPTINITIAL_Default;
+	if (hba->dev_info.wmanufacturerid != UFS_VENDOR_HISI) {
+		u32 peer_rx_hs_adapt_initial_cap;
+		int ret;
+		ret = ufshcd_dme_peer_get(hba,
+			UIC_ARG_MIB_SEL(RX_HS_ADAPT_INITIAL_CAPABILITY,
+			UIC_ARG_MPHY_RX_GEN_SEL_INDEX(0)),
+			&peer_rx_hs_adapt_initial_cap);
+		if (ret) {
+			dev_err(hba->dev,
+				"%s: RX_HS_ADAPT_INITIAL_CAP get failed %d\n",
+				__func__, ret);
+			peer_rx_hs_adapt_initial_cap =
+				PA_PEERRXHSADAPTINITIAL_Default;
+		}
+		ret = ufshcd_dme_set(hba, UIC_ARG_MIB(PA_PEERRXHSADAPTINITIAL),
+			peer_rx_hs_adapt_initial_cap);
+		if (ret)
+			dev_err(hba->dev,
+				"%s: PA_PEERRXHSADAPTINITIAL set failed %d\n",
+				__func__, ret);
 	}
-
-	ret = ufshcd_dme_set(hba, UIC_ARG_MIB(PA_PEERRXHSADAPTINITIAL),
-			     peer_rx_hs_adapt_initial_cap);
-	if (ret)
-		dev_err(hba->dev,
-			"%s: PA_PEERRXHSADAPTINITIAL set failed %d\n",
-			__func__, ret);
-
 	/* INITIAL ADAPT */
 	ufshcd_dme_set(hba,
 		       UIC_ARG_MIB(PA_TXHSADAPTTYPE),
@@ -1932,9 +1943,11 @@ static void ufs_qcom_set_caps(struct ufs_hba *hba)
 	if (!host->disable_lpm) {
 		hba->caps |= UFSHCD_CAP_CLK_GATING |
 			UFSHCD_CAP_HIBERN8_WITH_CLK_GATING |
-			UFSHCD_CAP_CLK_SCALING | UFSHCD_CAP_AUTO_BKOPS_SUSPEND |
+			UFSHCD_CAP_AUTO_BKOPS_SUSPEND |
 			UFSHCD_CAP_RPM_AUTOSUSPEND;
 		hba->caps |= UFSHCD_CAP_WB_EN;
+		if (!host->disable_clkscaling)
+			hba->caps |= UFSHCD_CAP_CLK_SCALING;
 	}
 
 	if (host->hw_ver.major >= 0x2) {
@@ -2263,6 +2276,9 @@ ufs_qcom_query_ioctl(struct ufs_hba *hba, u8 lun, void __user *buffer)
 		case QUERY_DESC_IDN_INTERCONNECT:
 		case QUERY_DESC_IDN_GEOMETRY:
 		case QUERY_DESC_IDN_POWER:
+#ifdef CONFIG_HUAWEI_UFS_VENDOR_MODE
+		case QUERY_DESC_IDN_HEALTH:
+#endif
 			index = 0;
 			break;
 		case QUERY_DESC_IDN_UNIT:
@@ -2311,6 +2327,7 @@ ufs_qcom_query_ioctl(struct ufs_hba *hba, u8 lun, void __user *buffer)
 			break;
 		case QUERY_ATTR_IDN_DYN_CAP_NEEDED:
 		case QUERY_ATTR_IDN_CORR_PRG_BLK_NUM:
+		case QUERY_ATTR_IDN_WB_BUFF_LIFE_TIME_EST:
 			index = lun;
 			break;
 		default:
@@ -2367,6 +2384,12 @@ ufs_qcom_query_ioctl(struct ufs_hba *hba, u8 lun, void __user *buffer)
 		err = ufshcd_query_flag(hba, ioctl_data->opcode,
 					ioctl_data->idn, 0, &flag);
 		break;
+#ifdef CONFIG_SCSI_UFS_HI1861_VCMD
+	case UPIU_QUERY_OPCODE_READ_HI1861_FSR:
+		err = ufshcd_ioctl_query_vcmd(hba, ioctl_data, buffer);
+		break;
+#endif
+
 	default:
 		goto out_einval;
 	}
@@ -2397,6 +2420,9 @@ ufs_qcom_query_ioctl(struct ufs_hba *hba, u8 lun, void __user *buffer)
 		data_ptr = &flag;
 		break;
 	case UPIU_QUERY_OPCODE_WRITE_ATTR:
+#ifdef CONFIG_SCSI_UFS_HI1861_VCMD
+	case UPIU_QUERY_OPCODE_READ_HI1861_FSR:
+#endif
 		goto out_release_mem;
 	default:
 		goto out_einval;
@@ -2436,6 +2462,9 @@ out:
  * Supported commands:
  * UFS_IOCTL_QUERY
  */
+#ifdef CONFIG_HUAWEI_UFS_VENDOR_MODE
+static struct ufs_ioctl_vendor_state_t ufs_ioctl_vendor_state;
+#endif
 static int
 ufs_qcom_ioctl(struct scsi_device *dev, unsigned int cmd, void __user *buffer)
 {
@@ -2456,6 +2485,18 @@ ufs_qcom_ioctl(struct scsi_device *dev, unsigned int cmd, void __user *buffer)
 					   buffer);
 		pm_runtime_put_sync(hba->dev);
 		break;
+#ifdef CONFIG_HUAWEI_UFS_VENDOR_MODE
+	case UFS_IOCTL_VENDOR_PACKAGE:
+		pm_runtime_get_sync(hba->dev);
+		err = ufs_ioctl_vendor_package(hba, &ufs_ioctl_vendor_state, buffer);
+		pm_runtime_put_sync(hba->dev);
+		break;
+	case UFS_IOCTL_VENDOR_PACKAGE_TICK:
+		pm_runtime_get_sync(hba->dev);
+		err = ufs_ioctl_vendor_package_tick(hba, dev, &ufs_ioctl_vendor_state, buffer);
+		pm_runtime_put_sync(hba->dev);
+		break;
+#endif
 	default:
 		err = -ENOIOCTLCMD;
 		dev_dbg(hba->dev, "%s: Unsupported ioctl cmd %d\n", __func__,
@@ -2704,6 +2745,8 @@ static int ufs_qcom_init(struct ufs_hba *hba)
 	struct ufs_qcom_host *host;
 	struct resource *res;
 
+	set_bootdevice_name(BOOT_DEVICE_UFS, dev);
+
 	host = devm_kzalloc(dev, sizeof(*host), GFP_KERNEL);
 	if (!host) {
 		err = -ENOMEM;
@@ -2850,6 +2893,13 @@ static int ufs_qcom_init(struct ufs_hba *hba)
 	ufs_qcom_parse_limits(host);
 	ufs_qcom_parse_g4_workaround_flag(host);
 	ufs_qcom_parse_lpm(host);
+	ufs_qcom_parse_clkscaling(host);
+#ifdef CONFIG_MAS_UFS_MANUAL_BKOPS
+	mas_ufs_populate_mgc_dt(hba);
+#endif
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	ufshcd_unistore_op_register(hba);
+#endif
 	if (host->disable_lpm)
 		pm_runtime_forbid(host->hba->dev);
 
@@ -2887,6 +2937,7 @@ static int ufs_qcom_init(struct ufs_hba *hba)
 	ufs_qcom_save_host_ptr(hba);
 
 	ufs_qcom_qos_init(hba);
+
 	goto out;
 
 out_disable_vccq_parent:

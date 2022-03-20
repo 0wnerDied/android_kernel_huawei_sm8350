@@ -15,6 +15,9 @@
 #include <linux/scatterlist.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
+#ifdef CONFIG_HW_PAGE_TRACKER
+#include <linux/hw/page_tracker.h>
+#endif
 
 #include "ion_page_pool.h"
 
@@ -126,6 +129,9 @@ static int ion_system_heap_allocate(struct ion_heap *heap,
 		max_order = compound_order(page);
 		i++;
 	}
+#ifdef CONFIG_HW_PAGE_TRACKER
+	page_tracker_set_type(page, TRACK_ION, max_order);
+#endif
 	table = kmalloc(sizeof(*table), GFP_KERNEL);
 	if (!table)
 		goto free_pages;
@@ -226,8 +232,10 @@ static void ion_system_heap_destroy_pools(struct ion_page_pool **pools)
 	int i;
 
 	for (i = 0; i < NUM_ORDERS; i++)
-		if (pools[i])
+		if (pools[i]) {
 			ion_page_pool_destroy(pools[i]);
+			pools[i] = NULL;
+		}
 }
 
 static int ion_system_heap_create_pools(struct ion_page_pool **pools)

@@ -363,6 +363,7 @@ struct ufs_qcom_host {
 	int limit_phy_submode;
 
 	bool disable_lpm;
+	bool disable_clkscaling;
 	struct qcom_bus_scale_data *qbsd;
 	struct ufs_vreg *vddp_ref_clk;
 	struct ufs_vreg *vccq_parent;
@@ -446,7 +447,9 @@ out:
  *  SCSI_IOCTL_GET_PCI
  */
 #define UFS_IOCTL_QUERY			0x5388
-
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+#define UFS_IOCTL_SCSI_CMD 0x5391
+#endif
 /**
  * struct ufs_ioctl_query_data - used to transfer data to and from user via
  * ioctl

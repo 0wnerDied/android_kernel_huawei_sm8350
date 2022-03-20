@@ -13,6 +13,7 @@
 #include <linux/delay.h>
 #include <linux/slab.h>
 #include <linux/usb/typec_dp.h>
+#include <linux/ana_hs.h>
 
 #include "ucsi.h"
 #include "trace.h"
@@ -497,12 +498,15 @@ static void ucsi_partner_change(struct ucsi_connector *con)
 		typec_set_data_role(con->port, TYPEC_HOST);
 		break;
 	case UCSI_CONSTAT_PARTNER_TYPE_DFP:
+	case UCSI_CONSTAT_PARTNER_TYPE_DEBUG:
 		u_role = USB_ROLE_DEVICE;
 		typec_set_data_role(con->port, TYPEC_DEVICE);
 		break;
 	default:
 		break;
 	}
+
+	dev_err(ucsi->dev, "%s datarole=%d, parter_type = %d\n", __func__, u_role, UCSI_CONSTAT_PARTNER_TYPE(con->status.flags));
 
 	/* Complete pending data role swap */
 	if (!completion_done(&con->complete))
@@ -572,17 +576,29 @@ static void ucsi_handle_connector_change(struct work_struct *work)
 			typec_set_data_role(con->port, TYPEC_HOST);
 			break;
 		case UCSI_CONSTAT_PARTNER_TYPE_DFP:
+		case UCSI_CONSTAT_PARTNER_TYPE_DEBUG:
 			u_role = USB_ROLE_DEVICE;
 			typec_set_data_role(con->port, TYPEC_DEVICE);
+			break;
+		case UCSI_CONSTAT_PARTNER_TYPE_AUDIO:
+			/* ana headset */
+			ana_hs_plug_handle(ANA_HS_PLUG_IN);
 			break;
 		default:
 			break;
 		}
 
-		if (con->status.flags & UCSI_CONSTAT_CONNECTED)
+		if (con->status.flags & UCSI_CONSTAT_CONNECTED) {
+			/* usb pull up */
 			ucsi_register_partner(con);
-		else
+		} else {
+			/* usb pull out */
+			if (typec_partner_get(con->partner) == TYPEC_ACCESSORY_AUDIO) {
+				ana_hs_plug_handle(ANA_HS_PLUG_OUT);
+			}
+
 			ucsi_unregister_partner(con);
+		}
 
 		/* Only notify USB controller if partner supports USB data */
 		if (!(UCSI_CONSTAT_PARTNER_FLAGS(con->status.flags) &
@@ -887,6 +903,7 @@ static int ucsi_register_port(struct ucsi *ucsi, int index)
 		typec_set_data_role(con->port, TYPEC_HOST);
 		break;
 	case UCSI_CONSTAT_PARTNER_TYPE_DFP:
+	case UCSI_CONSTAT_PARTNER_TYPE_DEBUG:
 		role = USB_ROLE_DEVICE;
 		typec_set_data_role(con->port, TYPEC_DEVICE);
 		break;

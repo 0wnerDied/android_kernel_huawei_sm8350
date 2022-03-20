@@ -17,6 +17,10 @@
 #define UFS_VENDOR_SAMSUNG     0x1CE
 #define UFS_VENDOR_SKHYNIX     0x1AD
 #define UFS_VENDOR_WDC         0x145
+#define UFS_VENDOR_HISI        0x8b6
+#define UFS_VENDOR_HI1861      0x8B6
+#define UFS_VENDOR_SANDISK     0x145
+#define UFS_VENDOR_XHFZ        0xA6B
 
 /**
  * ufs_dev_fix - ufs device quirk info

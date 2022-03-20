@@ -45,15 +45,39 @@
 #include <linux/blk-pm.h>
 #include <asm/unaligned.h>
 #include <linux/blkdev.h>
+#include <linux/bootdevice.h>
+
+#include "proc_ufs.h"
 #include "ufshcd.h"
 #include "ufs_quirks.h"
 #include "unipro.h"
 #include "ufs-sysfs.h"
 #include "ufs_bsg.h"
 #include "ufshcd-crypto.h"
+#ifdef CONFIG_MAS_BLK
+#include "mas_ufs.h"
+#endif
+#ifdef CONFIG_MAS_UFS_MANUAL_BKOPS
+#include "mas-ufs-bkops.h"
+#endif
+#include "ufs-hpb.h"
+#include "ufs-vendor-cmd.h"
+#include "ufstt.h"
+#include "ufs-error-recovery.h"
+
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+#include "ufs_unistore.h"
+#endif
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/ufs.h>
+#ifdef CONFIG_HUAWEI_DSM_IOMT_UFS_HOST
+#include <linux/iomt_host/dsm_iomt_ufs_host.h>
+#endif
+#ifdef CONFIG_HUAWEI_UFS_DSM
+#include "dsm_ufs.h"
+#endif
+#include "ufs_device_vendor_modify.h"
 
 #define UFSHCD_ENABLE_INTRS	(UTP_TRANSFER_REQ_COMPL |\
 				 UTP_TASK_REQ_COMPL |\
@@ -109,6 +133,9 @@
 /* Polling time to wait for fDeviceInit  */
 #define FDEVICEINIT_COMPL_TIMEOUT 1500 /* millisecs */
 
+/* Min sectors for ufs drivers: 2048 */
+#define UFS_MIN_SECTORS 2048
+
 #define ufshcd_toggle_vreg(_dev, _vreg, _on)				\
 	({                                                              \
 		int _ret;                                               \
@@ -156,14 +183,6 @@ enum {
 	UFSHCD_CAN_QUEUE	= 32,
 };
 
-/* UFSHCD states */
-enum {
-	UFSHCD_STATE_RESET,
-	UFSHCD_STATE_ERROR,
-	UFSHCD_STATE_OPERATIONAL,
-	UFSHCD_STATE_EH_SCHEDULED_FATAL,
-	UFSHCD_STATE_EH_SCHEDULED_NON_FATAL,
-};
 
 /* UFSHCD error handling flags */
 enum {
@@ -295,6 +314,40 @@ static int ufshcd_config_vreg(struct device *dev,
 static int ufshcd_enable_vreg(struct device *dev, struct ufs_vreg *vreg);
 static int ufshcd_disable_vreg(struct device *dev, struct ufs_vreg *vreg);
 #endif
+
+#ifdef CONFIG_SCSI_MAS_UFS_MQ_DEFAULT
+static int ufshcd_tag_alloc(struct Scsi_Host *host, struct ufs_hba *hba,
+			    struct scsi_cmnd *cmd)
+{
+	int tag;
+
+	if (host->queue_quirk_flag &
+	    SHOST_QUIRK(SHOST_QUIRK_DRIVER_TAG_ALLOC)) {
+		tag = (int)ffz(hba->lrb_in_use);
+		if (tag >= hba->nutrs)
+			return -EINVAL;
+	} else {
+		tag = cmd->request->tag;
+	}
+	cmd->tag = (unsigned char)tag;
+	return 0;
+}
+
+static unsigned int ufshcd_get_tag_from_cmd(struct Scsi_Host *host,
+					    struct scsi_cmnd *cmd)
+{
+	unsigned int tag;
+
+	if (!(host->queue_quirk_flag &
+	      SHOST_QUIRK(SHOST_QUIRK_DRIVER_TAG_ALLOC)))
+		tag = (unsigned int)cmd->request->tag;
+	else
+		tag = (unsigned int)cmd->tag;
+
+	return tag;
+}
+#endif
+
 static inline bool ufshcd_valid_tag(struct ufs_hba *hba, int tag)
 {
 	return tag >= 0 && tag < hba->nutrs;
@@ -316,12 +369,34 @@ static inline void ufshcd_disable_irq(struct ufs_hba *hba)
 	}
 }
 
+inline bool ufshcd_wb_sup(struct ufs_hba *hba)
+{
+	if (hba == NULL)
+		return false;
+
+	/*
+	 * WB only for UFS-2.2 and UFS-3.1 (and later) devices
+	 * 0x310: UFS-3.1 spec
+	 * 0x220: UFS-2.2 spec
+	 */
+	return (hba->caps & UFSHCD_CAP_WB_EN) &&
+		(hba->dev_info.d_ext_ufs_feature_sup &
+		UFS_DEV_WRITE_BOOSTER_SUP) &&
+		(hba->dev_info.wspecversion >= 0x310 ||
+		hba->dev_info.wspecversion == 0x220);
+}
+
 static inline void ufshcd_wb_config(struct ufs_hba *hba)
 {
 	int ret;
 
 	if (!ufshcd_is_wb_allowed(hba))
 		return;
+
+	ret = ufs_dynamic_switching_wb_config(hba);
+	if (ret)
+		dev_err(hba->dev, "%s: dynamic_wb_config failed: %d\n",
+				__func__, ret);
 
 	ret = ufshcd_wb_ctrl(hba, true);
 	if (ret)
@@ -333,15 +408,19 @@ static inline void ufshcd_wb_config(struct ufs_hba *hba)
 		dev_err(hba->dev, "%s: En WB flush during H8: failed: %d\n",
 			__func__, ret);
 	ufshcd_wb_toggle_flush(hba, true);
+	ret = ufshcd_enable_wb_exception_event(hba);
+	if (ret)
+		dev_err(hba->dev, "%s: enable wb_ee failed: %d\n",
+				__func__, ret);
 }
 
-static void ufshcd_scsi_unblock_requests(struct ufs_hba *hba)
+void ufshcd_scsi_unblock_requests(struct ufs_hba *hba)
 {
 	if (atomic_dec_and_test(&hba->scsi_block_reqs_cnt))
 		scsi_unblock_requests(hba->host);
 }
 
-static void ufshcd_scsi_block_requests(struct ufs_hba *hba)
+void ufshcd_scsi_block_requests(struct ufs_hba *hba)
 {
 	if (atomic_inc_return(&hba->scsi_block_reqs_cnt) == 1)
 		scsi_block_requests(hba->host);
@@ -593,7 +672,7 @@ static void ufshcd_print_host_state(struct ufs_hba *hba)
  * power info
  * @hba: per-adapter instance
  */
-static void ufshcd_print_pwr_info(struct ufs_hba *hba)
+void ufshcd_print_pwr_info(struct ufs_hba *hba)
 {
 	static const char * const names[] = {
 		"INVALID MODE",
@@ -795,7 +874,7 @@ static inline void ufshcd_utmrl_clear(struct ufs_hba *hba, u32 pos)
  * @hba: per adapter instance
  * @tag: position of the bit to be cleared
  */
-static inline void ufshcd_outstanding_req_clear(struct ufs_hba *hba, int tag)
+inline void ufshcd_outstanding_req_clear(struct ufs_hba *hba, int tag)
 {
 	__clear_bit(tag, &hba->outstanding_reqs);
 }
@@ -1292,10 +1371,11 @@ static int ufshcd_devfreq_scale(struct ufs_hba *hba, bool scale_up)
 	}
 
 	/* Enable Write Booster if we have scaled up else disable it */
+#ifndef CONFIG_HUAWEI_UFS_DYNAMIC_SWITCH_WB
 	up_write(&hba->clk_scaling_lock);
 	ufshcd_wb_ctrl(hba, scale_up);
 	down_write(&hba->clk_scaling_lock);
-
+#endif
 	goto clk_scaling_unprepare;
 
 scale_up_gear:
@@ -2040,7 +2120,7 @@ static void ufshcd_clk_scaling_update_busy(struct ufs_hba *hba)
  * @hba: per adapter instance
  * @task_tag: Task tag of the command
  */
-static inline
+inline
 void ufshcd_send_command(struct ufs_hba *hba, unsigned int task_tag)
 {
 	struct ufshcd_lrb *lrbp = &hba->lrb[task_tag];
@@ -2090,7 +2170,10 @@ int ufshcd_copy_query_response(struct ufs_hba *hba, struct ufshcd_lrb *lrbp)
 
 	/* Get the descriptor */
 	if (hba->dev_cmd.query.descriptor &&
-	    lrbp->ucd_rsp_ptr->qr.opcode == UPIU_QUERY_OPCODE_READ_DESC) {
+		(lrbp->ucd_rsp_ptr->qr.opcode == UPIU_QUERY_OPCODE_READ_DESC ||
+		lrbp->ucd_rsp_ptr->qr.opcode == UPIU_QUERY_OPCODE_READ_HI1861_FSR ||
+		lrbp->ucd_rsp_ptr->qr.opcode == UPIU_QUERY_OPCODE_VENDOR_READ ||
+		lrbp->ucd_rsp_ptr->qr.opcode == UPIU_QUERY_OPCODE_VENDOR_WRITE)) {
 		u8 *descp = (u8 *)lrbp->ucd_rsp_ptr +
 				GENERAL_UPIU_REQUEST_SIZE;
 		u16 resp_len;
@@ -2271,7 +2354,10 @@ int ufshcd_send_uic_cmd(struct ufs_hba *hba, struct uic_command *uic_cmd)
 		ret = ufshcd_wait_for_uic_cmd(hba, uic_cmd);
 
 	mutex_unlock(&hba->uic_cmd_mutex);
-
+#ifdef CONFIG_HUAWEI_UFS_DSM
+	if (ret)
+		dsm_report_uic_cmd_err(hba);
+#endif
 	ufshcd_release(hba);
 	return ret;
 }
@@ -2283,7 +2369,7 @@ int ufshcd_send_uic_cmd(struct ufs_hba *hba, struct uic_command *uic_cmd)
  *
  * Returns 0 in case of success, non-zero value in case of failure
  */
-static int ufshcd_map_sg(struct ufs_hba *hba, struct ufshcd_lrb *lrbp)
+int ufshcd_map_sg(struct ufs_hba *hba, struct ufshcd_lrb *lrbp)
 {
 	struct ufshcd_sg_entry *prd;
 	struct scatterlist *sg;
@@ -2329,7 +2415,11 @@ static int ufshcd_map_sg(struct ufs_hba *hba, struct ufshcd_lrb *lrbp)
  * @hba: per adapter instance
  * @intrs: interrupt bits
  */
+#ifdef CONFIG_HUAWEI_UFS_DSM
+void ufshcd_enable_intr(struct ufs_hba *hba, u32 intrs)
+#else
 static void ufshcd_enable_intr(struct ufs_hba *hba, u32 intrs)
+#endif
 {
 	u32 set = ufshcd_readl(hba, REG_INTERRUPT_ENABLE);
 
@@ -2373,7 +2463,7 @@ static void ufshcd_disable_intr(struct ufs_hba *hba, u32 intrs)
  * @upiu_flags: flags required in the header
  * @cmd_dir: requests data direction
  */
-static void ufshcd_prepare_req_desc_hdr(struct ufshcd_lrb *lrbp,
+void ufshcd_prepare_req_desc_hdr(struct ufshcd_lrb *lrbp,
 			u32 *upiu_flags, enum dma_data_direction cmd_dir)
 {
 	struct utp_transfer_req_desc *req_desc = lrbp->utr_descriptor_ptr;
@@ -2390,6 +2480,19 @@ static void ufshcd_prepare_req_desc_hdr(struct ufshcd_lrb *lrbp,
 		data_direction = UTP_NO_DATA_TRANSFER;
 		*upiu_flags = UPIU_CMD_FLAGS_NONE;
 	}
+#ifdef CONFIG_MQ_USING_CP
+	if (unlikely(lrbp->cmd && lrbp->cmd->request &&
+		     lrbp->cmd->request->mas_cmd_flags & REQ_CP))
+		*upiu_flags |= UPIU_CMD_PRIO;
+#endif
+#ifdef CONFIG_MAS_BLK
+	if (unlikely(lrbp->cmd && lrbp->cmd->request &&
+		     req_hoq(lrbp->cmd->request)))
+		*upiu_flags |= UPIU_TASK_ATTR_HEADQ;
+	if (unlikely(lrbp->cmd && lrbp->cmd->request &&
+		     req_cp(lrbp->cmd->request)))
+		*upiu_flags |= UPIU_CMD_PRIO;
+#endif
 
 	dword_0 = data_direction | (lrbp->command_type
 				<< UPIU_COMMAND_TYPE_OFFSET);
@@ -2431,7 +2534,6 @@ static void ufshcd_prepare_req_desc_hdr(struct ufshcd_lrb *lrbp,
  * @lrbp: local reference block pointer
  * @upiu_flags: flags
  */
-static
 void ufshcd_prepare_utp_scsi_cmd_upiu(struct ufshcd_lrb *lrbp, u32 upiu_flags)
 {
 	struct utp_upiu_req *ucd_req_ptr = lrbp->ucd_req_ptr;
@@ -2464,7 +2566,7 @@ void ufshcd_prepare_utp_scsi_cmd_upiu(struct ufshcd_lrb *lrbp, u32 upiu_flags)
  * @lrbp: local reference block pointer
  * @upiu_flags: flags
  */
-static void ufshcd_prepare_utp_query_req_upiu(struct ufs_hba *hba,
+void ufshcd_prepare_utp_query_req_upiu(struct ufs_hba *hba,
 				struct ufshcd_lrb *lrbp, u32 upiu_flags)
 {
 	struct utp_upiu_req *ucd_req_ptr = lrbp->ucd_req_ptr;
@@ -2484,7 +2586,8 @@ static void ufshcd_prepare_utp_query_req_upiu(struct ufs_hba *hba,
 			UPIU_HEADER_DWORD(0, 0, (len >> 8), (u8)len);
 	else
 		ucd_req_ptr->header.dword_2 = 0;
-
+	ufshcd_set_query_req_length(query->request.upiu_req.opcode,
+		query->request.upiu_req.idn, &ucd_req_ptr->header.dword_2);
 	/* Copy the Query Request buffer as is */
 	memcpy(&ucd_req_ptr->qr, &query->request.upiu_req,
 			QUERY_OSF_SIZE);
@@ -2492,11 +2595,12 @@ static void ufshcd_prepare_utp_query_req_upiu(struct ufs_hba *hba,
 	/* Copy the Descriptor */
 	if (query->request.upiu_req.opcode == UPIU_QUERY_OPCODE_WRITE_DESC)
 		memcpy(ucd_req_ptr + 1, query->descriptor, len);
-
+	ufshcd_set_query_req_desc(query->request.upiu_req.opcode,
+		query->request.upiu_req.idn, ucd_req_ptr + 1, query->descriptor);
 	memset(lrbp->ucd_rsp_ptr, 0, sizeof(struct utp_upiu_rsp));
 }
 
-static inline void ufshcd_prepare_utp_nop_upiu(struct ufshcd_lrb *lrbp)
+inline void ufshcd_prepare_utp_nop_upiu(struct ufshcd_lrb *lrbp)
 {
 	struct utp_upiu_req *ucd_req_ptr = lrbp->ucd_req_ptr;
 
@@ -2562,6 +2666,8 @@ static int ufshcd_comp_scsi_upiu(struct ufs_hba *hba, struct ufshcd_lrb *lrbp)
 		ufshcd_prepare_req_desc_hdr(lrbp, &upiu_flags,
 						lrbp->cmd->sc_data_direction);
 		ufshcd_prepare_utp_scsi_cmd_upiu(lrbp, upiu_flags);
+		ufshpb_compose_upiu(hba, lrbp);
+		ufstt_prep_fn(hba, lrbp);
 	} else {
 		ret = -EINVAL;
 	}
@@ -2597,18 +2703,34 @@ static int ufshcd_queuecommand(struct Scsi_Host *host, struct scsi_cmnd *cmd)
 
 	hba = shost_priv(host);
 
-	tag = cmd->request->tag;
-	if (!ufshcd_valid_tag(hba, tag)) {
-		dev_err(hba->dev,
-			"%s: invalid command tag %d: cmd=0x%p, cmd->request=0x%p",
-			__func__, tag, cmd, cmd->request);
-		BUG();
+#ifdef CONFIG_SCSI_MAS_UFS_MQ_DEFAULT
+	if (!(host->queue_quirk_flag & SHOST_QUIRK(SHOST_QUIRK_DRIVER_TAG_ALLOC)))
+#endif
+	{
+		tag = cmd->request->tag;
+		if (!ufshcd_valid_tag(hba, tag)) {
+			dev_err(hba->dev,
+				"%s: invalid command tag %d: cmd=0x%p, cmd->request=0x%p",
+				__func__, tag, cmd, cmd->request);
+			BUG();
+		}
 	}
 
 	if (!down_read_trylock(&hba->clk_scaling_lock))
 		return SCSI_MLQUEUE_HOST_BUSY;
 
 	hba->req_abort_count = 0;
+#ifdef CONFIG_SCSI_MAS_UFS_MQ_DEFAULT
+	if (host->queue_quirk_flag & SHOST_QUIRK(SHOST_QUIRK_DRIVER_TAG_ALLOC)) {
+		spin_lock_irqsave(hba->host->host_lock, flags);
+		if (ufshcd_tag_alloc(host, hba, cmd)) {
+			err = SCSI_MLQUEUE_HOST_BUSY;
+			spin_unlock_irqrestore(hba->host->host_lock, flags);
+			goto out;
+		}
+		tag = (int)cmd->tag;
+	}
+#endif
 
 	/* acquire the tag to make sure device cmds don't use it */
 	if (test_and_set_bit_lock(tag, &hba->lrb_in_use)) {
@@ -2619,15 +2741,34 @@ static int ufshcd_queuecommand(struct Scsi_Host *host, struct scsi_cmnd *cmd)
 		 * completion.
 		 */
 		err = SCSI_MLQUEUE_HOST_BUSY;
+#ifdef CONFIG_SCSI_MAS_UFS_MQ_DEFAULT
+		if (host->queue_quirk_flag & SHOST_QUIRK(SHOST_QUIRK_DRIVER_TAG_ALLOC))
+			spin_unlock_irqrestore(hba->host->host_lock, flags);
+#endif
 		goto out;
 	}
-
+#ifdef CONFIG_SCSI_MAS_UFS_MQ_DEFAULT
+	if (host->queue_quirk_flag & SHOST_QUIRK(SHOST_QUIRK_DRIVER_TAG_ALLOC))
+		spin_unlock_irqrestore(hba->host->host_lock, flags);
+#endif
+#ifdef CONFIG_MAS_BLK
+	mas_blk_latency_req_check_ufs(cmd->request,
+		REQ_PROC_STAGE_MQ_HOLD_START);
+#endif
 	err = ufshcd_hold(hba, true);
 	if (err) {
 		err = SCSI_MLQUEUE_HOST_BUSY;
 		clear_bit_unlock(tag, &hba->lrb_in_use);
+#ifdef CONFIG_MAS_BLK
+		mas_blk_latency_req_check_ufs(cmd->request,
+			REQ_PROC_STAGE_MQ_HOLD_FAIL);
+#endif
 		goto out;
 	}
+#ifdef CONFIG_MAS_BLK
+	mas_blk_latency_req_check_ufs(cmd->request,
+		REQ_PROC_STAGE_MQ_HOLD_SUCCESS);
+#endif
 	WARN_ON(ufshcd_is_clkgating_allowed(hba) &&
 		(hba->clk_gating.state != CLKS_ON));
 
@@ -2635,11 +2776,19 @@ static int ufshcd_queuecommand(struct Scsi_Host *host, struct scsi_cmnd *cmd)
 
 	WARN_ON(lrbp->cmd);
 	lrbp->cmd = cmd;
+#ifdef CONFIG_HUAWEI_DSM_IOMT_UFS_HOST
+	iomt_host_latency_cmd_init(lrbp->cmd, host);
+#endif
 	lrbp->sense_bufflen = UFS_SENSE_SIZE;
 	lrbp->sense_buffer = cmd->sense_buffer;
 	lrbp->task_tag = tag;
 	lrbp->lun = ufshcd_scsi_to_upiu_lun(cmd->device->lun);
 	lrbp->intr_cmd = !ufshcd_is_intr_aggr_allowed(hba) ? true : false;
+
+#ifdef CONFIG_HUAWEI_UFS_WB_RUNTIME
+	ufshcd_wb_runtime_config(cmd, hba);
+#endif
+	ufshcd_count_data(cmd, hba);
 
 	err = ufshcd_prepare_lrbp_crypto(hba, cmd, lrbp);
 	if (err) {
@@ -2657,7 +2806,7 @@ static int ufshcd_queuecommand(struct Scsi_Host *host, struct scsi_cmnd *cmd)
 		ufshcd_release(hba);
 		lrbp->cmd = NULL;
 		clear_bit_unlock(tag, &hba->lrb_in_use);
-		goto out;
+		goto ufstt_unprep;
 	}
 	/* Make sure descriptors are ready before ringing the doorbell */
 	wmb();
@@ -2696,6 +2845,20 @@ static int ufshcd_queuecommand(struct Scsi_Host *host, struct scsi_cmnd *cmd)
 		set_host_byte(cmd, DID_BAD_TARGET);
 		goto out_compl_cmd;
 	}
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	/* it has to be put here, without any goto branches behind */
+	if (host->unistore_enable && ufshcd_custom_upiu_unistore(lrbp->ucd_req_ptr,
+				lrbp->cmd->request, lrbp->cmd, hba)) {
+		clear_bit_unlock(tag, &hba->lrb_in_use);
+		err = SCSI_MLQUEUE_HOST_BUSY;
+		spin_unlock_irqrestore(hba->host->host_lock, flags);
+		pm_runtime_put_sync(hba->dev);
+		goto out_compl_cmd;
+	}
+#endif
+#ifdef CONFIG_HUAWEI_DSM_IOMT_UFS_HOST
+	iomt_host_latency_cmd_start((&hba->lrb[tag])->cmd);
+#endif
 	ufshcd_send_command(hba, tag);
 	spin_unlock_irqrestore(hba->host->host_lock, flags);
 	goto out;
@@ -2708,6 +2871,8 @@ out_compl_cmd:
 	ufshcd_release(hba);
 	if (!err)
 		cmd->scsi_done(cmd);
+ufstt_unprep:
+	ufstt_unprep_fn(hba, lrbp);
 out:
 	up_read(&hba->clk_scaling_lock);
 	return err;
@@ -2730,7 +2895,7 @@ static int ufshcd_compose_dev_cmd(struct ufs_hba *hba,
 	return ufshcd_comp_devman_upiu(hba, lrbp);
 }
 
-static int
+int
 ufshcd_clear_cmd(struct ufs_hba *hba, int tag)
 {
 	int err = 0;
@@ -2857,7 +3022,7 @@ static int ufshcd_wait_for_dev_cmd(struct ufs_hba *hba,
  * Returns false if free slot is unavailable for locking, else
  * return true with tag value in @tag.
  */
-static bool ufshcd_get_dev_cmd_tag(struct ufs_hba *hba, int *tag_out)
+bool ufshcd_get_dev_cmd_tag(struct ufs_hba *hba, int *tag_out)
 {
 	int tag;
 	bool ret = false;
@@ -2879,7 +3044,7 @@ out:
 	return ret;
 }
 
-static inline void ufshcd_put_dev_cmd_tag(struct ufs_hba *hba, int tag)
+inline void ufshcd_put_dev_cmd_tag(struct ufs_hba *hba, int tag)
 {
 	clear_bit_unlock(tag, &hba->lrb_in_use);
 }
@@ -2893,7 +3058,7 @@ static inline void ufshcd_put_dev_cmd_tag(struct ufs_hba *hba, int tag)
  * NOTE: Since there is only one available tag for device management commands,
  * it is expected you hold the hba->dev_cmd.lock mutex.
  */
-static int ufshcd_exec_dev_cmd(struct ufs_hba *hba,
+int ufshcd_exec_dev_cmd(struct ufs_hba *hba,
 		enum dev_cmd_type cmd_type, int timeout)
 {
 	struct ufshcd_lrb *lrbp;
@@ -2924,6 +3089,7 @@ static int ufshcd_exec_dev_cmd(struct ufs_hba *hba,
 	/* Make sure descriptors are ready before ringing the doorbell */
 	wmb();
 	spin_lock_irqsave(hba->host->host_lock, flags);
+
 	ufshcd_send_command(hba, tag);
 	spin_unlock_irqrestore(hba->host->host_lock, flags);
 
@@ -2949,7 +3115,7 @@ out_put_tag:
  * @index: LU number to access
  * @selector: query/flag/descriptor further identification
  */
-static inline void ufshcd_init_query(struct ufs_hba *hba,
+inline void ufshcd_init_query(struct ufs_hba *hba,
 		struct ufs_query_req **request, struct ufs_query_res **response,
 		enum query_opcode opcode, u8 idn, u8 index, u8 selector)
 {
@@ -2963,7 +3129,7 @@ static inline void ufshcd_init_query(struct ufs_hba *hba,
 	(*request)->upiu_req.selector = selector;
 }
 
-static int ufshcd_query_flag_retry(struct ufs_hba *hba,
+int ufshcd_query_flag_retry(struct ufs_hba *hba,
 	enum query_opcode opcode, enum flag_idn idn, u8 index, bool *flag_res)
 {
 	int ret;
@@ -3133,12 +3299,15 @@ EXPORT_SYMBOL_GPL(ufshcd_query_attr);
  *
  * Returns 0 for success, non-zero in case of failure
 */
-static int ufshcd_query_attr_retry(struct ufs_hba *hba,
+int ufshcd_query_attr_retry(struct ufs_hba *hba,
 	enum query_opcode opcode, enum attr_idn idn, u8 index, u8 selector,
 	u32 *attr_val)
 {
 	int ret = 0;
 	u32 retries;
+
+	if (hba == NULL || attr_val == NULL)
+		return -EINVAL;
 
 	 for (retries = QUERY_REQ_RETRIES; retries > 0; retries--) {
 		ret = ufshcd_query_attr(hba, opcode, idn, index,
@@ -3332,6 +3501,14 @@ int ufshcd_map_desc_id_to_length(struct ufs_hba *hba,
 	case QUERY_DESC_IDN_HEALTH:
 		*desc_len = hba->desc_size.hlth_desc;
 		break;
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	case QUERY_DESC_IDN_DEVICE_UNISTORE:
+		*desc_len = QUERY_DESC_DEVICE_UNISTORE_MAX_SIZE;
+		break;
+	case QUERY_DESC_IDN_UNIT_UNISTORE:
+		*desc_len = QUERY_DESC_UINT_UNISTORE_MAX_SIZE;
+		break;
+#endif
 	case QUERY_DESC_IDN_RFU_0:
 	case QUERY_DESC_IDN_RFU_1:
 		*desc_len = 0;
@@ -3424,7 +3601,7 @@ out:
 	return ret;
 }
 
-static inline int ufshcd_read_desc(struct ufs_hba *hba,
+inline int ufshcd_read_desc(struct ufs_hba *hba,
 				   enum desc_idn desc_id,
 				   int desc_index,
 				   void *buf,
@@ -3440,8 +3617,11 @@ static inline int ufshcd_read_power_desc(struct ufs_hba *hba,
 	return ufshcd_read_desc(hba, QUERY_DESC_IDN_POWER, 0, buf, size);
 }
 
-static int ufshcd_read_device_desc(struct ufs_hba *hba, u8 *buf, u32 size)
+int ufshcd_read_device_desc(struct ufs_hba *hba, u8 *buf, u32 size)
 {
+	if (hba == NULL || buf == NULL)
+		return -EINVAL;
+
 	return ufshcd_read_desc(hba, QUERY_DESC_IDN_DEVICE, 0, buf, size);
 }
 
@@ -3463,6 +3643,7 @@ static inline char ufshcd_remove_non_printable(u8 ch)
 {
 	return (ch >= 0x20 && ch <= 0x7e) ? ch : ' ';
 }
+
 
 /**
  * ufshcd_read_string_desc - read string descriptor
@@ -3732,15 +3913,25 @@ static void ufshcd_host_memory_configure(struct ufs_hba *hba)
 				cpu_to_le16(response_offset);
 			utrdlp[i].prd_table_offset =
 				cpu_to_le16(prdt_offset);
+#ifdef CONFIG_SCSI_UFS_HI1861_VCMD
+			utrdlp[i].response_upiu_length =
+				cpu_to_le16(ALIGNED_UPIU_SIZE * MAX_DATA_USED_SPACE);
+#else
 			utrdlp[i].response_upiu_length =
 				cpu_to_le16(ALIGNED_UPIU_SIZE);
+#endif
 		} else {
 			utrdlp[i].response_upiu_offset =
 				cpu_to_le16((response_offset >> 2));
 			utrdlp[i].prd_table_offset =
 				cpu_to_le16((prdt_offset >> 2));
+#ifdef CONFIG_SCSI_UFS_HI1861_VCMD
+			utrdlp[i].response_upiu_length =
+				cpu_to_le16((ALIGNED_UPIU_SIZE * MAX_DATA_USED_SPACE) >> 2);
+#else
 			utrdlp[i].response_upiu_length =
 				cpu_to_le16(ALIGNED_UPIU_SIZE >> 2);
+#endif
 		}
 
 		hba->lrb[i].utr_descriptor_ptr = (utrdlp + i);
@@ -4030,6 +4221,9 @@ static int ufshcd_uic_pwr_ctrl(struct ufs_hba *hba, struct uic_command *cmd)
 		dev_err(hba->dev,
 			"pwr ctrl cmd 0x%x with mode 0x%x uic error %d\n",
 			cmd->command, cmd->argument3, ret);
+#ifdef CONFIG_HUAWEI_UFS_DSM
+		dsm_report_uic_cmd_err(hba);
+#endif
 		goto out;
 	}
 
@@ -4189,7 +4383,7 @@ int ufshcd_uic_hibern8_exit(struct ufs_hba *hba)
 		hba->ufs_stats.last_hibern8_exit_tstamp = ktime_get();
 		hba->ufs_stats.hibern8_exit_cnt++;
 	}
-
+	check_link_status(hba);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(ufshcd_uic_hibern8_exit);
@@ -4237,7 +4431,7 @@ void ufshcd_auto_hibern8_enable(struct ufs_hba *hba)
  * values in hba power info
  * @hba: per-adapter instance
  */
-static void ufshcd_init_pwr_info(struct ufs_hba *hba)
+void ufshcd_init_pwr_info(struct ufs_hba *hba)
 {
 	hba->pwr_info.gear_rx = UFS_PWM_G1;
 	hba->pwr_info.gear_tx = UFS_PWM_G1;
@@ -4252,7 +4446,7 @@ static void ufshcd_init_pwr_info(struct ufs_hba *hba)
  * ufshcd_get_max_pwr_mode - reads the max power mode negotiated with device
  * @hba: per-adapter instance
  */
-static int ufshcd_get_max_pwr_mode(struct ufs_hba *hba)
+int ufshcd_get_max_pwr_mode(struct ufs_hba *hba)
 {
 	struct ufs_pa_layer_attr *pwr_info = &hba->max_pwr_info.info;
 
@@ -4358,6 +4552,12 @@ static int ufshcd_change_power_mode(struct ufs_hba *hba,
 	    pwr_mode->pwr_tx == FAST_MODE)
 		ufshcd_dme_set(hba, UIC_ARG_MIB(PA_HSSERIES),
 						pwr_mode->hs_rate);
+
+	ret = ufs_adapt_interface(hba, pwr_mode);
+	if (ret) {
+		dev_err(hba->dev,
+			"%s: ufs adapt on and off  failed %d\n", __func__, ret);
+	}
 
 	ufshcd_dme_set(hba, UIC_ARG_MIB(PA_PWRMODEUSERDATA0),
 			DL_FC0ProtectionTimeOutVal_Default);
@@ -4771,7 +4971,7 @@ out:
  * not respond with NOP IN UPIU within timeout of %NOP_OUT_TIMEOUT
  * and we retry sending NOP OUT for %NOP_OUT_RETRIES iterations.
  */
-static int ufshcd_verify_dev_init(struct ufs_hba *hba)
+int ufshcd_verify_dev_init(struct ufs_hba *hba)
 {
 	int err = 0;
 	int retries;
@@ -4830,6 +5030,14 @@ static void ufshcd_set_queue_depth(struct scsi_device *sdev)
 
 	dev_dbg(hba->dev, "%s: activate tcq with queue depth %d\n",
 			__func__, lun_qdepth);
+
+#ifdef CONFIG_SCSI_MAS_UFS_MQ_DEFAULT
+	if (sdev->host->queue_quirk_flag & SHOST_QUIRK(SHOST_QUIRK_MAS_UFS_MQ))
+		lun_qdepth =
+			(u8)((lun_qdepth == hba->nutrs) ? hba->host->can_queue :
+							  lun_qdepth);
+#endif
+
 	scsi_change_queue_depth(sdev, lun_qdepth);
 }
 
@@ -4916,6 +5124,8 @@ static int ufshcd_slave_alloc(struct scsi_device *sdev)
 	/* WRITE_SAME command is not supported */
 	sdev->no_write_same = 1;
 
+	sdev->min_sectors = UFS_MIN_SECTORS;
+
 	ufshcd_set_queue_depth(sdev);
 
 	ufshcd_get_lu_power_on_wp_status(hba, sdev);
@@ -4936,6 +5146,10 @@ static int ufshcd_change_queue_depth(struct scsi_device *sdev, int depth)
 
 	if (depth > hba->nutrs)
 		depth = hba->nutrs;
+#ifdef CONFIG_SCSI_MAS_UFS_MQ_DEFAULT
+	if (sdev->host->queue_quirk_flag & SHOST_QUIRK(SHOST_QUIRK_MAS_UFS_MQ))
+		depth = (depth == hba->nutrs) ? hba->host->can_queue : depth;
+#endif
 	return scsi_change_queue_depth(sdev, depth);
 }
 
@@ -4952,8 +5166,21 @@ static int ufshcd_slave_configure(struct scsi_device *sdev)
 
 	ufshcd_crypto_setup_rq_keyslot_manager(hba, q);
 
+#ifdef CONFIG_MAS_BLK
+	mas_ufshcd_slave_config(q, sdev);
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	mas_blk_queue_unistore_enable(q, sdev->host->unistore_enable);
+	ufshcd_unistore_scsi_device_init(sdev);
+#endif
+#ifdef CONFIG_MAS_MQ_USING_CP
+	blk_queue_cp_enable(q, true);
+#endif
+#endif
 	if (ufshcd_is_rpm_autosuspend_allowed(hba))
 		sdev->rpm_autosuspend = 1;
+
+	ufstt_set_sdev(sdev);
+	ufstt_probe(hba);
 
 	return 0;
 }
@@ -5001,6 +5228,11 @@ ufshcd_scsi_cmd_status(struct ufshcd_lrb *lrbp, int scsi_status)
 		ufshcd_copy_sense_data(lrbp);
 		/* fallthrough */
 	case SAM_STAT_GOOD:
+#ifdef CONFIG_HUAWEI_UFS_TURBO_TABLE
+	case SAM_STAT_GOOD_NEED_UPDATE:
+		if (scsi_status == SAM_STAT_GOOD_NEED_UPDATE)
+			scsi_status = SAM_STAT_GOOD;
+#endif
 		result |= DID_OK << 16 |
 			  COMMAND_COMPLETE << 8 |
 			  scsi_status;
@@ -5026,8 +5258,9 @@ ufshcd_scsi_cmd_status(struct ufshcd_lrb *lrbp, int scsi_status)
  *
  * Returns result of the command to notify SCSI midlayer
  */
-static inline int
-ufshcd_transfer_rsp_status(struct ufs_hba *hba, struct ufshcd_lrb *lrbp)
+inline int
+ufshcd_transfer_rsp_status(struct ufs_hba *hba, struct ufshcd_lrb *lrbp,
+			bool in_irq)
 {
 	int result = 0;
 	int scsi_status;
@@ -5060,6 +5293,10 @@ ufshcd_transfer_rsp_status(struct ufs_hba *hba, struct ufshcd_lrb *lrbp)
 			 */
 			scsi_status = result & MASK_SCSI_STATUS;
 			result = ufshcd_scsi_cmd_status(lrbp, scsi_status);
+#ifdef CONFIG_HUAWEI_UFS_DSM
+			dsm_report_rsp_sense_data(hba, scsi_status, result, lrbp);
+#endif
+			ufshpb_check_rsp_upiu(hba, lrbp, scsi_status, in_irq);
 
 			/*
 			 * Currently we are only supporting BKOPs exception
@@ -5095,6 +5332,9 @@ ufshcd_transfer_rsp_status(struct ufs_hba *hba, struct ufshcd_lrb *lrbp)
 				"Unexpected request response code = %x\n",
 				result);
 			result = DID_ERROR << 16;
+#ifdef CONFIG_HUAWEI_UFS_DSM
+			dsm_report_utp_err(hba, ocs);
+#endif
 			break;
 		}
 		break;
@@ -5117,6 +5357,9 @@ ufshcd_transfer_rsp_status(struct ufs_hba *hba, struct ufshcd_lrb *lrbp)
 		dev_err(hba->dev,
 				"OCS error from controller = %x for tag %d\n",
 				ocs, lrbp->task_tag);
+#ifdef CONFIG_HUAWEI_UFS_DSM
+		dsm_report_utp_err(hba, ocs);
+#endif
 		ufshcd_print_host_state(hba);
 		ufshcd_print_pwr_info(hba);
 		ufshcd_print_host_regs(hba);
@@ -5177,21 +5420,67 @@ static void __ufshcd_transfer_req_compl(struct ufs_hba *hba,
 	struct scsi_cmnd *cmd;
 	int result;
 	int index;
+#ifdef CONFIG_SCSI_MAS_UFS_MQ_DEFAULT
+#ifdef MAS_LAT_HIST
+	struct request *req;
+#endif
 
+check:
+#endif
 	for_each_set_bit(index, &completed_reqs, hba->nutrs) {
 		lrbp = &hba->lrb[index];
 		cmd = lrbp->cmd;
 		ufshcd_vops_compl_xfer_req(hba, index, (cmd) ? true : false);
+#if defined (CONFIG_SCSI_MAS_UFS_MQ_DEFAULT) || defined(CONFIG_HUAWEI_UFS_VENDOR_MODE)
+		if (cmd && lrbp->command_type != UTP_CMD_TYPE_DEV_MANAGE) {
+#else
 		if (cmd) {
+#endif
 			ufshcd_add_command_trace(hba, index, "complete");
-			result = ufshcd_transfer_rsp_status(hba, lrbp);
+#ifdef CONFIG_HUAWEI_UFS_DSM
+			dsm_ufs_restore_cmd(hba, index);
+#endif
+			result = ufshcd_transfer_rsp_status(hba, lrbp, true);
+#ifdef CONFIG_SCSI_MAS_UFS_MQ_DEFAULT
+			if (!(hba->host->queue_quirk_flag & SHOST_QUIRK(SHOST_QUIRK_UNMAP_IN_SOFTIRQ)))
+				scsi_dma_unmap(cmd);
+#else
 			scsi_dma_unmap(cmd);
+#endif
 			cmd->result = result;
 			ufshcd_complete_lrbp_crypto(hba, cmd, lrbp);
+#ifdef CONFIG_SCSI_MAS_UFS_MQ_DEFAULT
+#ifdef MAS_LAT_HIST
+			req = cmd->request;
+			if (!(hba->host->queue_quirk_flag &
+			      SHOST_QUIRK(SHOST_QUIRK_MAS_UFS_MQ))) {
+				if (req && req->lat_hist_enabled) {
+					/* Update IO svc time latency histogram */
+					u_int64_t delta_us;
+
+					delta_us = ktime_us_delta(
+						lrbp->compl_time_stamp,
+						req->lat_hist_io_start);
+					blk_update_latency_hist(
+						(rq_data_dir(req) == READ) ?
+							&hba->io_lat_read :
+							&hba->io_lat_write,
+						delta_us);
+				}
+			}
+#endif
+#endif
 			/* Mark completed command as NULL in LRB */
 			lrbp->cmd = NULL;
 			lrbp->compl_time_stamp = ktime_get();
 			clear_bit_unlock(index, &hba->lrb_in_use);
+			ufstt_unprep_handler(hba, lrbp);
+#ifdef CONFIG_HUAWEI_DSM_IOMT_UFS_HOST
+			iomt_host_latency_cmd_end(hba->host,cmd);
+#endif
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+			ufshcd_unistore_done(hba, cmd, lrbp);
+#endif
 			/* Do not touch lrbp after scsi done */
 			cmd->scsi_done(cmd);
 			__ufshcd_release(hba);
@@ -5210,6 +5499,18 @@ static void __ufshcd_transfer_req_compl(struct ufs_hba *hba,
 
 	/* clear corresponding bits of completed commands */
 	hba->outstanding_reqs ^= completed_reqs;
+#ifdef CONFIG_SCSI_MAS_UFS_MQ_DEFAULT
+	if (hba->host->queue_quirk_flag & SHOST_QUIRK(SHOST_QUIRK_MAS_UFS_MQ)) {
+		if (hba->outstanding_reqs) {
+			completed_reqs =
+				ufshcd_readl(hba,
+					     REG_UTP_TRANSFER_REQ_DOOR_BELL) ^
+				hba->outstanding_reqs;
+			if (completed_reqs)
+				goto check;
+		}
+	}
+#endif
 
 	ufshcd_clk_scaling_update_busy(hba);
 
@@ -5290,7 +5591,7 @@ out:
  *
  * Returns zero on success, non-zero error value on failure.
  */
-static int ufshcd_enable_ee(struct ufs_hba *hba, u16 mask)
+int ufshcd_enable_ee(struct ufs_hba *hba, u16 mask)
 {
 	int err = 0;
 	u32 val;
@@ -5532,6 +5833,10 @@ int ufshcd_wb_ctrl(struct ufs_hba *hba, bool enable)
 
 	if (!(enable ^ hba->wb_enabled))
 		return 0;
+
+	if (ufshcd_wb_is_permanent_disabled(hba))
+		return 0;
+
 	if (enable)
 		opcode = UPIU_QUERY_OPCODE_SET_FLAG;
 	else
@@ -5736,6 +6041,15 @@ static void ufshcd_exception_event_handler(struct work_struct *work)
 
 	if (status & MASK_EE_URGENT_BKOPS)
 		ufshcd_bkops_exception_event_handler(hba);
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	if (status & MASK_EE_BAD_BLOCK_OCCUR)
+		ufshcd_bad_block_exception_event_handler(hba);
+#endif
+
+#ifdef CONFIG_HUAWEI_UFS_DYNAMIC_SWITCH_WB
+	if (status & MASK_EE_WRITEBOOSTER_EVENT)
+		ufshcd_wb_exception_event_handler(hba);
+#endif
 
 out:
 	ufshcd_scsi_unblock_requests(hba);
@@ -5944,7 +6258,10 @@ static void ufshcd_err_handler(struct work_struct *work)
 	bool needs_reset = false;
 
 	hba = container_of(work, struct ufs_hba, eh_work);
-
+#ifdef CONFIG_MAS_BLK
+	hba->host->last_ufs_eh_time[hba->host->last_ufs_eh_cnt % 10] = ktime_get();
+	hba->host->last_ufs_eh_cnt++;
+#endif
 	spin_lock_irqsave(hba->host->host_lock, flags);
 	if (ufshcd_err_handling_should_stop(hba)) {
 		if (hba->ufshcd_state != UFSHCD_STATE_ERROR)
@@ -6041,7 +6358,9 @@ skip_pending_xfer_clear:
 	/* Fatal errors need reset */
 	if (needs_reset) {
 		unsigned long max_doorbells = (1UL << hba->nutrs) - 1;
-
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+		mas_blk_dump_unistore(hba->sdev_ufs_device->request_queue, "DORESET");
+#endif
 		/*
 		 * ufshcd_reset_and_restore() does the link reinitialization
 		 * which will need atleast one empty doorbell slot to send the
@@ -6092,12 +6411,19 @@ static irqreturn_t ufshcd_update_uic_error(struct ufs_hba *hba)
 {
 	u32 reg;
 	irqreturn_t retval = IRQ_NONE;
+	bool line_reset_err = false;
 
 	/* PHY layer lane error */
 	reg = ufshcd_readl(hba, REG_UIC_ERROR_CODE_PHY_ADAPTER_LAYER);
+	if(reg & UIC_PHY_ADAPTER_LAYER_GENERIC_ERROR)
+		line_reset_err = true;
+#ifdef CONFIG_HUAWEI_UFS_DSM
+	dsm_report_linereset_err(hba, reg & UIC_PHY_ADAPTER_LAYER_GENERIC_ERROR);
+#endif
 #if defined(CONFIG_SCSI_UFSHCD_QTI)
-	if (reg & UIC_PHY_ADAPTER_LAYER_GENERIC_ERROR)
+	if (reg & UIC_PHY_ADAPTER_LAYER_GENERIC_ERROR) {
 		dev_err(hba->dev, "line-reset: 0x%08x\n", reg);
+	}
 #endif
 	/* Ignore LINERESET indication, as this is not an error */
 	if ((reg & UIC_PHY_ADAPTER_LAYER_ERROR) &&
@@ -6154,7 +6480,15 @@ static irqreturn_t ufshcd_update_uic_error(struct ufs_hba *hba)
 		hba->uic_error |= UFSHCD_UIC_DME_ERROR;
 		retval |= IRQ_HANDLED;
 	}
-
+	if (line_reset_err) {
+		if (!(hba->uic_error & (UFSHCD_UIC_DL_NAC_RECEIVED_ERROR |
+			UFSHCD_UIC_DL_TCx_REPLAY_ERROR)))
+			check_link_status(hba);
+	}
+#ifdef CONFIG_HUAWEI_UFS_DSM
+	dsm_report_uic_trans_err(hba);
+	dsm_report_pa_init_err(hba);
+#endif
 	dev_dbg(hba->dev, "%s: UIC error flags = 0x%08x\n",
 			__func__, hba->uic_error);
 	return retval;
@@ -6191,11 +6525,16 @@ static irqreturn_t ufshcd_check_errors(struct ufs_hba *hba)
 	bool queue_eh_work = false;
 	irqreturn_t retval = IRQ_NONE;
 
-	if (hba->errors & INT_FATAL_ERRORS) {
+	if (hba->errors & INT_FATAL_ERRORS ||
+			(hba->errors &
+				(UIC_HIBERNATE_ENTER | UIC_HIBERNATE_EXIT))) {
 		ufshcd_update_reg_hist(&hba->ufs_stats.fatal_err, hba->errors);
 		queue_eh_work = true;
+#ifdef CONFIG_HUAWEI_UFS_DSM
+	ufshcd_error_need_queue_work(hba);
+#endif
 	}
-
+	update_check_link_count(hba);
 	if (hba->errors & UIC_ERROR) {
 		hba->uic_error = 0;
 		retval = ufshcd_update_uic_error(hba);
@@ -6692,6 +7031,9 @@ static int ufshcd_eh_device_reset_handler(struct scsi_cmnd *cmd)
 	hba = shost_priv(host);
 	tag = cmd->request->tag;
 
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	mas_blk_dump_unistore(hba->sdev_ufs_device->request_queue, "DEVICERESET");
+#endif
 	lrbp = &hba->lrb[tag];
 	err = ufshcd_issue_tm_cmd(hba, lrbp->lun, 0, UFS_LOGICAL_RESET, &resp);
 	if (err || resp != UPIU_TASK_MANAGEMENT_FUNC_COMPL) {
@@ -6761,7 +7103,11 @@ static int ufshcd_abort(struct scsi_cmnd *cmd)
 
 	host = cmd->device->host;
 	hba = shost_priv(host);
+#ifdef CONFIG_SCSI_MAS_UFS_MQ_DEFAULT
+	tag = ufshcd_get_tag_from_cmd(host, cmd);
+#else
 	tag = cmd->request->tag;
+#endif
 	lrbp = &hba->lrb[tag];
 	if (!ufshcd_valid_tag(hba, tag)) {
 		dev_err(hba->dev,
@@ -6930,6 +7276,11 @@ static int ufshcd_host_reset_and_restore(struct ufs_hba *hba)
 	hba->silence_err_logs = false;
 	spin_unlock_irqrestore(hba->host->host_lock, flags);
 
+#ifdef CONFIG_HUAWEI_UFS_DSM
+	dsm_timeout_serious_count_enable();
+	dsm_ufs_report_host_reset(hba);
+#endif
+
 	/* scale up clocks to max frequency before full reinitialization */
 	ufshcd_set_clk_freq(hba, true);
 
@@ -6944,6 +7295,9 @@ out:
 	if (err)
 		dev_err(hba->dev, "%s: Host init failed %d\n", __func__, err);
 	ufshcd_update_reg_hist(&hba->ufs_stats.host_reset, (u32)err);
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	blk_order_nr_reset(&hba->host->tag_set);
+#endif
 	return err;
 }
 
@@ -6976,6 +7330,11 @@ static int ufshcd_reset_and_restore(struct ufs_hba *hba)
 	spin_unlock_irqrestore(hba->host->host_lock, flags);
 
 	do {
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+		/* unitstore delay 100ms before reset */
+		if (hba->host && hba->host->unistore_enable)
+			msleep(100);
+#endif
 		/* Reset the attached device */
 		ufshcd_vops_device_reset(hba);
 
@@ -6994,6 +7353,10 @@ static int ufshcd_reset_and_restore(struct ufs_hba *hba)
 	}
 	spin_unlock_irqrestore(hba->host->host_lock, flags);
 
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	if (!err)
+		ufshcd_set_recovery_flag(hba);
+#endif
 	return err;
 }
 
@@ -7011,6 +7374,14 @@ static int ufshcd_eh_host_reset_handler(struct scsi_cmnd *cmd)
 
 	hba = shost_priv(cmd->device->host);
 
+#ifdef CONFIG_MAS_BLK
+	if (cmd->request)
+		mas_blk_latency_req_check_ufs(
+			cmd->request, REQ_PROC_STAGE_UFS_EH_START);
+#endif
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	mas_blk_dump_unistore(hba->sdev_ufs_device->request_queue, "HOSTRESET");
+#endif
 	spin_lock_irqsave(hba->host->host_lock, flags);
 	hba->force_reset = true;
 	ufshcd_schedule_eh_work(hba);
@@ -7023,7 +7394,11 @@ static int ufshcd_eh_host_reset_handler(struct scsi_cmnd *cmd)
 	if (hba->ufshcd_state == UFSHCD_STATE_ERROR)
 		err = FAILED;
 	spin_unlock_irqrestore(hba->host->host_lock, flags);
-
+#ifdef CONFIG_MAS_BLK
+	if (cmd && cmd->request)
+		mas_blk_latency_req_check_ufs(
+			cmd->request, REQ_PROC_STAGE_UFS_EH_END);
+#endif
 	return err;
 }
 
@@ -7153,11 +7528,17 @@ out:
 
 static inline void ufshcd_blk_pm_runtime_init(struct scsi_device *sdev)
 {
+#ifdef CONFIG_MAS_BLK
+	mas_blk_record_scsi_autopm(sdev->host, GET_DEVICE, 3);
+#endif
 	scsi_autopm_get_device(sdev);
 	blk_pm_runtime_init(sdev->request_queue, &sdev->sdev_gendev);
 	if (sdev->rpm_autosuspend)
 		pm_runtime_set_autosuspend_delay(&sdev->sdev_gendev,
 						 RPM_AUTOSUSPEND_DELAY_MS);
+#ifdef CONFIG_MAS_BLK
+	mas_blk_record_scsi_autopm(sdev->host, PUT_DEVICE, 3);
+#endif
 	scsi_autopm_put_device(sdev);
 }
 
@@ -7388,12 +7769,18 @@ static int ufs_get_device_desc(struct ufs_hba *hba)
 	 */
 	dev_info->wmanufacturerid = desc_buf[DEVICE_DESC_PARAM_MANF_ID] << 8 |
 				     desc_buf[DEVICE_DESC_PARAM_MANF_ID + 1];
-
+	dev_info->w_manufacturer_id = dev_info->wmanufacturerid;
 	/* getting Specification Version in big endian format */
 	dev_info->wspecversion = desc_buf[DEVICE_DESC_PARAM_SPEC_VER] << 8 |
 				      desc_buf[DEVICE_DESC_PARAM_SPEC_VER + 1];
 
 	model_index = desc_buf[DEVICE_DESC_PARAM_PRDCT_NAME];
+
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	if (hba->desc_size.dev_desc >= DEVICE_DESC_PARAM_FEATURE)
+		dev_info->vendor_feature = get_unaligned_be32(
+			&desc_buf[DEVICE_DESC_PARAM_FEATURE]);
+#endif
 
 	err = ufshcd_read_string_desc(hba, model_index,
 				      &dev_info->model, SD_ASCII_STD);
@@ -7409,6 +7796,12 @@ static int ufs_get_device_desc(struct ufs_hba *hba)
 
 	ufshcd_wb_probe(hba, desc_buf);
 
+	if (ufs_proc_set_device(hba, model_index, desc_buf, buff_len) < 0)
+		goto out;
+	
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	ufshcd_vendor_feature_unistore_init(hba, dev_info);
+#endif
 	/*
 	 * ufshcd_read_string_desc returns size of the string
 	 * reset the error value
@@ -7419,7 +7812,6 @@ out:
 	kfree(desc_buf);
 	return err;
 }
-
 static void ufs_put_device_desc(struct ufs_hba *hba)
 {
 	struct ufs_dev_info *dev_info = &hba->dev_info;
@@ -7775,7 +8167,6 @@ static int ufshcd_add_lus(struct ufs_hba *hba)
 
 	ufs_bsg_probe(hba);
 	scsi_scan_host(hba->host);
-
 out:
 	return ret;
 }
@@ -7787,16 +8178,32 @@ out:
  *
  * Execute link-startup and verify device initialization
  */
+#define MAS_BLK_TEMP_DEBUG
+#ifdef MAS_BLK_TEMP_DEBUG
+static struct delayed_work ufs_guard_work;
+int stuck_pm;
+static void ufs_guard_work_fn(struct work_struct *work)
+{
+	pr_err("stuck pm %d", stuck_pm);
+	BUG();
+}
+#endif
+
 static int ufshcd_probe_hba(struct ufs_hba *hba, bool async)
 {
 	int ret;
 	unsigned long flags;
+
 #if defined(CONFIG_SCSI_UFSHCD_QTI)
 	bool reinit_needed = true;
 #endif
 	ktime_t start = ktime_get();
 
 	dev_err(hba->dev, "*** This is %s ***\n", __FILE__);
+#ifdef CONFIG_HUAWEI_UFS_DSM
+	dsm_disable_uic_err(hba);
+#endif
+
 #if defined(CONFIG_SCSI_UFSHCD_QTI)
 reinit:
 #endif
@@ -7834,6 +8241,9 @@ reinit:
 			goto out;
 	}
 
+	ufs_get_geometry_info(hba);
+	ufs_set_health_desc(hba);
+
 #if defined(CONFIG_SCSI_UFSHCD_QTI)
 	/*
 	 * After reading the device descriptor, it is found as UFS 2.x
@@ -7867,6 +8277,13 @@ reinit:
 	/* UFS device is also active now */
 	ufshcd_set_ufs_dev_active(hba);
 	ufshcd_force_reset_auto_bkops(hba);
+
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	ret = ufshcd_unistore_init(hba);
+	if (ret)
+		goto out;
+#endif
+
 	hba->wlun_dev_clr_ua = true;
 
 	/* Gear up to HS gear if supported */
@@ -7885,7 +8302,12 @@ reinit:
 		}
 		ufshcd_print_pwr_info(hba);
 	}
-
+#ifdef CONFIG_HUAWEI_UFS_DSM
+	dsm_report_one_lane_err(hba);
+#endif
+#ifdef MAS_BLK_TEMP_DEBUG
+	INIT_DELAYED_WORK(&ufs_guard_work, ufs_guard_work_fn);
+#endif
 	/*
 	 * bActiveICCLevel is volatile for UFS device (as per latest v2.1 spec)
 	 * and for removable UFS card as well, hence always set the parameter.
@@ -7894,9 +8316,20 @@ reinit:
 	 */
 	ufshcd_set_active_icc_lvl(hba);
 
+#if defined(CONFIG_SCSI_UFS_HI1861_VCMD) && defined(CONFIG_PLATFORM_DIEID)
+	hufs_bootdevice_get_dieid(hba);
+#endif
+
 	ufshcd_wb_config(hba);
+	if (!ufshcd_eh_in_progress(hba) && !hba->pm_op_in_progress) {
+		ufshpb_probe(hba);
+	}
 	/* Enable Auto-Hibernate if configured */
 	ufshcd_auto_hibern8_enable(hba);
+
+#ifdef CONFIG_HUAWEI_UFS_DSM
+	dsm_ufs_enable_uic_err(hba);
+#endif
 
 out:
 	spin_lock_irqsave(hba->host->host_lock, flags);
@@ -7948,6 +8381,9 @@ static enum blk_eh_timer_return ufshcd_eh_timed_out(struct scsi_cmnd *scmd)
 	struct ufs_hba *hba;
 	int index;
 	bool found = false;
+#ifdef CONFIG_HUAWEI_UFS_DSM
+	int tag = -1;
+#endif
 
 	if (!scmd || !scmd->device || !scmd->device->host)
 		return BLK_EH_DONE;
@@ -7962,12 +8398,17 @@ static enum blk_eh_timer_return ufshcd_eh_timed_out(struct scsi_cmnd *scmd)
 	for_each_set_bit(index, &hba->outstanding_reqs, hba->nutrs) {
 		if (hba->lrb[index].cmd == scmd) {
 			found = true;
+#ifdef CONFIG_HUAWEI_UFS_DSM
+			tag = index;
+#endif
 			break;
 		}
 	}
 
 	spin_unlock_irqrestore(host->host_lock, flags);
-
+#ifdef CONFIG_HUAWEI_UFS_DSM
+	dsm_report_scsi_cmd_timeout_err(hba, found, tag, scmd);
+#endif
 	/*
 	 * Bypass SCSI error handling and reset the block layer timer if this
 	 * SCSI command was not actually dispatched to UFS driver, otherwise
@@ -8005,8 +8446,23 @@ static struct scsi_host_template ufshcd_driver_template = {
 	.eh_device_reset_handler = ufshcd_eh_device_reset_handler,
 	.eh_host_reset_handler   = ufshcd_eh_host_reset_handler,
 	.eh_timed_out		= ufshcd_eh_timed_out,
+#ifdef CONFIG_MAS_BLK
+	.dump_status		= ufshcd_dump_status,
+#ifdef CONFIG_HYPERHOLD_CORE
+	.get_health_info	= ufshcd_get_health_info,
+#endif
+	.direct_flush		= ufshcd_direct_flush,
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+	.send_request_sense_directly = ufshcd_send_request_sense_directly,
+#endif
+#endif
 	.this_id		= -1,
+#ifdef CONFIG_SCSI_UFS_CUST_MAX_SECTORS
+        .max_sectors            = 4096,
+        .sg_tablesize           = UFS_SG_MAX_COUNT,
+#else
 	.sg_tablesize		= SG_ALL,
+#endif
 	.cmd_per_lun		= UFSHCD_CMD_PER_LUN,
 	.can_queue		= UFSHCD_CAN_QUEUE,
 	.max_segment_size	= PRDT_DATA_BYTE_COUNT_MAX,
@@ -8015,6 +8471,9 @@ static struct scsi_host_template ufshcd_driver_template = {
 	.sdev_groups		= ufshcd_driver_groups,
 	.dma_boundary		= PAGE_SIZE - 1,
 	.rpm_autosuspend_delay	= RPM_AUTOSUSPEND_DELAY_MS,
+#ifdef CONFIG_HUAWEI_UFS_DYNAMIC_SWITCH_WB
+	.shost_attrs		= ufs_host_attrs,
+#endif
 };
 
 static int ufshcd_config_vreg_load(struct device *dev, struct ufs_vreg *vreg,
@@ -8523,6 +8982,26 @@ static int ufshcd_set_dev_pwr_mode(struct ufs_hba *hba,
 	if (ret)
 		return ret;
 
+#ifdef CONFIG_SCSI_MAS_UFS_MQ_DEFAULT
+	 /*
+         * Sync cache for ufs device, MQ freeze queue after sync cache which
+         * will cause a new request sending to Low layer between sync cache and
+         * freezed queue, then the last new request may lost its data without
+         * another sync cache
+         */
+	if (hba->caps & UFSHCD_CAP_SSU_BY_SELF &&
+	    (pwr_mode == UFS_SLEEP_PWR_MODE ||
+	     pwr_mode == UFS_POWERDOWN_PWR_MODE)) {
+		if (pwr_mode != UFS_SLEEP_PWR_MODE)
+			dev_err(hba->dev,
+				"UFS MQ: <%s> call ufshcd_send_scsi_sync_cache pwr_mode = %d\r\n",
+				__func__, pwr_mode);
+		ret = ufshcd_send_scsi_sync_cache(hba, sdp);
+		if (ret)
+			goto out;
+	}
+#endif
+
 	/*
 	 * If scsi commands fail, the scsi mid-layer schedules scsi error-
 	 * handling, which would wait for host to be resumed. Since we know
@@ -8531,7 +9010,13 @@ static int ufshcd_set_dev_pwr_mode(struct ufs_hba *hba,
 	 */
 	hba->host->eh_noresume = 1;
 	if (hba->wlun_dev_clr_ua) {
-		ret = ufshcd_send_request_sense(hba, sdp);
+#ifdef CONFIG_SCSI_MAS_UFS_MQ_DEFAULT
+		if (hba->caps & UFSHCD_CAP_SSU_BY_SELF)
+			ret = ufshcd_send_scsi_request_sense(hba, sdp, 1500,
+							     true);
+		else
+#endif
+			ret = ufshcd_send_request_sense(hba, sdp);
 		if (ret)
 			goto out;
 		/* Unit attention condition is cleared now */
@@ -8545,8 +9030,14 @@ static int ufshcd_set_dev_pwr_mode(struct ufs_hba *hba,
 	 * callbacks hence set the RQF_PM flag so that it doesn't resume the
 	 * already suspended childs.
 	 */
-	ret = scsi_execute(sdp, cmd, DMA_NONE, NULL, 0, NULL, &sshdr,
-			START_STOP_TIMEOUT, 0, 0, RQF_PM, NULL);
+#ifdef CONFIG_SCSI_MAS_UFS_MQ_DEFAULT
+	if (hba->caps & UFSHCD_CAP_SSU_BY_SELF)
+		ret = ufshcd_send_scsi_ssu(hba, sdp, cmd, UFSHCD_SSU_BY_SELF_TIMEOUT,
+			&sshdr);
+	else
+#endif
+		ret = scsi_execute(sdp, cmd, DMA_NONE, NULL, 0, NULL, &sshdr,
+				   START_STOP_TIMEOUT, 0, 0, RQF_PM, NULL);
 	if (ret) {
 		sdev_printk(KERN_WARNING, sdp,
 			    "START_STOP failed for power mode: %d, result %x\n",
@@ -8652,8 +9143,10 @@ static void ufshcd_vreg_set_lpm(struct ufs_hba *hba)
 		ufshcd_setup_vreg(hba, false);
 		vcc_off = true;
 	} else if (!ufshcd_is_ufs_dev_active(hba)) {
+#if !defined(CONFIG_HUAWEI_UFS_VCC_KEEP_ON)
 		ufshcd_toggle_vreg(hba->dev, hba->vreg_info.vcc, false);
 		vcc_off = true;
+#endif
 		if (!ufshcd_is_link_active(hba)) {
 			ufshcd_config_vreg_lpm(hba, hba->vreg_info.vccq);
 			ufshcd_config_vreg_lpm(hba, hba->vreg_info.vccq2);
@@ -8759,6 +9252,13 @@ static int ufshcd_suspend(struct ufs_hba *hba, enum ufs_pm_op pm_op)
 		req_dev_pwr_mode = UFS_POWERDOWN_PWR_MODE;
 		req_link_state = UIC_LINK_OFF_STATE;
 	}
+	ufshpb_suspend(hba, pm_op);
+	ufstt_suspend(hba, pm_op);
+
+#ifdef CONFIG_HUAWEI_UFS_WB_RUNTIME
+	if (!ufshcd_is_runtime_pm(pm_op))
+		ufshcd_wb_runtime_switch_suspend(hba);
+#endif
 
 	ret = ufshcd_crypto_suspend(hba, pm_op);
 	if (ret)
@@ -8824,6 +9324,7 @@ static int ufshcd_suspend(struct ufs_hba *hba, enum ufs_pm_op pm_op)
 		    !ufshcd_is_runtime_pm(pm_op)) {
 			/* ensure that bkops is disabled */
 			ufshcd_disable_auto_bkops(hba);
+			ufshcd_wb_toggle_cancel(hba);
 		}
 
 		if (!hba->dev_info.b_rpm_dev_flush_capable) {
@@ -9054,6 +9555,8 @@ out:
 	hba->pm_op_in_progress = 0;
 	if (ret)
 		ufshcd_update_reg_hist(&hba->ufs_stats.resume_err, (u32)ret);
+	else
+		ufstt_resume(hba);
 	return ret;
 }
 
@@ -9227,6 +9730,8 @@ int ufshcd_shutdown(struct ufs_hba *hba)
 #if defined(CONFIG_SCSI_UFSHCD_QTI)
 	struct scsi_device *sdev;
 #endif
+	ufshpb_shutdown(hba);
+	ufstt_shutdown(hba);
 
 	if (!hba->is_powered)
 		goto out;
@@ -9246,10 +9751,21 @@ int ufshcd_shutdown(struct ufs_hba *hba)
 	 * of sending the SSU cmd during ufshcd_suspend().
 	 */
 	shost_for_each_device(sdev, hba->host) {
+#ifdef CONFIG_SCSI_MAS_UFS_MQ_DEFAULT
+		if (sdev->host->queue_quirk_flag & SHOST_QUIRK(SHOST_QUIRK_MAS_UFS_MQ)) {
+			scsi_device_quiesce(sdev);
+		} else {
+			if (sdev == hba->sdev_ufs_device)
+				scsi_device_quiesce(sdev);
+			else
+				scsi_remove_device(sdev);
+		}
+#else
 		if (sdev == hba->sdev_ufs_device)
 			scsi_device_quiesce(sdev);
 		else
 			scsi_remove_device(sdev);
+#endif
 	}
 #else
 	pm_runtime_get_sync(hba->dev);
@@ -9273,6 +9789,13 @@ void ufshcd_remove(struct ufs_hba *hba)
 {
 	ufs_bsg_remove(hba);
 	ufs_sysfs_remove_nodes(hba->dev);
+	ufstt_remove(hba);
+#ifdef CONFIG_HUAWEI_DSM_IOMT_UFS_HOST
+	dsm_iomt_ufs_host_exit(hba->host);
+#endif
+
+	ufs_dynamic_switching_wb_remove(hba);
+
 	scsi_remove_host(hba->host);
 	/* disable interrupts */
 	ufshcd_disable_intr(hba, hba->intr_mask);
@@ -9344,6 +9867,9 @@ int ufshcd_alloc_host(struct device *dev, struct ufs_hba **hba_handle)
 	*hba_handle = hba;
 	hba->dev_ref_clk_freq = REF_CLK_FREQ_INVAL;
 	hba->sg_entry_size = sizeof(struct ufshcd_sg_entry);
+#ifdef CONFIG_HUAWEI_DSM_IOMT_UFS_HOST
+	dsm_iomt_hba_host_pre_init(hba);
+#endif
 
 	INIT_LIST_HEAD(&hba->clk_list_head);
 
@@ -9370,12 +9896,20 @@ int ufshcd_init(struct ufs_hba *hba, void __iomem *mmio_base, unsigned int irq)
 		dev_err(hba->dev,
 		"Invalid memory reference for mmio_base is NULL\n");
 		err = -ENODEV;
+#ifdef CONFIG_SCSI_MAS_UFS_MQ_DEFAULT
+		goto out_error_directly;
+#else
 		goto out_error;
+ #endif
 	}
-
 	hba->mmio_base = mmio_base;
 	hba->irq = irq;
 	hba->vps = &ufs_hba_vps;
+#ifdef CONFIG_SCSI_MAS_UFS_MQ_DEFAULT
+	err = ufshcd_send_scsi_sync_cache_init();
+	if (err)
+		goto out_error;
+#endif
 
 	err = ufshcd_hba_init(hba);
 	if (err)
@@ -9383,6 +9917,10 @@ int ufshcd_init(struct ufs_hba *hba, void __iomem *mmio_base, unsigned int irq)
 
 	/* Read capabilities registers */
 	ufshcd_hba_capabilities(hba);
+
+#ifdef CONFIG_HUAWEI_UFS_DSM
+	dsm_ufs_initialize(hba);
+#endif
 
 	/* Get UFS version supported by the controller */
 	hba->ufs_version = ufshcd_get_ufs_version(hba);
@@ -9415,12 +9953,22 @@ int ufshcd_init(struct ufs_hba *hba, void __iomem *mmio_base, unsigned int irq)
 	ufshcd_host_memory_configure(hba);
 
 	host->can_queue = hba->nutrs;
+#ifdef CONFIG_SCSI_MAS_UFS_MQ_DEFAULT
+	ufshcd_mas_mq_init(host);
+	if (host->queue_quirk_flag &
+	    SHOST_QUIRK(SHOST_QUIRK_SCSI_QUIESCE_IN_LLD))
+		hba->caps |= UFSHCD_CAP_SSU_BY_SELF;
+#endif /* CONFIG_SCSI_MAS_UFS_MQ_DEFAULT */
+
 	host->cmd_per_lun = hba->nutrs;
 	host->max_id = UFSHCD_MAX_ID;
 	host->max_lun = UFS_MAX_LUNS;
 	host->max_channel = UFSHCD_MAX_CHANNEL;
 	host->unique_id = host->host_no;
 	host->max_cmd_len = UFS_CDB_SIZE;
+#ifdef CONFIG_MAS_UFS_MANUAL_BKOPS
+        host->mas_dev_quirk_flag |= SHOST_MAS_DEV_QUIRK(SHOST_QUIRK_BKOPS_ENABLE);
+#endif
 
 	hba->max_pwr_info.is_valid = false;
 
@@ -9440,6 +9988,7 @@ int ufshcd_init(struct ufs_hba *hba, void __iomem *mmio_base, unsigned int irq)
 	}
 	INIT_WORK(&hba->eh_work, ufshcd_err_handler);
 	INIT_WORK(&hba->eeh_work, ufshcd_exception_event_handler);
+	ufs_error_recovery_init(hba);
 
 	/* Initialize UIC command mutex */
 	mutex_init(&hba->uic_cmd_mutex);
@@ -9484,7 +10033,9 @@ int ufshcd_init(struct ufs_hba *hba, void __iomem *mmio_base, unsigned int irq)
 		dev_err(hba->dev, "scsi_add_host failed\n");
 		goto exit_gating;
 	}
-
+#ifdef CONFIG_HUAWEI_DSM_IOMT_UFS_HOST
+	dsm_iomt_ufs_host_init(hba->host);
+#endif
 	/* Reset the attached device */
 	ufshcd_vops_device_reset(hba);
 
@@ -9550,6 +10101,10 @@ out_disable:
 	hba->is_irq_enabled = false;
 	ufshcd_hba_exit(hba);
 out_error:
+#ifdef CONFIG_SCSI_MAS_UFS_MQ_DEFAULT
+	ufshcd_send_scsi_sync_cache_deinit();
+out_error_directly:
+#endif
 	return err;
 }
 EXPORT_SYMBOL_GPL(ufshcd_init);

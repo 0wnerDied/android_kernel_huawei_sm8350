@@ -32,6 +32,10 @@
 #include <linux/kallsyms.h>
 #include <linux/kdebug.h>
 
+#ifdef CONFIG_RAINBOW_REASON
+#include <linux/rainbow_reason.h>
+#endif
+
 #define MASK_SIZE        32
 #define COMPARE_RET      -1
 
@@ -769,6 +773,10 @@ void qcom_wdt_trigger_bite(void)
 {
 	if (!wdog_data)
 		return;
+#ifdef CONFIG_RAINBOW_REASON
+	rb_mreason_set(RB_M_AWDT);
+	rb_sreason_set("wdog_bite");
+#endif
 	compute_irq_stat(&wdog_data->irq_counts_work);
 	dev_err(wdog_data->dev, "Causing a QCOM Apps Watchdog bite!\n");
 	wdog_data->ops->show_wdt_status(wdog_data);

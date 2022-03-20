@@ -40,6 +40,12 @@ struct ion_msm_system_heap {
 	struct ion_msm_page_pool *secure_pools[VMID_LAST][MAX_ORDER];
 	/* Prevents unnecessary page splitting */
 	struct mutex split_page_mutex;
+	/* prefetch */
+	unsigned long pool_watermark;
+	struct task_struct *pool_watermark_kthread;
+	wait_queue_head_t pool_watermark_wait;
+	atomic_t wait_flag;
+	struct mutex pool_watermark_lock;
 };
 
 struct page_info {

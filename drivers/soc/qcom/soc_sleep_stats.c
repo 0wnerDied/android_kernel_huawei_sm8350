@@ -9,10 +9,14 @@
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
+#include <linux/suspend.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
+#ifdef CONFIG_HUAWEI_DUBAI
+#include <huawei_platform/log/hwlog_kernel.h>
+#endif
 
 #include <clocksource/arm_arch_timer.h>
 
@@ -60,6 +64,11 @@ struct stats_entry {
 	struct appended_entry appended_entry;
 };
 
+#ifdef CONFIG_HUAWEI_DSM
+#include "cx_dmd/soc_sleep_stats_dmd.c"
+#endif
+
+static struct soc_sleep_stats_data* soc_sleep_drv = NULL;
 static inline u64 get_time_in_sec(u64 counter)
 {
 	do_div(counter, arch_timer_get_rate());
@@ -74,6 +83,21 @@ static inline ssize_t append_data_to_buf(char *buf, int length,
 
 	memcpy(stat_type, &data->entry.stat_type, sizeof(u32));
 
+	pr_err("\n%s\n"
+		 "\tCount                    :%u\n"
+		 "\tLast Entered At(sec)     :%llu\n"
+		 "\tLast Exited At(sec)      :%llu\n"
+		 "\tAccumulated Duration(sec):%llu\n"
+		 "\tClient Votes             :0x%x\n\n",
+		 stat_type, data->entry.count,
+		 data->entry.last_entered_at,
+		 data->entry.last_exited_at,
+		 data->entry.accumulated,
+		 data->appended_entry.client_votes);
+#ifdef CONFIG_HUAWEI_DUBAI
+		HWDUBAI_LOGE("DUBAI_TAG_SOC_SLEEP", "name=%s count=%d duration=%ld", stat_type, data->entry.count,
+			data->entry.accumulated);
+#endif
 	return scnprintf(buf, length,
 			 "%s\n"
 			 "\tCount                    :%u\n"
@@ -88,8 +112,7 @@ static inline ssize_t append_data_to_buf(char *buf, int length,
 			 data->appended_entry.client_votes);
 }
 
-static ssize_t stats_show(struct kobject *obj, struct kobj_attribute *attr,
-			  char *buf)
+static ssize_t stats_show_inner(struct soc_sleep_stats_data *drv, char *buf)
 {
 	int i;
 	uint32_t offset;
@@ -97,8 +120,6 @@ static ssize_t stats_show(struct kobject *obj, struct kobj_attribute *attr,
 	struct stats_entry data;
 	struct entry *e = &data.entry;
 	struct appended_entry *ae = &data.appended_entry;
-	struct soc_sleep_stats_data *drv = container_of(attr,
-					   struct soc_sleep_stats_data, ka);
 	void __iomem *reg = drv->reg;
 
 	for (i = 0; i < drv->config->num_records; i++) {
@@ -135,6 +156,11 @@ static ssize_t stats_show(struct kobject *obj, struct kobj_attribute *attr,
 
 		op_length = append_data_to_buf(buf + length, PAGE_SIZE - length,
 					       &data);
+
+#ifdef CONFIG_HUAWEI_DSM
+		check_soc_idle_count(&data);
+#endif
+
 		if (op_length >= PAGE_SIZE - length)
 			goto exit;
 
@@ -142,6 +168,15 @@ static ssize_t stats_show(struct kobject *obj, struct kobj_attribute *attr,
 	}
 exit:
 	return length;
+}
+
+static ssize_t stats_show(struct kobject *obj, struct kobj_attribute *attr,
+			  char *buf)
+{
+	struct soc_sleep_stats_data *drv = container_of(attr,
+					   struct soc_sleep_stats_data, ka);
+
+	return stats_show_inner(drv, buf);
 }
 
 static int soc_sleep_stats_create_sysfs(struct platform_device *pdev,
@@ -183,29 +218,70 @@ static const struct of_device_id soc_sleep_stats_table[] = {
 	{ },
 };
 
+static int soc_sleep_pm_notify(struct notifier_block *nb, unsigned long mode, void *data)
+{
+	char *buf = NULL;
+
+	switch (mode) {
+	case PM_SUSPEND_PREPARE:
+		break;
+	case PM_POST_SUSPEND:
+		buf = kmalloc(PAGE_SIZE, GFP_KERNEL);
+		if (buf == NULL) {
+			pr_err("Failed to call kmalloc size= %d", PAGE_SIZE);
+			return -1;
+		}
+		stats_show_inner(soc_sleep_drv, buf);
+		kfree(buf);
+		buf = NULL;
+		break;
+	default:
+		break;
+	}
+
+	return 0;
+}
+
+static struct notifier_block soc_sleep_pm_nb = {
+	.notifier_call = soc_sleep_pm_notify,
+};
+
+void soc_sleep_sr_init(void)
+{
+	int ret;
+
+	ret = register_pm_notifier(&soc_sleep_pm_nb);
+	if (ret)
+		pr_err("Failed to register pm notifier");
+}
+
+void soc_sleep_sr_exit(void)
+{
+	unregister_pm_notifier(&soc_sleep_pm_nb);
+}
+
 static int soc_sleep_stats_probe(struct platform_device *pdev)
 {
-	struct soc_sleep_stats_data *drv;
 	struct resource *res;
 	void __iomem *offset_addr;
 	uint32_t offset = 0;
 	int ret;
 
-	drv = devm_kzalloc(&pdev->dev, sizeof(*drv), GFP_KERNEL);
-	if (!drv)
+	soc_sleep_drv = devm_kzalloc(&pdev->dev, sizeof(*soc_sleep_drv), GFP_KERNEL);
+	if (!soc_sleep_drv)
 		return -ENOMEM;
 
-	drv->config = of_device_get_match_data(&pdev->dev);
-	if (!drv->config)
+	soc_sleep_drv->config = of_device_get_match_data(&pdev->dev);
+	if (!soc_sleep_drv->config)
 		return -ENODEV;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!res)
 		return PTR_ERR(res);
 
-	if (drv->config->offset_addr) {
+	if (soc_sleep_drv->config->offset_addr) {
 		offset_addr = devm_ioremap_nocache(&pdev->dev, res->start +
-						   drv->config->offset_addr,
+						   soc_sleep_drv->config->offset_addr,
 						   sizeof(u32));
 		if (!offset_addr)
 			return -ENOMEM;
@@ -213,22 +289,24 @@ static int soc_sleep_stats_probe(struct platform_device *pdev)
 		offset = readl_relaxed(offset_addr);
 	}
 
-	drv->stats_base = res->start | offset;
-	drv->stats_size = resource_size(res);
+	soc_sleep_drv->stats_base = res->start | offset;
+	soc_sleep_drv->stats_size = resource_size(res);
 
-	ret = soc_sleep_stats_create_sysfs(pdev, drv);
+	ret = soc_sleep_stats_create_sysfs(pdev, soc_sleep_drv);
 	if (ret) {
 		pr_err("Failed to create sysfs interface\n");
 		return ret;
 	}
 
-	drv->reg = devm_ioremap(&pdev->dev, drv->stats_base, drv->stats_size);
-	if (!drv->reg) {
+	soc_sleep_drv->reg = devm_ioremap(&pdev->dev, soc_sleep_drv->stats_base, soc_sleep_drv->stats_size);
+	if (!soc_sleep_drv->reg) {
 		pr_err("ioremap failed\n");
 		return -ENOMEM;
 	}
 
-	platform_set_drvdata(pdev, drv);
+	platform_set_drvdata(pdev, soc_sleep_drv);
+	soc_sleep_sr_init();
+
 	return 0;
 }
 
@@ -236,6 +314,7 @@ static int soc_sleep_stats_remove(struct platform_device *pdev)
 {
 	struct soc_sleep_stats_data *drv = platform_get_drvdata(pdev);
 
+	soc_sleep_sr_exit();
 	sysfs_remove_file(drv->kobj, &drv->ka.attr);
 	kobject_put(drv->kobj);
 

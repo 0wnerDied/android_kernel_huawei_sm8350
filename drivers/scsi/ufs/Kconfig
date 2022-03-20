@@ -161,6 +161,29 @@ config SCSI_UFS_HISI
 	  Select this if you have UFS controller on Hisilicon chipset.
 	  If unsure, say N.
 
+
+config HUAWEI_UFS_VENDOR_MODE
+	bool "Enter UFS vendor mode"
+	depends on SCSI_UFSHCD
+
+config SCSI_UFS_HI1861_VCMD
+	bool "UFS Hi1861 Device Vendor Command"
+        depends on SCSI_UFSHCD
+        ---help---
+        This adds UFS Hisilicon Device defined vendor command.
+        contained that query fsr and so on.
+
+config PLATFORM_DIEID
+	bool "Support Platform DIEID driver"
+        depends on SCSI_UFSHCD
+        ---help---
+        This adds UFS Hisilicon Device defined vendor command.
+        contained read dieid.
+
+config HUAWEI_UFS_DSM
+	bool "Listen UFS Kernel Error"
+	depends on SCSI_UFSHCD
+
 config SCSI_UFS_BSG
 	bool "Universal Flash Storage BSG device node"
 	depends on (SCSI_UFSHCD || SCSI_UFSHCD_QTI)
@@ -196,3 +219,56 @@ config SCSI_UFS_CRYPTO_QTI
 	 Enable Vendor Crypto Engine Support in UFS
 	 Enabling this allows kernel to use UFS crypto operations defined
 	 and implemented by QTI.
+
+config SCSI_UFS_UNISTORE
+	bool "enable unistore in UFS"
+	depends on SCSI_UFSHCD
+	default n
+	---help---
+	This enable unistore in UFS
+
+config HUAWEI_UFS_HPB
+        bool "Add HPB drivers"
+        depends on SCSI_UFSHCD
+
+config HUAWEI_UFS_VCC_KEEP_ON
+	bool "Huawei UFS Vcc Keep On"
+	depends on SCSI_UFSHCD
+
+config HUAWEI_UFS_DYNAMIC_SWITCH_WB
+	bool "Add dynamic switch WB drivers"
+
+config HUAWEI_UFS_WB_RUNTIME
+	bool "enable wb runtime switch depends on dynamic switch WB"
+	depends on HUAWEI_UFS_DYNAMIC_SWITCH_WB
+	default n
+
+config MAS_UFS_MANUAL_BKOPS
+	bool "mas manual BKOPS support for UFS"
+	depends on MAS_BKOPS && SCSI_UFSHCD
+	default n
+
+config SCSI_UFS_CUST_MAX_SECTORS
+	bool "enable custom max sectors in UFS"
+	depends on SCSI_UFSHCD
+	default n
+	help
+		enable custom max sectors in UFS
+
+config SCSI_MAS_UFS_MQ_DEFAULT
+	bool "Active MAS UFS MQ as default IO Scheduler"
+	default n
+	help
+		Active MAS UFS MQ as default IO Scheduler
+
+config HUAWEI_UFS_TURBO_TABLE
+	bool "Add turbo table drivers"
+	depends on SCSI_UFSHCD
+
+config UFS_DEVICE_VENDOR_MODIFY
+	bool "Add ufs device vendor modify interfaces"
+	depends on SCSI_UFSHCD && SCSI_UFS_QCOM
+
+config SCSI_UFS_HS_ERROR_RECOVER
+	bool "ufs hs error recover"
+	depends on SCSI_UFSHCD

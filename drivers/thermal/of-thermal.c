@@ -18,6 +18,7 @@
 #include <linux/export.h>
 #include <linux/string.h>
 #include <linux/list.h>
+#include <linux/hw/hw_thermal.h>
 
 #include "thermal_core.h"
 
@@ -340,6 +341,7 @@ EXPORT_SYMBOL_GPL(of_thermal_get_trip_points);
  * Return: zero on success, error code otherwise
  */
 #ifdef CONFIG_QTI_THERMAL
+#ifndef CONFIG_HW_IPA_THERMAL
 static int of_thermal_set_emul_temp(struct thermal_zone_device *tz,
 				    int temp)
 {
@@ -351,6 +353,7 @@ static int of_thermal_set_emul_temp(struct thermal_zone_device *tz,
 	return data->senps[0]->ops->set_emul_temp(data->senps[0]->sensor_data,
 						temp);
 }
+#endif
 
 static int of_thermal_get_trend(struct thermal_zone_device *tz, int trip,
 				enum thermal_trend *trend)
@@ -364,6 +367,7 @@ static int of_thermal_get_trend(struct thermal_zone_device *tz, int trip,
 					   trip, trend);
 }
 #else
+#ifndef CONFIG_HW_IPA_THERMAL
 static int of_thermal_set_emul_temp(struct thermal_zone_device *tz,
 				    int temp)
 {
@@ -371,6 +375,7 @@ static int of_thermal_set_emul_temp(struct thermal_zone_device *tz,
 
 	return data->ops->set_emul_temp(data->sensor_data, temp);
 }
+#endif
 
 static int of_thermal_get_trend(struct thermal_zone_device *tz, int trip,
 				enum thermal_trend *trend)
@@ -868,7 +873,11 @@ thermal_zone_of_add_sensor(struct device_node *zone,
 		tzd->ops->set_trips = of_thermal_set_trips;
 
 	if (sens_param->ops->set_emul_temp)
+#ifdef CONFIG_HW_IPA_THERMAL
+		tzd->ops->set_emul_temp = NULL;
+#else
 		tzd->ops->set_emul_temp = of_thermal_set_emul_temp;
+#endif
 
 add_sensor_exit:
 	mutex_unlock(&tzd->lock);
@@ -1077,7 +1086,11 @@ thermal_zone_of_add_sensor(struct device_node *zone,
 		tzd->ops->set_trips = of_thermal_set_trips;
 
 	if (ops->set_emul_temp)
+#ifdef CONFIG_HW_IPA_THERMAL
+		tzd->ops->set_emul_temp = NULL;
+#else
 		tzd->ops->set_emul_temp = of_thermal_set_emul_temp;
+#endif
 
 	mutex_unlock(&tzd->lock);
 
@@ -1157,6 +1170,7 @@ thermal_zone_of_sensor_register(struct device *dev, int sensor_id, void *data,
 		if (sensor_specs.np == sensor_np && id == sensor_id) {
 			tzd = thermal_zone_of_add_sensor(child, sensor_np,
 							 data, ops);
+
 			if (!IS_ERR(tzd))
 				tzd->ops->set_mode(tzd, THERMAL_DEVICE_ENABLED);
 
@@ -1390,6 +1404,8 @@ end:
 
 	return ret;
 }
+
+#include "of-thermal-hw.c"
 
 /**
  * It maps 'enum thermal_trip_type' found in include/linux/thermal.h
@@ -1699,7 +1715,6 @@ __init *thermal_of_build_thermal_zone(struct device_node *np)
 
 	/* trips */
 	child = of_get_child_by_name(np, "trips");
-
 	/* No trips provided */
 	if (!child)
 		goto finish;
@@ -1858,8 +1873,24 @@ int __init of_parse_thermal_zones(void)
 		/* No hwmon because there might be hwmon drivers registering */
 		tzp->no_hwmon = true;
 
+#ifdef CONFIG_HW_IPA_THERMAL
+		/* tzp->num_tbps? */
+		/* tzp->tbp? */
+		if (!of_property_read_u32(child, "k_po", &prop))
+			tzp->k_po = prop;
+		if (!of_property_read_u32(child, "k_pu", &prop))
+			tzp->k_pu = prop;
+		if (!of_property_read_u32(child, "k_i", &prop))
+			tzp->k_i = prop;
+		if (!of_property_read_u32(child, "integral_cutoff", &prop))
+			tzp->integral_cutoff = prop;
+#endif
 		if (!of_property_read_u32(child, "sustainable-power", &prop))
 			tzp->sustainable_power = prop;
+
+#ifdef CONFIG_HW_IPA_THERMAL
+		tzp->max_sustainable_power = tzp->sustainable_power;
+#endif
 
 		for (i = 0; i < tz->ntrips; i++)
 			mask |= 1 << i;

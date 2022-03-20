@@ -186,6 +186,10 @@ void scsi_finish_command(struct scsi_cmnd *cmd)
 	struct scsi_driver *drv;
 	unsigned int good_bytes;
 
+#ifdef CONFIG_MAS_BLK
+	if (cmd->request)
+		mas_blk_latency_req_check_ufs(cmd->request, REQ_PROC_STAGE_SCSI_FINISH);
+#endif
 	scsi_device_unbusy(sdev);
 
 	/*
@@ -753,6 +757,38 @@ struct scsi_device *scsi_device_lookup(struct Scsi_Host *shost,
 	return sdev;
 }
 EXPORT_SYMBOL(scsi_device_lookup);
+
+/**
+ * __set_quiesce_for_each_device - set all scsi device state to quiet
+ * @shost:      SCSI host pointer
+ *
+ * Description: this func will be called when shut down to forbid io req
+ * from block level;this func is added by hisi.
+ **/
+void __set_quiesce_for_each_device(struct Scsi_Host *shost)
+{
+	struct scsi_device *sdev;
+
+	__shost_for_each_device (sdev, shost) /*lint !e64 !e826*/
+		(void)scsi_device_quiesce(sdev);
+}
+EXPORT_SYMBOL(__set_quiesce_for_each_device);
+
+/**
+ * __clr_quiesce_for_each_device - clear all scsi device state to running
+ * @shost:?       SCSI host pointer
+ *
+ * Description: this func will be called when resume to allow io req
+ * from block level;this func is added by hisi.
+ **/
+void __clr_quiesce_for_each_device(struct Scsi_Host *shost)
+{
+	struct scsi_device *sdev;
+
+	__shost_for_each_device (sdev, shost)
+		(void)scsi_device_resume(sdev);
+}
+EXPORT_SYMBOL(__clr_quiesce_for_each_device);
 
 MODULE_DESCRIPTION("SCSI core");
 MODULE_LICENSE("GPL");

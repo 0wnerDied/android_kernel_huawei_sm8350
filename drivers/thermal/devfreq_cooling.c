@@ -25,8 +25,14 @@
 #include <linux/slab.h>
 #include <linux/pm_opp.h>
 #include <linux/thermal.h>
+#include <linux/hw/hw_thermal.h>
 
 #include <trace/events/thermal.h>
+#ifdef CONFIG_HW_IPA_THERMAL
+#include "../gpu/msm/kgsl_device.h"
+#endif
+
+#include "thermal_core.h"
 
 #define SCALE_ERROR_MITIGATION 100
 
@@ -61,12 +67,18 @@ struct devfreq_cooling_device {
 	unsigned long cooling_state;
 	u32 *power_table;
 	u32 *freq_table;
+#ifdef CONFIG_HW_IPA_THERMAL
+	u32 *voltage_table;
+#endif
 	size_t freq_table_size;
 	struct devfreq_cooling_power *power_ops;
 	u32 res_util;
 	int capped_state;
 };
 
+#include "devfreq_cooling_hw.c"
+
+#ifndef CONFIG_HW_IPA_THERMAL
 /**
  * partition_enable_opps() - disable all opps above a given state
  * @dfc:	Pointer to devfreq we are operating on
@@ -107,6 +119,7 @@ static int partition_enable_opps(struct devfreq_cooling_device *dfc,
 
 	return 0;
 }
+#endif
 
 static int devfreq_cooling_get_max_state(struct thermal_cooling_device *cdev,
 					 unsigned long *state)
@@ -134,17 +147,69 @@ static int devfreq_cooling_set_cur_state(struct thermal_cooling_device *cdev,
 	struct devfreq_cooling_device *dfc = cdev->devdata;
 	struct devfreq *df = dfc->devfreq;
 	struct device *dev = df->dev.parent;
+#ifdef CONFIG_HW_IPA_THERMAL
+	unsigned long freq;
+	unsigned long limit_state;
+	int gpu_id;
+#endif
 	int ret;
+
+#ifdef CONFIG_HW_IPA_THERMAL
+	gpu_id = ipa_get_actor_id("gpu");
+	if (gpu_id < 0)
+		return -EINVAL;
+
+	if (nametoactor(cdev->type) != -1) {
+		if (g_ipa_soc_state[gpu_id] < dfc->freq_table_size)
+			g_ipa_soc_freq_limit[gpu_id] =
+				dfc->freq_table[g_ipa_soc_state[gpu_id]];
+
+		if (g_ipa_board_state[gpu_id] < dfc->freq_table_size)
+			g_ipa_board_freq_limit[gpu_id] =
+				dfc->freq_table[g_ipa_board_state[gpu_id]];
+
+		limit_state = max(g_ipa_soc_state[gpu_id], g_ipa_board_state[gpu_id]);
+		if (limit_state < dfc->freq_table_size)
+			state = max(state, limit_state);
+
+		trace_set_cur_state(gpu_id, g_ipa_soc_state[gpu_id], g_ipa_board_state[gpu_id],
+				g_ipa_soc_freq_limit[gpu_id], g_ipa_board_freq_limit[gpu_id],
+				limit_state, state);
+	}
+#endif
 
 	if (state == dfc->cooling_state)
 		return 0;
 
 	dev_dbg(dev, "Setting cooling state %lu\n", state);
 
+#ifdef CONFIG_HW_IPA_THERMAL
+	if (state == THERMAL_NO_LIMIT) {
+		freq = 0;
+	} else {
+		if (state >= dfc->freq_table_size)
+			return -EINVAL;
+
+		freq = dfc->freq_table[state];
+	}
+
+	if (nametoactor(cdev->type) != -1) {
+		g_ipa_freq_limit[gpu_id] = freq;
+		trace_IPA_actor_gpu_cooling(freq / 1000, state);
+
+		trace_set_freq_limit(gpu_id, g_ipa_freq_limit[gpu_id]);
+	}
+
+	df->profile->get_dev_status(df->dev.parent, &df->last_status);
+	ret = ipa_set_thermal_pwrlevel(dev_get_drvdata(dev), state);
+	if (ret)
+		pr_err("update devfreq fail %d\n", ret);
+#else
 	if (state >= dfc->freq_table_size)
 		return -EINVAL;
 
 	ret = partition_enable_opps(dfc, state);
+#endif
 	if (ret)
 		return ret;
 
@@ -174,6 +239,7 @@ freq_get_state(struct devfreq_cooling_device *dfc, unsigned long freq)
 	return THERMAL_CSTATE_INVALID;
 }
 
+#ifndef CONFIG_HW_IPA_THERMAL
 static unsigned long get_voltage(struct devfreq *df, unsigned long freq)
 {
 	struct device *dev = df->dev.parent;
@@ -201,6 +267,7 @@ static unsigned long get_voltage(struct devfreq *df, unsigned long freq)
 
 	return voltage;
 }
+#endif
 
 /**
  * get_static_power() - calculate the static power
@@ -221,7 +288,11 @@ get_static_power(struct devfreq_cooling_device *dfc, unsigned long freq)
 	if (!dfc->power_ops->get_static_power)
 		return 0;
 
+#ifdef CONFIG_HW_IPA_THERMAL
+	voltage = get_voltage(dfc, freq);
+#else
 	voltage = get_voltage(df, freq);
+#endif
 
 	if (voltage == 0)
 		return 0;
@@ -291,7 +362,11 @@ static int devfreq_cooling_get_requested_power(struct thermal_cooling_device *cd
 	}
 
 	if (dfc->power_ops->get_real_power) {
+#ifdef CONFIG_HW_IPA_THERMAL
+		voltage = get_voltage(dfc, freq);
+#else
 		voltage = get_voltage(df, freq);
+#endif
 		if (voltage == 0) {
 			res = -EINVAL;
 			goto fail;
@@ -312,8 +387,14 @@ static int devfreq_cooling_get_requested_power(struct thermal_cooling_device *cd
 		dyn_power = dfc->power_table[state];
 
 		/* Scale dynamic power for utilization */
-		dyn_power *= status->busy_time;
-		dyn_power /= status->total_time;
+#ifdef CONFIG_HW_IPA_THERMAL
+		if (status->total_time) {
+#endif
+			dyn_power *= status->busy_time;
+			dyn_power /= status->total_time;
+#ifdef CONFIG_HW_IPA_THERMAL
+		}
+#endif
 		/* Get static power */
 		static_power = get_static_power(dfc, freq);
 
@@ -322,6 +403,11 @@ static int devfreq_cooling_get_requested_power(struct thermal_cooling_device *cd
 
 	trace_thermal_power_devfreq_get_power(cdev, status, freq, dyn_power,
 					      static_power, *power);
+
+#ifdef CONFIG_HW_IPA_THERMAL
+	ipa_set_current_load_freq(cdev, tz, dyn_power, static_power, power);
+	print_gpu_freq_table(dfc);
+#endif
 
 	return 0;
 fail:
@@ -376,6 +462,10 @@ static int devfreq_cooling_power2state(struct thermal_cooling_device *cdev,
 		/* Scale dynamic power for utilization */
 		busy_time = status->busy_time ?: 1;
 		est_power = (dyn_power * status->total_time) / busy_time;
+#ifdef CONFIG_HW_IPA_THERMAL
+		trace_devfreq_power2state(freq, static_power, dyn_power, status->busy_time,
+						busy_time, status->total_time, est_power);
+#endif
 	}
 
 	/*
@@ -389,6 +479,9 @@ static int devfreq_cooling_power2state(struct thermal_cooling_device *cdev,
 	*state = i;
 	dfc->capped_state = i;
 	trace_thermal_power_devfreq_limit(cdev, freq, *state, power);
+#ifdef CONFIG_HW_IPA_THERMAL
+	trace_IPA_actor_gpu_limit(freq / 1000, *state, power, est_power);
+#endif
 	return 0;
 }
 
@@ -398,6 +491,7 @@ static struct thermal_cooling_device_ops devfreq_cooling_ops = {
 	.set_cur_state = devfreq_cooling_set_cur_state,
 };
 
+#ifndef CONFIG_HW_IPA_THERMAL
 /**
  * devfreq_cooling_gen_tables() - Generate power and freq tables.
  * @dfc: Pointer to devfreq cooling device.
@@ -485,6 +579,7 @@ free_power_table:
 
 	return ret;
 }
+#endif
 
 /**
  * of_devfreq_cooling_register_power() - Register devfreq cooling device,
@@ -602,6 +697,9 @@ void devfreq_cooling_unregister(struct thermal_cooling_device *cdev)
 	ida_simple_remove(&devfreq_ida, dfc->id);
 	kfree(dfc->power_table);
 	kfree(dfc->freq_table);
+#ifdef CONFIG_HW_IPA_THERMAL
+	kfree(dfc->voltage_table);
+#endif
 
 	kfree(dfc);
 }

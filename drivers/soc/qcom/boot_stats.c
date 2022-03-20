@@ -19,6 +19,11 @@
 #include <linux/uaccess.h>
 #include <soc/qcom/boot_stats.h>
 
+#ifdef CONFIG_HUAWEI_BOOT_TIME
+#include <linux/hw_boottime.h>
+#define BASE_1_MS 1000
+#endif
+
 #define MAX_STRING_LEN 256
 #define BOOT_MARKER_MAX_LEN 50
 #define MSM_ARCH_TIMER_FREQ     19200000
@@ -370,6 +375,10 @@ static int __init boot_stats_init(void)
 		return -ENODEV;
 
 	print_boot_stats();
+#ifdef CONFIG_HUAWEI_BOOT_TIME
+	get_uefi_time(readl_relaxed(mpm_counter_base) * BASE_1_MS / mpm_counter_freq);
+#endif
+
 	if (boot_marker_enabled()) {
 		ret = init_bootkpi();
 		if (ret) {

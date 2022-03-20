@@ -54,6 +54,8 @@
 #define SPMI_OWNERSHIP_TABLE_REG(N)	(0x0700 + (4 * (N)))
 #define SPMI_OWNERSHIP_PERIPH2OWNER(X)	((X) & 0x7)
 
+static struct spmi_controller *g_ctrl = NULL;
+
 /* Channel Status fields */
 enum pmic_arb_chnl_status {
 	PMIC_ARB_STATUS_DONE	= BIT(0),
@@ -1443,6 +1445,36 @@ error:
 static void spmi_pmic_arb_debugfs_init(struct spmi_pmic_arb *pmic_arb) { }
 #endif
 
+int huawei_pmic_reg_read(u8 sid, u16 addr, u8 *buf, size_t len)
+{
+	struct spmi_device *sdev;
+
+	sdev = kzalloc(sizeof(*sdev), GFP_KERNEL);
+	if (!sdev)
+		return -1;
+
+	sdev->ctrl = g_ctrl;
+	sdev->usid = sid;
+
+	return spmi_ext_register_readl(sdev, addr, buf, len);
+}
+EXPORT_SYMBOL(huawei_pmic_reg_read);
+
+int huawei_pmic_reg_write(u8 sid, u16 addr, const u8 *buf, size_t len)
+{
+	struct spmi_device *sdev;
+
+	sdev = kzalloc(sizeof(*sdev), GFP_KERNEL);
+	if (!sdev)
+		return -1;
+
+	sdev->ctrl = g_ctrl;
+	sdev->usid = sid;
+
+	return spmi_ext_register_writel(sdev, addr, buf, len);
+}
+EXPORT_SYMBOL(huawei_pmic_reg_write);
+
 static int spmi_pmic_arb_probe(struct platform_device *pdev)
 {
 	struct spmi_pmic_arb *pmic_arb;
@@ -1620,7 +1652,7 @@ static int spmi_pmic_arb_probe(struct platform_device *pdev)
 	} else {
 		dev_dbg(&pdev->dev, "not supporting PMIC interrupts\n");
 	}
-
+	g_ctrl = ctrl;
 	err = spmi_controller_add(ctrl);
 	if (err)
 		goto err_domain_remove;
@@ -1636,6 +1668,7 @@ err_domain_remove:
 	}
 err_put_ctrl:
 	spmi_controller_put(ctrl);
+	g_ctrl = NULL;
 	return err;
 }
 
@@ -1650,6 +1683,7 @@ static int spmi_pmic_arb_remove(struct platform_device *pdev)
 		irq_domain_remove(pmic_arb->domain);
 	}
 	spmi_controller_put(ctrl);
+	g_ctrl = NULL;
 	return 0;
 }
 

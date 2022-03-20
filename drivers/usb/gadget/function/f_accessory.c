@@ -46,6 +46,7 @@
 #define MAX_INST_NAME_LEN        40
 #define BULK_BUFFER_SIZE    16384
 #define ACC_STRING_SIZE     256
+#define ENVP_LEN 2
 
 #define PROTOCOL_VERSION    2
 
@@ -97,6 +98,7 @@ struct acc_dev {
 	char version[ACC_STRING_SIZE];
 	char uri[ACC_STRING_SIZE];
 	char serial[ACC_STRING_SIZE];
+	char extra_data[ACC_EXTRA_DATA_SIZE];
 
 	/* for acc_complete_set_string */
 	int string_index;
@@ -118,6 +120,9 @@ struct acc_dev {
 
 	/* delayed work for handling ACCESSORY_START */
 	struct delayed_work start_work;
+
+	/* work for handling ACCESSORY_SEND_STRING */
+	struct work_struct send_work;
 
 	/* worker for registering and unregistering hid devices */
 	struct work_struct hid_work;
@@ -346,6 +351,7 @@ static void acc_complete_set_string(struct usb_ep *ep, struct usb_request *req)
 	struct acc_dev	*dev = ep->driver_data;
 	char *string_dest = NULL;
 	int length = req->actual;
+	unsigned long flags;
 
 	if (req->status != 0) {
 		pr_err("acc_complete_set_string, err %d\n", req->status);
@@ -371,10 +377,22 @@ static void acc_complete_set_string(struct usb_ep *ep, struct usb_request *req)
 	case ACCESSORY_STRING_SERIAL:
 		string_dest = dev->serial;
 		break;
+	case ACCESSORY_STRING_EXTRA_DATA:
+		/* clear the fixed length buffer which defined in local */
+		memset(dev->extra_data, 0, ACC_EXTRA_DATA_SIZE);
+
+		if (length > ACC_EXTRA_DATA_SIZE)
+			length = ACC_EXTRA_DATA_SIZE;
+
+		spin_lock_irqsave(&dev->lock, flags);
+		memcpy(dev->extra_data, req->buf, length);
+		spin_unlock_irqrestore(&dev->lock, flags);
+
+		pr_info("schedule acc send work\n");
+		schedule_work(&dev->send_work);
+		return;
 	}
 	if (string_dest) {
-		unsigned long flags;
-
 		if (length >= ACC_STRING_SIZE)
 			length = ACC_STRING_SIZE - 1;
 
@@ -794,6 +812,11 @@ static long acc_ioctl(struct file *fp, unsigned code, unsigned long value)
 		return dev->start_requested;
 	case ACCESSORY_GET_AUDIO_MODE:
 		return dev->audio_mode;
+	case ACCESSORY_GET_EXTRA_DATA:
+		if (copy_to_user((void __user *)value, dev->extra_data,
+			ACC_EXTRA_DATA_SIZE))
+			return -EFAULT;
+		return ACC_EXTRA_DATA_SIZE;
 	}
 	if (!src)
 		return -EINVAL;
@@ -1113,6 +1136,14 @@ static void acc_start_work(struct work_struct *data)
 	kobject_uevent_env(&acc_device.this_device->kobj, KOBJ_CHANGE, envp);
 }
 
+static void acc_send_work(struct work_struct *data)
+{
+	char *envp[ENVP_LEN] = {"ACCESSORY=SEND", NULL};
+
+	pr_info("%s:%d send UEvent ACCESSORY=SEND\n", __func__, __LINE__);
+	kobject_uevent_env(&acc_device.this_device->kobj, KOBJ_CHANGE, envp);
+}
+
 static int acc_hid_init(struct acc_hid_dev *hdev)
 {
 	struct hid_device *hid;
@@ -1281,6 +1312,7 @@ static int acc_setup(void)
 	INIT_LIST_HEAD(&dev->dead_hid_list);
 	INIT_DELAYED_WORK(&dev->start_work, acc_start_work);
 	INIT_WORK(&dev->hid_work, acc_hid_work);
+	INIT_WORK(&dev->send_work, acc_send_work);
 
 	dev->ref = ref;
 	if (cmpxchg_relaxed(&ref->acc_dev, NULL, dev)) {

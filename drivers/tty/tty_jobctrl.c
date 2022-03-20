@@ -542,7 +542,7 @@ static int tiocgsid(struct tty_struct *tty, struct tty_struct *real_tty, pid_t _
 
 err:
 	spin_unlock_irqrestore(&real_tty->ctrl_lock, flags);
-	return -ENOTTY;
+		return -ENOTTY;
 }
 
 /*

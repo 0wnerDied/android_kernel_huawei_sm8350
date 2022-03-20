@@ -390,6 +390,9 @@ msm_get_hw_platform(struct device *dev,
 
 	hw_type = socinfo_get_platform_type();
 
+	if(hw_type >= HW_PLATFORM_INVALID)
+		hw_type = HW_PLATFORM_QRD;
+
 	return snprintf(buf, PAGE_SIZE, "%-.32s\n",
 			hw_platform[hw_type]);
 }

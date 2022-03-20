@@ -20,6 +20,9 @@ struct scsi_nl_hdr;
  * Scsi Error Handler Flags
  */
 #define SCSI_EH_ABORT_SCHEDULED	0x0002	/* Abort has been scheduled */
+#ifdef CONFIG_SCSI_UFS_UNISTORE
+#define SCSI_EH_IN_FLUSH_DONE_Q	0x0004	/* During flush done q */
+#endif
 
 #define SCSI_SENSE_VALID(scmd) \
 	(((scmd)->sense_buffer[0] & 0x70) == 0x70)

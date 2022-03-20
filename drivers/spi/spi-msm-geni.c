@@ -24,7 +24,7 @@
 
 #define SPI_NUM_CHIPSELECT	(4)
 #define SPI_XFER_TIMEOUT_MS	(250)
-#define SPI_AUTO_SUSPEND_DELAY	(250)
+#define SPI_AUTO_SUSPEND_DELAY	(20)
 /* SPI SE specific registers */
 #define SE_SPI_CPHA		(0x224)
 #define SE_SPI_LOOPBACK		(0x22C)
@@ -1009,7 +1009,6 @@ static int spi_geni_prepare_message(struct spi_master *spi,
 					"%s: System suspended\n", __func__);
 				return -EACCES;
 			}
-
 			ret = pm_runtime_get_sync(mas->dev);
 			if (ret < 0) {
 				dev_err(mas->dev,
@@ -1106,7 +1105,7 @@ static int spi_geni_unprepare_message(struct spi_master *spi_mas,
 				GENI_SE_ERR(mas->ipc, false, NULL,
 					"suspend usage count mismatch:%d",
 								count);
-		} else if (!pm_runtime_suspended(mas->dev)) {
+		} else if (!pm_runtime_suspended(mas->dev) && pm_runtime_enabled(mas->dev)) {
 			pm_runtime_mark_last_busy(mas->dev);
 			pm_runtime_put_autosuspend(mas->dev);
 		}
@@ -1337,14 +1336,12 @@ static int spi_geni_prepare_transfer_hardware(struct spi_master *spi)
 	 */
 	if (mas->is_le_vm)
 		return 0;
-
 	/* Client to respect system suspend */
 	if (!pm_runtime_enabled(mas->dev)) {
 		GENI_SE_ERR(mas->ipc, false, NULL,
-			"%s: System suspended\n", __func__);
+		"%s: System suspended\n", __func__);
 		return -EACCES;
 	}
-
 	if (mas->gsi_mode && !mas->shared_ee) {
 		struct se_geni_rsc *rsc;
 		int ret = 0;
@@ -1421,7 +1418,7 @@ static int spi_geni_unprepare_transfer_hardware(struct spi_master *spi)
 		if (count < 0)
 			GENI_SE_ERR(mas->ipc, false, NULL,
 				"suspend usage count mismatch:%d", count);
-	} else {
+	} else if (!pm_runtime_status_suspended(mas->dev) && pm_runtime_enabled(mas->dev)) {
 		pm_runtime_mark_last_busy(mas->dev);
 		pm_runtime_put_autosuspend(mas->dev);
 	}
@@ -2272,6 +2269,7 @@ static int spi_geni_runtime_resume(struct device *dev)
 		/* Return here as LE VM doesn't need resourc/clock management */
 		return ret;
 	}
+	GENI_SE_DBG(geni_mas->ipc, false, NULL, "%s:\n", __func__);
 
 	GENI_SE_DBG(geni_mas->ipc, false, NULL, "%s:\n", __func__);
 
@@ -2304,11 +2302,11 @@ static int spi_geni_suspend(struct device *dev)
 	struct spi_geni_master *geni_mas = spi_master_get_devdata(spi);
 
 	if (!pm_runtime_status_suspended(dev)) {
-		GENI_SE_ERR(geni_mas->ipc, true, dev,
+				GENI_SE_ERR(geni_mas->ipc, true, dev,
 			":%s: runtime PM is active\n", __func__);
-		ret = -EBUSY;
+			ret = -EBUSY;
 		return ret;
-	}
+		}
 
 	GENI_SE_ERR(geni_mas->ipc, true, dev, ":%s: End\n", __func__);
 	return ret;

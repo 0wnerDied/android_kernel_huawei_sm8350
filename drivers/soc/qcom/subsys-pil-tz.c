@@ -31,8 +31,18 @@
 
 #include "peripheral-loader.h"
 
+#ifdef CONFIG_RAINBOW_REASON
+#include <linux/rainbow_reason.h>
+#endif
+
 #define PIL_TZ_AVG_BW  0
 #define PIL_TZ_PEAK_BW UINT_MAX
+
+#ifdef CONFIG_HUAWEI_MODEM_CRASH_LOG
+#include "pil-q6v5-mss/pil_q6v5_mss_log.h"
+#include "pil-q6v5-mss/pil_q6v5_mss_ultils.h"
+#define MODEM_SYS_NAME "modem"
+#endif
 
 #define XO_FREQ			19200000
 #define PROXY_TIMEOUT_MS	10000
@@ -780,6 +790,14 @@ static void log_failure_reason(const struct pil_tz_data *d)
 
 	strlcpy(reason, smem_reason, min(size, (size_t)MAX_SSR_REASON_LEN));
 	pr_err("%s subsystem failure reason: %s.\n", name, reason);
+#ifdef CONFIG_HUAWEI_MODEM_CRASH_LOG
+	if (strcmp(name, MODEM_SYS_NAME) == 0) {
+		save_modem_reset_log(reason, MAX_SSR_REASON_LEN);
+	}
+#endif
+#ifdef CONFIG_RAINBOW_REASON
+	rb_sreason_set("%s_crash", name);
+#endif
 }
 
 static int subsys_shutdown(const struct subsys_desc *subsys, bool force_stop)
@@ -833,6 +851,13 @@ static int subsys_powerup(const struct subsys_desc *subsys)
 		pil_shutdown(&d->desc);
 		subsys_disable_all_irqs(d);
 	}
+#ifdef CONFIG_HUAWEI_MODEM_CRASH_LOG
+	if (strcmp(d->subsys_desc.name, MODEM_SYS_NAME) == 0) {
+		pr_err("restart_oem_qmi on %s!\n", d->subsys_desc.name);
+		/* after modem restart, restart oem qmi */
+		restart_oem_qmi();
+	}
+#endif
 
 	return ret;
 }
@@ -1529,6 +1554,11 @@ load_from_pil:
 			goto err_ramdump;
 		}
 	}
+#ifdef CONFIG_HUAWEI_MODEM_CRASH_LOG
+	if (strcmp(d->subsys_desc.name, MODEM_SYS_NAME) == 0) {
+		create_modem_log_queue();
+	}
+#endif
 
 	d->ramdump_dev = create_ramdump_device(d->subsys_desc.name,
 								&pdev->dev);
@@ -1610,12 +1640,14 @@ static int pil_tz_driver_probe(struct platform_device *pdev)
 static int pil_tz_driver_exit(struct platform_device *pdev)
 {
 	struct pil_tz_data *d = platform_get_drvdata(pdev);
-	const struct of_device_id *match;
-
-	match = of_match_node(pil_tz_match_table, pdev->dev.of_node);
+	const struct of_device_id *match = of_match_node(pil_tz_match_table, pdev->dev.of_node);
 	if (!match)
 		return -ENODEV;
-
+#ifdef CONFIG_HUAWEI_MODEM_CRASH_LOG
+	if (strcmp(d->subsys_desc.name, MODEM_SYS_NAME) == 0) {
+		destroy_modem_log_queue();
+	}
+#endif
 	if (match->data == pil_tz_scm_pas_probe) {
 		icc_put(scm_perf_client);
 	} else {

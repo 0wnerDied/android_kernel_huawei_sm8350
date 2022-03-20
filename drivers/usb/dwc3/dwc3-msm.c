@@ -2756,7 +2756,7 @@ static void dwc3_msm_power_collapse_por(struct dwc3_msm *mdwc)
 					(val1 == DWC3_LINK_STATE_U3));
 
 	if (!mdwc->dual_port)
-		dwc3_msm_write_reg_field(mdwc->base, PWR_EVNT_IRQ_MASK_REG,
+	dwc3_msm_write_reg_field(mdwc->base, PWR_EVNT_IRQ_MASK_REG,
 				PWR_EVNT_POWERDOWN_IN_P3_MASK, 1);
 
 	/* Set the core in host mode if it was in host mode during pm_suspend */
@@ -3389,7 +3389,7 @@ static int dwc3_msm_resume(struct dwc3_msm *mdwc)
 	struct dwc3 *dwc = platform_get_drvdata(mdwc->dwc3);
 	struct usb_irq *uirq;
 
-	dev_dbg(mdwc->dev, "%s: exiting lpm\n", __func__);
+	dev_err(mdwc->dev, "%s: exiting lpm\n", __func__);
 
 	/*
 	 * If h/w exited LPM without any events, ensure
@@ -3544,7 +3544,7 @@ static int dwc3_msm_resume(struct dwc3_msm *mdwc)
 		mdwc->lpm_flags &= ~MDWC3_ASYNC_IRQ_WAKE_CAPABILITY;
 	}
 
-	dev_info(mdwc->dev, "DWC3 exited from low power mode\n");
+	dev_err(mdwc->dev, "DWC3 exited from low power mode\n");
 
 	/* Enable core irq */
 	if (dwc->irq)
@@ -3555,7 +3555,7 @@ static int dwc3_msm_resume(struct dwc3_msm *mdwc)
 	 * Low Power Mode
 	 */
 	if (!mdwc->dual_port)
-		dwc3_pwr_event_handler(mdwc);
+	dwc3_pwr_event_handler(mdwc);
 
 	if (pm_qos_request_active(&mdwc->pm_qos_req_dma))
 		schedule_delayed_work(&mdwc->perf_vote_work,
@@ -5287,8 +5287,8 @@ static int dwc3_otg_start_host(struct dwc3_msm *mdwc, int on)
 
 		mdwc->in_host_mode = true;
 		if (!dwc->dis_u3_susphy_quirk) {
-			dwc3_msm_write_reg_field(mdwc->base, DWC3_GUSB3PIPECTL(0),
-					DWC3_GUSB3PIPECTL_SUSPHY, 1);
+		dwc3_msm_write_reg_field(mdwc->base, DWC3_GUSB3PIPECTL(0),
+				DWC3_GUSB3PIPECTL_SUSPHY, 1);
 			if (mdwc->dual_port) {
 				dwc3_msm_write_reg_field(mdwc->base, DWC3_GUSB3PIPECTL(1),
 						DWC3_GUSB3PIPECTL_SUSPHY, 1);
@@ -5370,8 +5370,8 @@ static int dwc3_otg_start_host(struct dwc3_msm *mdwc, int on)
 
 		dwc3_set_prtcap(dwc, DWC3_GCTL_PRTCAP_DEVICE);
 		if (!dwc->dis_u3_susphy_quirk) {
-			dwc3_msm_write_reg_field(mdwc->base, DWC3_GUSB3PIPECTL(0),
-					DWC3_GUSB3PIPECTL_SUSPHY, 0);
+		dwc3_msm_write_reg_field(mdwc->base, DWC3_GUSB3PIPECTL(0),
+				DWC3_GUSB3PIPECTL_SUSPHY, 0);
 			if (mdwc->dual_port) {
 				dwc3_msm_write_reg_field(mdwc->base, DWC3_GUSB3PIPECTL(1),
 						DWC3_GUSB3PIPECTL_SUSPHY, 0);
@@ -5502,22 +5502,22 @@ static int get_chg_type(struct dwc3_msm *mdwc)
 
 	switch (mdwc->apsd_source) {
 	case IIO:
-		if (!mdwc->chg_type) {
+	if (!mdwc->chg_type) {
 			mdwc->chg_type = devm_iio_channel_get(mdwc->dev,
 						"chg_type");
-			if (IS_ERR_OR_NULL(mdwc->chg_type)) {
+		if (IS_ERR_OR_NULL(mdwc->chg_type)) {
 				dev_dbg(mdwc->dev,
 					"unable to get iio channel\n");
-				mdwc->chg_type = NULL;
-				return -ENODEV;
-			}
+			mdwc->chg_type = NULL;
+			return -ENODEV;
 		}
+	}
 
-		ret = iio_read_channel_processed(mdwc->chg_type, &value);
-		if (ret < 0) {
-			dev_err(mdwc->dev, "failed to get charger type\n");
-			return ret;
-		}
+	ret = iio_read_channel_processed(mdwc->chg_type, &value);
+	if (ret < 0) {
+		dev_err(mdwc->dev, "failed to get charger type\n");
+		return ret;
+	}
 		break;
 	case PSY:
 		if (!mdwc->usb_psy) {
@@ -5593,6 +5593,9 @@ static int dwc3_msm_gadget_vbus_draw(struct dwc3_msm *mdwc, unsigned int mA)
 		return 0;
 
 	/* Set max current limit in uA */
+#ifdef CONFIG_HUAWEI_POWER_EMBEDDED_ISOLATION
+	mA = 500;
+#endif /* CONFIG_HUAWEI_POWER_EMBEDDED_ISOLATION */
 	pval.intval = 1000 * mA;
 
 set_prop:

@@ -176,4 +176,10 @@ source "drivers/usb/roles/Kconfig"
 
 source "drivers/usb/pd/Kconfig"
 
+config HUAWEI_USB
+	tristate "Huawei usb code"
+	default n
+	help
+	  Say Y here to enable huawei USB feature.
+
 endif # USB_SUPPORT

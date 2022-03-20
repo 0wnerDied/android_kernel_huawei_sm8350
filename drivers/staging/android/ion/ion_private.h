@@ -31,6 +31,7 @@ struct ion_device {
 	DECLARE_BITMAP(heap_ids, ION_NUM_MAX_HEAPS);
 	struct plist_head heaps;
 	struct dentry *debug_root;
+	struct kobject *sysfs_root;
 	int heap_cnt;
 };
 
@@ -55,4 +56,7 @@ extern int ion_heap_cleanup(struct ion_heap *heap);
 
 u64 ion_get_total_heap_bytes(void);
 
+bool is_ion_dma_buf(struct dma_buf *dmabuf);
+
+struct ion_device *get_ion_device(void);
 #endif /* _ION_PRIVATE_H */

@@ -58,6 +58,10 @@
 #include <linux/bitfield.h>
 #include <linux/devfreq.h>
 #include "unipro.h"
+#ifdef CONFIG_MAS_UFS_MANUAL_BKOPS
+#include <linux/mas_bkops_core.h>
+#endif
+
 
 #include <asm/irq.h>
 #include <asm/byteorder.h>
@@ -72,6 +76,11 @@
 #include "ufs.h"
 #include "ufs_quirks.h"
 #include "ufshci.h"
+#ifdef CONFIG_HUAWEI_DSM_IOMT_UFS_HOST
+#include <linux/iomt_host/dsm_iomt_ufs_host.h>
+#endif
+
+#include "ufs_wb_dynamic_switch.h"
 
 #define UFSHCD "ufshcd"
 #define UFSHCD_DRIVER_VERSION "0.2"
@@ -79,6 +88,10 @@
 #define UFSHCD_QUIRK_BROKEN_AUTO_HIBERN8                0x40000
 
 struct ufs_hba;
+
+#ifdef CONFIG_MAS_UFS_MANUAL_BKOPS
+struct ufs_dev_bkops_ops;
+#endif
 
 enum dev_cmd_type {
 	DEV_CMD_TYPE_NOP		= 0x0,
@@ -759,6 +772,9 @@ struct ufs_hba {
 	dma_addr_t utrdl_dma_addr;
 	dma_addr_t utmrdl_dma_addr;
 
+#ifdef CONFIG_HUAWEI_DSM_IOMT_UFS_HOST
+	struct iomt_host_info iomt_host_info_entity;
+#endif
 	struct Scsi_Host *host;
 	struct device *dev;
 	/*
@@ -893,7 +909,8 @@ struct ufs_hba {
 	struct uic_command *active_uic_cmd;
 	struct mutex uic_cmd_mutex;
 	struct completion *uic_async_done;
-
+	u16 manufacturer_id;
+	u16 manufacturer_date;
 	u32 ufshcd_state;
 	u32 eh_flags;
 	u32 intr_mask;
@@ -901,6 +918,7 @@ struct ufs_hba {
 	bool is_powered;
 
 	/* Work Queues */
+	struct workqueue_struct *recovery_wq;
 	struct workqueue_struct *eh_wq;
 	struct work_struct eh_work;
 	struct work_struct eeh_work;
@@ -928,6 +946,9 @@ struct ufs_hba {
 
 	/* Number of requests aborts */
 	int req_abort_count;
+
+	/* Calculation of write/read data size */
+	unsigned long long total_count;
 
 	/* Number of lanes available (1 or 2) for Rx/Tx */
 	u32 lanes_per_direction;
@@ -1002,6 +1023,16 @@ struct ufs_hba {
 	struct work_struct rls_work;
 	u32 dev_ref_clk_gating_wait;
 #endif
+#ifdef CONFIG_SCSI_MAS_UFS_MQ_DEFAULT
+        /*
+         * SSU needs to send directly to ufs to avoid accessing blk layer,
+         * blk layer can freeze blk queue during SR,
+         * which block SSU sending to UFS layer
+         */
+#define UFSHCD_CAP_SSU_BY_SELF	(1 << 30)
+#define UFSHCD_SSU_BY_SELF_TIMEOUT	1500
+#endif
+
 	struct devfreq *devfreq;
 	struct ufs_clk_scaling clk_scaling;
 	bool is_sys_suspended;
@@ -1011,10 +1042,24 @@ struct ufs_hba {
 
 	struct rw_semaphore clk_scaling_lock;
 	struct ufs_desc_size desc_size;
+#ifdef CONFIG_SCSI_MAS_UFS_MQ_DEFAULT
+	struct io_latency_state io_lat_read;
+        struct io_latency_state io_lat_write;
+#endif
 	atomic_t scsi_block_reqs_cnt;
 
 	struct device		bsg_dev;
 	struct request_queue	*bsg_queue;
+#ifdef CONFIG_HUAWEI_UFS_DYNAMIC_SWITCH_WB
+	struct ufs_wb_switch_info *ufs_wb;
+#endif
+#ifdef CONFIG_MAS_UFS_MANUAL_BKOPS
+	bool ufs_bkops_enabled;
+	struct ufs_dev_bkops_ops *ufs_dev_bkops_ops;
+	struct mas_bkops *ufs_bkops;
+	struct list_head bkops_whitelist;
+	struct list_head bkops_blacklist;
+#endif
 
 #ifdef CONFIG_SCSI_UFS_CRYPTO
 	/* crypto */
@@ -1024,10 +1069,13 @@ struct ufs_hba {
 	struct keyslot_manager *ksm;
 	void *crypto_DO_NOT_USE[8];
 #endif /* CONFIG_SCSI_UFS_CRYPTO */
-
+	struct ufs_dmd_info *ufs_dmd;
 	bool wb_buf_flush_enabled;
 	bool wb_enabled;
 	struct delayed_work rpm_dev_flush_recheck_work;
+	struct ufs_hpb_info *ufs_hpb;
+	struct ufstt_info *ufstt;
+	struct ufs_error_recovery *error_recovery;
 	ANDROID_KABI_RESERVE(1);
 	ANDROID_KABI_RESERVE(2);
 	ANDROID_KABI_RESERVE(3);
@@ -1055,6 +1103,9 @@ static inline bool ufshcd_is_rpm_autosuspend_allowed(struct ufs_hba *hba)
 {
 	return hba->caps & UFSHCD_CAP_RPM_AUTOSUSPEND;
 }
+int ufshcd_query_attr_retry(struct ufs_hba *hba,
+		enum query_opcode opcode, enum attr_idn idn, u8 index, u8 selector,
+		u32 *attr_val);
 
 static inline bool ufshcd_is_intr_aggr_allowed(struct ufs_hba *hba)
 {
@@ -1210,6 +1261,7 @@ extern int ufshcd_dme_get_attr(struct ufs_hba *hba, u32 attr_sel,
 			       u32 *mib_val, u8 peer);
 extern int ufshcd_config_pwr_mode(struct ufs_hba *hba,
 			struct ufs_pa_layer_attr *desired_pwr_mode);
+
 /* UIC command interfaces for DME primitives */
 #define DME_LOCAL	0
 #define DME_PEER	1
@@ -1281,6 +1333,7 @@ int ufshcd_read_desc_param(struct ufs_hba *hba,
 			   u8 param_offset,
 			   u8 *param_read_buf,
 			   u8 param_size);
+int ufshcd_enable_ee(struct ufs_hba *hba, u16 mask);
 int ufshcd_query_attr(struct ufs_hba *hba, enum query_opcode opcode,
 		      enum attr_idn idn, u8 index, u8 selector, u32 *attr_val);
 int ufshcd_query_flag(struct ufs_hba *hba, enum query_opcode opcode,
@@ -1309,6 +1362,10 @@ int ufshcd_exec_raw_upiu_cmd(struct ufs_hba *hba,
 			     int msgcode,
 			     u8 *desc_buff, int *buff_len,
 			     enum query_opcode desc_op);
+
+#ifdef CONFIG_HUAWEI_UFS_DSM
+void ufshcd_enable_intr(struct ufs_hba *hba, u32 intrs);
+#endif
 
 /* Wrapper functions for safely calling variant operations */
 static inline const char *ufshcd_get_var_name(struct ufs_hba *hba)
@@ -1491,11 +1548,49 @@ static inline u8 ufshcd_scsi_to_upiu_lun(unsigned int scsi_lun)
 		return scsi_lun & UFS_UPIU_MAX_UNIT_NUM_ID;
 }
 
-
+int ufshcd_read_health_desc(struct ufs_hba *hba, u8 *buf, u32 size);
 int ufshcd_dump_regs(struct ufs_hba *hba, size_t offset, size_t len,
 		     const char *prefix);
 int ufshcd_uic_hibern8_enter(struct ufs_hba *hba);
 int ufshcd_uic_hibern8_exit(struct ufs_hba *hba);
 int ufshcd_read_string_desc(struct ufs_hba *hba, u8 desc_index,
 			    u8 **buf, bool ascii);
+void ufshcd_prepare_req_desc_hdr(struct ufshcd_lrb *lrbp,
+			u32 *upiu_flags, enum dma_data_direction cmd_dir);
+void ufshcd_prepare_utp_scsi_cmd_upiu(struct ufshcd_lrb *lrbp, u32 upiu_flags);
+void ufshcd_prepare_utp_query_req_upiu(struct ufs_hba *hba,
+				struct ufshcd_lrb *lrbp, u32 upiu_flags);
+inline void ufshcd_prepare_utp_nop_upiu(struct ufshcd_lrb *lrbp);
+bool ufshcd_get_dev_cmd_tag(struct ufs_hba *hba, int *tag_out);
+int ufshcd_map_sg(struct ufs_hba *hba, struct ufshcd_lrb *lrbp);
+inline
+void ufshcd_send_command(struct ufs_hba *hba, unsigned int task_tag);
+inline int
+ufshcd_transfer_rsp_status(struct ufs_hba *hba, struct ufshcd_lrb *lrbp, bool in_irq);
+int
+ufshcd_clear_cmd(struct ufs_hba *hba, int tag);
+inline void ufshcd_outstanding_req_clear(struct ufs_hba *hba, int tag);
+inline void ufshcd_put_dev_cmd_tag(struct ufs_hba *hba, int tag);
+int ufshcd_read_device_desc(struct ufs_hba *hba, u8 *buf, u32 size);
+int ufshcd_wb_ctrl(struct ufs_hba *hba, bool enable);
+inline bool ufshcd_wb_sup(struct ufs_hba *hba);
+inline void ufshcd_init_query(struct ufs_hba *hba,
+		struct ufs_query_req **request, struct ufs_query_res **response,
+		enum query_opcode opcode, u8 idn, u8 index, u8 selector);
+int ufshcd_query_flag_retry(struct ufs_hba *hba,
+	enum query_opcode opcode, enum flag_idn idn, u8 index, bool *flag_res);
+int ufshcd_exec_dev_cmd(struct ufs_hba *hba,
+		enum dev_cmd_type cmd_type, int timeout);
+
+inline int ufshcd_read_desc(struct ufs_hba *hba,
+				   enum desc_idn desc_id,
+				   int desc_index,
+				   void *buf,
+				   u32 size);
+void ufshcd_scsi_block_requests(struct ufs_hba *hba);
+void ufshcd_init_pwr_info(struct ufs_hba *hba);
+int ufshcd_get_max_pwr_mode(struct ufs_hba *hba);
+int ufshcd_verify_dev_init(struct ufs_hba *hba);
+void ufshcd_scsi_unblock_requests(struct ufs_hba *hba);
+void ufshcd_print_pwr_info(struct ufs_hba *hba);
 #endif /* End of Header */

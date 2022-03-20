@@ -864,12 +864,13 @@ static int scsi_add_lun(struct scsi_device *sdev, unsigned char *inq_result,
 	if (inq_result[7] & 0x10)
 		sdev->sdtr = 1;
 
+#ifdef CONFIG_HUAWEI_KERNEL_DEBUG
 	sdev_printk(KERN_NOTICE, sdev, "%s %.8s %.16s %.4s PQ: %d "
 			"ANSI: %d%s\n", scsi_device_type(sdev->type),
 			sdev->vendor, sdev->model, sdev->rev,
 			sdev->inq_periph_qual, inq_result[2] & 0x07,
 			(inq_result[3] & 0x0f) == 1 ? " CCS" : "");
-
+#endif
 	if ((sdev->scsi_level >= SCSI_2) && (inq_result[7] & 2) &&
 	    !(*bflags & BLIST_NOTQ)) {
 		sdev->tagged_supported = 1;
@@ -1470,17 +1471,29 @@ struct scsi_device *__scsi_add_device(struct Scsi_Host *shost, uint channel,
 	starget = scsi_alloc_target(parent, channel, id);
 	if (!starget)
 		return ERR_PTR(-ENOMEM);
+#ifdef CONFIG_MAS_BLK
+	mas_blk_record_scsi_autopm(shost, GET_TARGET, 0);
+#endif
 	scsi_autopm_get_target(starget);
 
 	mutex_lock(&shost->scan_mutex);
 	if (!shost->async_scan)
 		scsi_complete_async_scans();
-
+#ifdef CONFIG_MAS_BLK
+	if (scsi_host_scan_allowed(shost))
+		mas_blk_record_scsi_autopm(shost, GET_HOST, 3);
+#endif
 	if (scsi_host_scan_allowed(shost) && scsi_autopm_get_host(shost) == 0) {
 		scsi_probe_and_add_lun(starget, lun, NULL, &sdev, 1, hostdata);
+#ifdef CONFIG_MAS_BLK
+		mas_blk_record_scsi_autopm(shost, PUT_HOST, 3);
+#endif
 		scsi_autopm_put_host(shost);
 	}
 	mutex_unlock(&shost->scan_mutex);
+#ifdef CONFIG_MAS_BLK
+	mas_blk_record_scsi_autopm(shost, PUT_TARGET, 0);
+#endif
 	scsi_autopm_put_target(starget);
 	/*
 	 * paired with scsi_alloc_target().  Target will be destroyed unless
@@ -1545,6 +1558,9 @@ static void __scsi_scan_target(struct device *parent, unsigned int channel,
 	starget = scsi_alloc_target(parent, channel, id);
 	if (!starget)
 		return;
+#ifdef CONFIG_MAS_BLK
+	mas_blk_record_scsi_autopm(shost, GET_TARGET, 1);
+#endif
 	scsi_autopm_get_target(starget);
 
 	if (lun != SCAN_WILD_CARD) {
@@ -1571,6 +1587,9 @@ static void __scsi_scan_target(struct device *parent, unsigned int channel,
 	}
 
  out_reap:
+#ifdef CONFIG_MAS_BLK
+	mas_blk_record_scsi_autopm(shost, PUT_TARGET, 1);
+#endif
 	scsi_autopm_put_target(starget);
 	/*
 	 * paired with scsi_alloc_target(): determine if the target has
@@ -1614,9 +1633,15 @@ void scsi_scan_target(struct device *parent, unsigned int channel,
 	mutex_lock(&shost->scan_mutex);
 	if (!shost->async_scan)
 		scsi_complete_async_scans();
-
+#ifdef CONFIG_MAS_BLK
+	if (scsi_host_scan_allowed(shost))
+		mas_blk_record_scsi_autopm(shost, GET_HOST, 4);
+#endif
 	if (scsi_host_scan_allowed(shost) && scsi_autopm_get_host(shost) == 0) {
 		__scsi_scan_target(parent, channel, id, lun, rescan);
+#ifdef CONFIG_MAS_BLK
+		mas_blk_record_scsi_autopm(shost, PUT_HOST, 4);
+#endif
 		scsi_autopm_put_host(shost);
 	}
 	mutex_unlock(&shost->scan_mutex);
@@ -1671,7 +1696,10 @@ int scsi_scan_host_selected(struct Scsi_Host *shost, unsigned int channel,
 	mutex_lock(&shost->scan_mutex);
 	if (!shost->async_scan)
 		scsi_complete_async_scans();
-
+#ifdef CONFIG_MAS_BLK
+	if (scsi_host_scan_allowed(shost))
+		mas_blk_record_scsi_autopm(shost, GET_HOST, 5);
+#endif
 	if (scsi_host_scan_allowed(shost) && scsi_autopm_get_host(shost) == 0) {
 		if (channel == SCAN_WILD_CARD)
 			for (channel = 0; channel <= shost->max_channel;
@@ -1680,6 +1708,9 @@ int scsi_scan_host_selected(struct Scsi_Host *shost, unsigned int channel,
 						  rescan);
 		else
 			scsi_scan_channel(shost, channel, id, lun, rescan);
+#ifdef CONFIG_MAS_BLK
+		mas_blk_record_scsi_autopm(shost, PUT_HOST, 5);
+#endif
 		scsi_autopm_put_host(shost);
 	}
 	mutex_unlock(&shost->scan_mutex);
@@ -1799,7 +1830,9 @@ static void scsi_finish_async_scan(struct async_scan_data *data)
 		complete(&next->prev_finished);
 	}
 	spin_unlock(&async_scan_lock);
-
+#ifdef CONFIG_MAS_BLK
+	mas_blk_record_scsi_autopm(shost, PUT_HOST, 6);
+#endif
 	scsi_autopm_put_host(shost);
 	scsi_host_put(shost);
 	kfree(data);
@@ -1840,12 +1873,18 @@ void scsi_scan_host(struct Scsi_Host *shost)
 	if (strncmp(scsi_scan_type, "none", 4) == 0 ||
 	    strncmp(scsi_scan_type, "manual", 6) == 0)
 		return;
+#ifdef CONFIG_MAS_BLK
+	mas_blk_record_scsi_autopm(shost, GET_HOST, 6);
+#endif
 	if (scsi_autopm_get_host(shost) < 0)
 		return;
 
 	data = scsi_prep_async_scan(shost);
 	if (!data) {
 		do_scsi_scan_host(shost);
+#ifdef CONFIG_MAS_BLK
+		mas_blk_record_scsi_autopm(shost, PUT_HOST, 7);
+#endif
 		scsi_autopm_put_host(shost);
 		return;
 	}

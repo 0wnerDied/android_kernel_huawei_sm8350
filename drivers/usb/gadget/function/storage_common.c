@@ -355,13 +355,13 @@ EXPORT_SYMBOL_GPL(fsg_show_file);
 
 ssize_t fsg_show_cdrom(struct fsg_lun *curlun, char *buf)
 {
-	return sprintf(buf, "%u\n", curlun->cdrom);
+	return snprintf(buf, PAGE_SIZE, "%u\n", curlun->cdrom);
 }
 EXPORT_SYMBOL_GPL(fsg_show_cdrom);
 
 ssize_t fsg_show_removable(struct fsg_lun *curlun, char *buf)
 {
-	return sprintf(buf, "%u\n", curlun->removable);
+	return snprintf(buf, PAGE_SIZE, "%u\n", curlun->removable);
 }
 EXPORT_SYMBOL_GPL(fsg_show_removable);
 
@@ -431,10 +431,17 @@ ssize_t fsg_store_nofua(struct fsg_lun *curlun, const char *buf, size_t count)
 }
 EXPORT_SYMBOL_GPL(fsg_store_nofua);
 
+#define ENABLE 1
+#define DISABLE 0
+
 ssize_t fsg_store_file(struct fsg_lun *curlun, struct rw_semaphore *filesem,
 		       const char *buf, size_t count)
 {
 	int		rc = 0;
+	static int incdrom;
+
+	if (!curlun || !filesem || !buf)
+		return -EINVAL;
 
 	if (curlun->prevent_medium_removal && fsg_lun_is_open(curlun)) {
 		LDBG(curlun, "eject attempt prevented\n");
@@ -453,9 +460,51 @@ ssize_t fsg_store_file(struct fsg_lun *curlun, struct rw_semaphore *filesem,
 		if (rc == 0)
 			curlun->unit_attention_data =
 					SS_NOT_READY_TO_READY_TRANSITION;
+
+		pr_info("%s: count=%zu, buf=%pK, curlun=%pK\n",
+			__func__, count, buf, curlun);
+		/* 4: ".iso" string length */
+		if (count >= 4 && memcmp(&(buf[count - 4]), ".iso", 4) == 0) {
+			pr_info("buf = %s, buf[count - 4] = %s\n",
+			buf, &buf[count-4]);
+			curlun->cdrom = ENABLE;
+			curlun->ro = ENABLE;
+			curlun->removable = ENABLE;
+			curlun->nofua = ENABLE;
+			incdrom = ENABLE;
+		} else if (count == strlen("none") &&
+			memcmp(buf, "none", strlen("none")) == 0) {
+			curlun->cdrom = ENABLE;
+			curlun->ro = ENABLE;
+			curlun->removable = ENABLE;
+			curlun->nofua = ENABLE;
+			incdrom = DISABLE;
+			if (fsg_lun_is_open(curlun)) {
+				fsg_lun_close(curlun);
+				curlun->unit_attention_data =
+				SS_MEDIUM_NOT_PRESENT;
+			}
+		} else {
+			curlun->cdrom = DISABLE;
+			curlun->ro = DISABLE;
+			curlun->removable = ENABLE;
+			curlun->nofua = ENABLE;
+			incdrom = DISABLE;
+		}
 	} else if (fsg_lun_is_open(curlun)) {
-		fsg_lun_close(curlun);
-		curlun->unit_attention_data = SS_MEDIUM_NOT_PRESENT;
+		int needclose = ENABLE;
+
+		if (incdrom) {
+			/* 4: "none" string length */
+			if (count == 4 && memcmp(buf, "none", 4) == 0)
+				needclose = ENABLE;
+			else
+				needclose = DISABLE;
+		}
+		if (needclose) {
+			fsg_lun_close(curlun);
+			curlun->unit_attention_data = SS_MEDIUM_NOT_PRESENT;
+		}
 	}
 	up_write(filesem);
 	return (rc < 0 ? rc : count);

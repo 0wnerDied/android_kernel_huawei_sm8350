@@ -56,6 +56,16 @@
 
 #include <trace/hooks/sysrqcrash.h>
 
+#ifdef CONFIG_HANDSET_SYSRQ_RESET
+#ifdef CONFIG_RAINBOW_HIMNTN
+#include <linux/himntn_kernel.h>
+#endif
+#include "sysrq_key/sysrq_key.h"
+#endif
+#ifdef CONFIG_DETECT_HUAWEI_HUNG_TASK
+#include <linux/huawei_hung_task.h>
+#endif
+
 /* Whether we react on sysrq keys or just ignore them */
 static int __read_mostly sysrq_enabled = CONFIG_MAGIC_SYSRQ_DEFAULT_ENABLE;
 static bool __read_mostly sysrq_always_enabled;
@@ -77,9 +87,17 @@ static bool sysrq_on_mask(int mask)
 
 static int __init sysrq_always_enabled_setup(char *str)
 {
+#ifdef CONFIG_HANDSET_SYSRQ_RESET
+	/*
+	 * make sure sysrq_always_enabled is zero,
+	 * then enable state depends on by sysrq_enabled
+	 */
+	sysrq_always_enabled = false;
+	pr_info("sysrq always disabled, sysrq depends on sysrq_enabled\n");
+#else
 	sysrq_always_enabled = true;
 	pr_info("sysrq always enabled.\n");
-
+#endif
 	return 1;
 }
 
@@ -294,7 +312,11 @@ static struct sysrq_key_op sysrq_showstate_op = {
 
 static void sysrq_handle_showstate_blocked(int key)
 {
+#ifdef CONFIG_DETECT_HUAWEI_HUNG_TASK
+	hwhungtask_show_state_filter(TASK_UNINTERRUPTIBLE);
+#else
 	show_state_filter(TASK_UNINTERRUPTIBLE);
+#endif
 }
 static struct sysrq_key_op sysrq_showstate_blocked_op = {
 	.handler	= sysrq_handle_showstate_blocked,
@@ -605,7 +627,7 @@ static const unsigned char sysrq_xlate[KEY_CNT] =
         "\206\207\210\211\212\000\000789-456+1"         /* 0x40 - 0x4f */
         "230\177\000\000\213\214\000\000\000\000\000\000\000\000\000\000" /* 0x50 - 0x5f */
         "\r\000/";                                      /* 0x60 - 0x6f */
-
+#ifndef CONFIG_HANDSET_SYSRQ_RESET
 struct sysrq_state {
 	struct input_handle handle;
 	struct work_struct reinject_work;
@@ -625,12 +647,12 @@ struct sysrq_state {
 	int reset_seq_version;
 	struct timer_list keyreset_timer;
 };
-
+#endif
 #define SYSRQ_KEY_RESET_MAX	20 /* Should be plenty */
 static unsigned short sysrq_reset_seq[SYSRQ_KEY_RESET_MAX];
 static unsigned int sysrq_reset_seq_len;
 static unsigned int sysrq_reset_seq_version = 1;
-
+#ifndef CONFIG_HANDSET_SYSRQ_RESET
 static void sysrq_parse_reset_sequence(struct sysrq_state *state)
 {
 	int i;
@@ -656,7 +678,7 @@ static void sysrq_parse_reset_sequence(struct sysrq_state *state)
 
 	state->reset_seq_version = sysrq_reset_seq_version;
 }
-
+#endif
 static void sysrq_do_reset(struct timer_list *t)
 {
 	struct sysrq_state *state = from_timer(state, t, keyreset_timer);
@@ -665,7 +687,7 @@ static void sysrq_do_reset(struct timer_list *t)
 
 	orderly_reboot();
 }
-
+#ifndef CONFIG_HANDSET_SYSRQ_RESET
 static void sysrq_handle_reset_request(struct sysrq_state *state)
 {
 	if (state->reset_requested)
@@ -710,7 +732,7 @@ static void sysrq_detect_reset_sequence(struct sysrq_state *state,
 		}
 	}
 }
-
+#endif
 #ifdef CONFIG_OF
 static void sysrq_of_get_keyreset_config(void)
 {
@@ -772,7 +794,7 @@ static void sysrq_reinject_alt_sysrq(struct work_struct *work)
 		sysrq->reinjecting = false;
 	}
 }
-
+#ifndef CONFIG_HANDSET_SYSRQ_RESET
 static bool sysrq_handle_keypress(struct sysrq_state *sysrq,
 				  unsigned int code, int value)
 {
@@ -864,7 +886,7 @@ static bool sysrq_handle_keypress(struct sysrq_state *sysrq,
 
 	return suppress;
 }
-
+#endif
 static bool sysrq_filter(struct input_handle *handle,
 			 unsigned int type, unsigned int code, int value)
 {
@@ -902,7 +924,9 @@ static int sysrq_connect(struct input_handler *handler,
 {
 	struct sysrq_state *sysrq;
 	int error;
-
+#ifdef CONFIG_HANDSET_SYSRQ_RESET
+	sysrq_key_init();
+#endif
 	sysrq = kzalloc(sizeof(struct sysrq_state), GFP_KERNEL);
 	if (!sysrq)
 		return -ENOMEM;
@@ -955,10 +979,16 @@ static void sysrq_disconnect(struct input_handle *handle)
  */
 static const struct input_device_id sysrq_ids[] = {
 	{
+#ifdef CONFIG_HANDSET_SYSRQ_RESET
+		// remove the keybit of KEY_LEFTALT for sysrq function
+		.flags = INPUT_DEVICE_ID_MATCH_EVBIT,
+		.evbit = { [BIT_WORD(EV_KEY)] = BIT_MASK(EV_KEY) },
+#else
 		.flags = INPUT_DEVICE_ID_MATCH_EVBIT |
 				INPUT_DEVICE_ID_MATCH_KEYBIT,
 		.evbit = { [BIT_WORD(EV_KEY)] = BIT_MASK(EV_KEY) },
 		.keybit = { [BIT_WORD(KEY_LEFTALT)] = BIT_MASK(KEY_LEFTALT) },
+#endif
 	},
 	{ },
 };
@@ -1134,6 +1164,11 @@ static inline void sysrq_init_procfs(void)
 
 static int __init sysrq_init(void)
 {
+#ifdef CONFIG_HANDSET_SYSRQ_RESET
+#ifdef CONFIG_RAINBOW_HIMNTN
+	sysrq_enabled = cmd_himntn_item_switch(HIMNTN_ID_SYSRQ_SWITCH);
+#endif
+#endif
 	sysrq_init_procfs();
 
 	if (sysrq_on())

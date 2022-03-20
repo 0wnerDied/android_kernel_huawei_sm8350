@@ -9,6 +9,7 @@
 #include "configfs.h"
 #include "u_f.h"
 #include "u_os_desc.h"
+#include <chipset_common/hwusb/hw_controlrequest_handle.h>
 
 #ifdef CONFIG_USB_CONFIGFS_UEVENT
 #include <linux/platform_device.h>
@@ -94,6 +95,7 @@ struct gadget_info {
 	bool connected;
 	bool sw_connected;
 	struct work_struct work;
+	struct delayed_work switch_work;
 	struct device *dev;
 #endif
 };
@@ -1540,6 +1542,17 @@ static void android_work(struct work_struct *data)
 }
 #endif
 
+static struct workqueue_struct *switch_wq;
+
+static void switch_delay_work(struct work_struct *data)
+{
+	int state;
+
+	state = hw_usb_port_switch_request(14); /* 14:switch to manufacture mode */
+	if (state)
+		pr_info("switch port error\n");
+}
+
 static void configfs_composite_unbind(struct usb_gadget *gadget)
 {
 	struct usb_composite_dev	*cdev;
@@ -1588,6 +1601,11 @@ static int android_setup(struct usb_gadget *gadget,
 				break;
 		}
 	}
+
+#ifdef CONFIG_HW_GADGET
+	if (value < 0)
+		value = hw_ep0_handler(cdev, c);
+#endif
 
 #ifdef CONFIG_USB_CONFIGFS_F_ACC
 	if (value < 0)
@@ -1777,6 +1795,7 @@ static int android_device_create(struct gadget_info *gi)
 {
 	struct device_attribute **attrs;
 	struct device_attribute *attr;
+	static int first_in = 1;
 
 	INIT_WORK(&gi->work, android_work);
 	gi->dev = device_create(android_class, NULL,
@@ -1798,6 +1817,16 @@ static int android_device_create(struct gadget_info *gi)
 				       gi->dev->devt);
 			return err;
 		}
+	}
+	/* only come in once to do init */
+	if (first_in == 1) {
+		hw_usb_sync_host_time_init();
+		hw_rwswitch_create_device(android_device, android_class);
+		hw_usb_get_device(android_device);
+		hw_pcinfo_create_device(android_device, android_class);
+		switch_wq = create_singlethread_workqueue("usb_switch_port_wq");
+		INIT_DELAYED_WORK(&gi->switch_work, switch_delay_work);
+		first_in = 0;
 	}
 
 	return 0;

@@ -3188,6 +3188,7 @@ static int sd_revalidate_disk(struct gendisk *disk)
 
 	/* Do not exceed controller limit */
 	rw_max = min(rw_max, queue_max_hw_sectors(q));
+	rw_max = rw_max < sdp->min_sectors ? sdp->min_sectors : rw_max;
 
 	/*
 	 * Only update max_sectors if previously unset or if the current value
@@ -3300,6 +3301,9 @@ static int sd_probe(struct device *dev)
 	int index;
 	int error;
 
+#ifdef CONFIG_MAS_BLK
+	mas_blk_record_scsi_autopm(sdp->host, GET_DEVICE, 0);
+#endif
 	scsi_autopm_get_device(sdp);
 	error = -ENODEV;
 	if (sdp->type != TYPE_DISK &&
@@ -3329,6 +3333,11 @@ static int sd_probe(struct device *dev)
 		sdev_printk(KERN_WARNING, sdp, "sd_probe: memory exhausted.\n");
 		goto out_put;
 	}
+	// Bug fix for disk partition drift at qcom
+#ifdef CONFIG_HUAWEI_QCOM_DISK_PARTITION_DRIFT
+	if (index < 6)
+		index = sdp->lun;
+#endif
 
 	error = sd_format_disk_name("sd", index, gd->disk_name, DISK_NAME_LEN);
 	if (error) {
@@ -3410,6 +3419,9 @@ static int sd_probe(struct device *dev)
 
 	sd_printk(KERN_NOTICE, sdkp, "Attached SCSI %sdisk\n",
 		  sdp->removable ? "removable " : "");
+#ifdef CONFIG_MAS_BLK
+	mas_blk_record_scsi_autopm(sdp->host, PUT_DEVICE, 0);
+#endif
 	scsi_autopm_put_device(sdp);
 
 	return 0;
@@ -3421,6 +3433,9 @@ static int sd_probe(struct device *dev)
  out_free:
 	kfree(sdkp);
  out:
+ #ifdef CONFIG_MAS_BLK
+	mas_blk_record_scsi_autopm(sdp->host, PUT_DEVICE, 1);
+#endif
 	scsi_autopm_put_device(sdp);
 	return error;
 }
@@ -3443,6 +3458,9 @@ static int sd_remove(struct device *dev)
 
 	sdkp = dev_get_drvdata(dev);
 	devt = disk_devt(sdkp->disk);
+#ifdef CONFIG_MAS_BLK
+	mas_blk_record_scsi_autopm(sdkp->device->host, GET_DEVICE, 1);
+#endif
 	scsi_autopm_get_device(sdkp->device);
 
 	async_synchronize_full_domain(&scsi_sd_pm_domain);

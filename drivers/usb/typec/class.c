@@ -695,6 +695,12 @@ void typec_unregister_partner(struct typec_partner *partner)
 }
 EXPORT_SYMBOL_GPL(typec_unregister_partner);
 
+int typec_partner_get(struct typec_partner *partner)
+{
+	return partner ? partner->accessory : -1;
+}
+EXPORT_SYMBOL_GPL(typec_partner_get);
+
 /* ------------------------------------------------------------------------- */
 /* Type-C Cable Plugs */
 

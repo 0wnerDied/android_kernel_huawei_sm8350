@@ -2,7 +2,7 @@
 /*
  * Backlight Lowlevel Control Abstraction
  *
- * Copyright (C) 2003,2004 Hewlett-Packard Company
+ * Copyright (C) 2003,2021 Hewlett-Packard Company
  *
  */
 
@@ -431,6 +431,24 @@ struct backlight_device *backlight_device_get_by_type(enum backlight_type type)
 	return found ? bd : NULL;
 }
 EXPORT_SYMBOL(backlight_device_get_by_type);
+
+struct backlight_device *backlight_device_get_by_type_and_display_count(
+	enum backlight_type type, int display_count)
+{
+	bool is_found = false;
+	struct backlight_device *bd = NULL;
+
+	mutex_lock(&backlight_dev_list_mutex);
+	list_for_each_entry(bd, &backlight_dev_list, entry) {
+		if (bd->props.type == type && bd->props.display_count == display_count) {
+			is_found = true;
+			break;
+		}
+	}
+	mutex_unlock(&backlight_dev_list_mutex);
+
+	return is_found ? bd : NULL;
+}
 
 /**
  * backlight_device_unregister - unregisters a backlight device object.

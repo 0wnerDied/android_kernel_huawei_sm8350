@@ -1307,13 +1307,22 @@ int scsi_sysfs_add_sdev(struct scsi_device *sdev)
 	transport_configure_device(&starget->dev);
 
 	device_enable_async_suspend(&sdev->sdev_gendev);
+#ifdef CONFIG_MAS_BLK
+	mas_blk_record_scsi_autopm(sdev->host, GET_TARGET, 2);
+#endif
 	scsi_autopm_get_target(starget);
 	pm_runtime_set_active(&sdev->sdev_gendev);
 	if (!sdev->rpm_autosuspend)
 		pm_runtime_forbid(&sdev->sdev_gendev);
 	pm_runtime_enable(&sdev->sdev_gendev);
+#ifdef CONFIG_MAS_BLK
+	mas_blk_record_scsi_autopm(sdev->host, PUT_TARGET, 2);
+#endif
 	scsi_autopm_put_target(starget);
 
+#ifdef CONFIG_MAS_BLK
+	mas_blk_record_scsi_autopm(sdev->host, GET_DEVICE, 2);
+#endif
 	scsi_autopm_get_device(sdev);
 
 	scsi_dh_add_device(sdev);
@@ -1359,7 +1368,9 @@ int scsi_sysfs_add_sdev(struct scsi_device *sdev)
 		if (error)
 			return error;
 	}
-
+#ifdef CONFIG_MAS_BLK
+	mas_blk_record_scsi_autopm(sdev->host, PUT_DEVICE, 2);
+#endif
 	scsi_autopm_put_device(sdev);
 	return error;
 }

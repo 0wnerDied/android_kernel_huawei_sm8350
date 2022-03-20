@@ -130,6 +130,8 @@ struct qusb_phy {
 	int			init_seq_len;
 	int			*qusb_phy_init_seq;
 	u32			major_rev;
+	int host_init_seq_len;
+	int *qusb_phy_host_init_seq;
 	u32			usb_hs_ac_bitmask;
 	u32			usb_hs_ac_value;
 
@@ -483,6 +485,14 @@ static int qusb_phy_init(struct usb_phy *phy)
 	if (qphy->qusb_phy_init_seq)
 		qusb_phy_write_seq(qphy->base, qphy->qusb_phy_init_seq,
 				qphy->init_seq_len, 0);
+
+	if (qphy->phy.flags & PHY_HOST_MODE) {
+		pr_info("%s flags = %d\n", __func__, qphy->phy.flags);
+		if (qphy->qusb_phy_host_init_seq)
+			qusb_phy_write_seq(qphy->base,
+				qphy->qusb_phy_host_init_seq,
+				qphy->init_seq_len, 0);
+	}
 
 	/*
 	 * Check for EFUSE value only if tune2_efuse_reg is available
@@ -1175,6 +1185,28 @@ static int qusb_phy_probe(struct platform_device *pdev)
 				qphy->init_seq_len);
 		} else {
 			dev_err(dev, "error allocating memory for phy_init_seq\n");
+		}
+	}
+
+	size = 0;
+	of_get_property(dev->of_node, "qcom,qusb-phy-host-init-seq", &size);
+	if (size) {
+		qphy->qusb_phy_host_init_seq = devm_kzalloc(dev,
+						size, GFP_KERNEL);
+		if (qphy->qusb_phy_host_init_seq) {
+			qphy->host_init_seq_len =
+				(size / sizeof(*qphy->qusb_phy_host_init_seq));
+			if (qphy->host_init_seq_len % 2) {
+				dev_err(dev, "invalid host_init_seq_len\n");
+				kfree(qphy->qusb_phy_host_init_seq);
+			} else {
+				ret = of_property_read_u32_array(dev->of_node,
+						"qcom,qusb-phy-host-init-seq",
+					qphy->qusb_phy_host_init_seq,
+						qphy->host_init_seq_len);
+			}
+		} else {
+			dev_err(dev, "error allocating memory for phy_host_init_seq\n");
 		}
 	}
 

@@ -118,9 +118,16 @@ obj-$(CONFIG_QCOM_ADSP_MANUAL_VOTE) += adsp_vote_qmi.o adsp_lpm_voting_v01.o
 obj-$(CONFIG_MSM_SLATECOM) += slatecom_spi.o
 obj-$(CONFIG_MSM_SLATECOM_INTERFACE) += slatecom_interface.o
 obj-$(CONFIG_QCOM_AOP_SET_DDR) += aop-set-ddr.o
+obj-y += pil-q6v5-mss/
 obj-$(CONFIG_CPU_V7) += idle-v7.o
 obj-$(CONFIG_DUMP_XBL_LOG) += dump_boot_log.o
 # GNSS driver
 obj-$(CONFIG_GNSS_SIRF)		+= gnsssirf/
 obj-$(CONFIG_MSM_SEB) += slate_events_bridge.o
 obj-$(CONFIG_MSM_SEB_RPMSG) += slate_events_bridge_rpmsg.o
+
+# Close LTO
+ifeq ($(use_klto), false)
+CFLAGS_soc_sleep_stats.o := -Wframe-larger-than=5120
+CFLAGS_rpmh_master_stat.o := -Wframe-larger-than=5120
+endif

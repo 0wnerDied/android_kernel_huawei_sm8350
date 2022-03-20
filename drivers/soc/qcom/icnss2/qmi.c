@@ -30,6 +30,10 @@
 #include "debug.h"
 #include "genl.h"
 
+#ifdef CONFIG_HUAWEI_WIFI
+#include <hw_wlan/hw_wlan.h>
+#endif
+
 #define WLFW_SERVICE_WCN_INS_ID_V01	3
 #define WLFW_SERVICE_INS_ID_V01		0
 #define WLFW_CLIENT_ID			0x4b4e454c
@@ -927,6 +931,9 @@ static int icnss_get_bdf_file_name(struct icnss_priv *priv,
 {
 	char filename_tmp[ICNSS_MAX_FILE_NAME];
 	int ret = 0;
+#ifdef CONFIG_HUAWEI_WIFI
+	const char *board_name = NULL;
+#endif
 
 	switch (bdf_type) {
 	case ICNSS_BDF_ELF:
@@ -943,6 +950,17 @@ static int icnss_get_bdf_file_name(struct icnss_priv *priv,
 				 priv->board_id & 0xFF);
 		break;
 	case ICNSS_BDF_BIN:
+#ifdef CONFIG_HUAWEI_WIFI
+		board_name = hw_wlan_get_board_name();
+		/* retrive bdf devmodel prefix name from dtsi config */
+		if (board_name == NULL) {
+			icnss_pr_err("pubfile id get failed, bdf path default");
+			snprintf(filename_tmp, filename_len, BIN_BDF_FILE_NAME);
+		} else {
+			snprintf(filename_tmp, filename_len, "%s_"BIN_BDF_FILE_NAME, board_name);
+			icnss_pr_err("pubfile id get success, bdf path %s", filename_tmp);
+		}
+#else
 		if (priv->board_id == 0xFF)
 			snprintf(filename_tmp, filename_len, BIN_BDF_FILE_NAME);
 		else if (priv->board_id < 0xFF)
@@ -954,6 +972,7 @@ static int icnss_get_bdf_file_name(struct icnss_priv *priv,
 				 BDF_FILE_NAME_PREFIX "%02x.b%02x",
 				 priv->board_id >> 8 & 0xFF,
 				 priv->board_id & 0xFF);
+#endif
 		break;
 	case ICNSS_BDF_REGDB:
 		snprintf(filename_tmp, filename_len, REGDB_FILE_NAME);
@@ -1094,7 +1113,7 @@ err_send:
 		release_firmware(fw_entry);
 err_req_fw:
 	if (bdf_type != ICNSS_BDF_REGDB)
-		ICNSS_ASSERT(0);
+		ICNSS_QMI_ASSERT();
 	kfree(req);
 	kfree(resp);
 	return ret;
@@ -3132,7 +3151,7 @@ int wlfw_host_cap_send_sync(struct icnss_priv *priv)
 	return 0;
 
 out:
-	ICNSS_ASSERT(0);
+	ICNSS_QMI_ASSERT();
 	kfree(req);
 	kfree(resp);
 	return ret;
