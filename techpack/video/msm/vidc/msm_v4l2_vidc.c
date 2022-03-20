@@ -14,6 +14,10 @@
 #include "vidc_hfi_api.h"
 #include "msm_vidc_clocks.h"
 
+#ifdef CONFIG_HW_VPU_SCALE
+#include "hw_vpu/vpu_freq_scale.h"
+#endif
+
 #define BASE_DEVICE_NUMBER 32
 
 struct msm_vidc_drv *vidc_driver;
@@ -490,6 +494,14 @@ static int msm_vidc_probe_vidc_device(struct platform_device *pdev)
 		goto err_core_init;
 	}
 
+#ifdef CONFIG_HW_VPU_SCALE
+	rc = vpu_create_group(&pdev->dev.kobj);
+	if (rc) {
+		d_vpr_e("Failed to create vpu freq attributes\n");
+		goto err_core_init;
+	}
+#endif
+
 	core->id = MSM_VIDC_CORE_VENUS;
 
 	rc = v4l2_device_register(&pdev->dev, &core->v4l2_dev);
@@ -655,6 +667,9 @@ static int msm_vidc_remove(struct platform_device *pdev)
 	v4l2_device_unregister(&core->v4l2_dev);
 
 	msm_vidc_free_platform_resources(&core->resources);
+#ifdef CONFIG_HW_VPU_SCALE
+	vpu_remove_group(&pdev->dev.kobj);
+#endif
 	sysfs_remove_group(&pdev->dev.kobj, &msm_vidc_core_attr_group);
 	dev_set_drvdata(&pdev->dev, NULL);
 	mutex_destroy(&core->resources.cb_lock);

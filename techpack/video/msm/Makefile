@@ -20,7 +20,8 @@ msm-vidc-objs := vidc/msm_v4l2_vidc.o \
                 vidc/msm_vidc_clocks.o \
                 vidc/msm_vidc_bus_ar50lite.o\
                 vidc/msm_vidc_bus_iris2.o \
-                vidc/msm_vidc_buffer_calculations.o
+                vidc/msm_vidc_buffer_calculations.o \
+                vidc/hw_vpu/vpu_freq_scale.o
 
 obj-$(CONFIG_MSM_VIDC_V4L2) := msm-vidc.o
 

@@ -10,6 +10,9 @@
 #include "msm_vidc_buffer_calculations.h"
 #include "msm_vidc_bus.h"
 #include "vidc_hfi.h"
+#ifdef CONFIG_HW_VPU_SCALE
+#include "hw_vpu/vpu_freq_scale.h"
+#endif
 
 #define MSM_VIDC_MIN_UBWC_COMPLEXITY_FACTOR (1 << 16)
 #define MSM_VIDC_MAX_UBWC_COMPLEXITY_FACTOR (4 << 16)
@@ -876,6 +879,16 @@ int msm_vidc_set_clocks(struct msm_vidc_core *core, u32 sid)
 		}
 
 		freq_core_max = max_t(unsigned long, freq_core_1, freq_core_2);
+
+#ifdef CONFIG_HW_VPU_SCALE
+		if (is_vpu_freq_scale()) {
+			s_vpr_l(sid, "msm_hw_vpu_voting %d\n",
+				get_vpu_freq_scale());
+			freq_core_max = get_vpu_freq_scale();
+			decrement = false;
+			break;
+		}
+#endif
 
 		if (msm_vidc_clock_voting) {
 			s_vpr_l(sid, "msm_vidc_clock_voting %d\n",
