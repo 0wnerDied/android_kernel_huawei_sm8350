@@ -7,6 +7,9 @@
 
 #include <linux/mm.h>
 #include <linux/cma.h>
+#ifdef CONFIG_MAS_UNISTORE_PRESERVE
+#include <linux/blkdev.h>
+#endif
 
 void show_mem(unsigned int filter, nodemask_t *nodemask)
 {
@@ -40,5 +43,9 @@ void show_mem(unsigned int filter, nodemask_t *nodemask)
 #endif
 #ifdef CONFIG_MEMORY_FAILURE
 	printk("%lu pages hwpoisoned\n", atomic_long_read(&num_poisoned_pages));
+#endif
+#ifdef CONFIG_MAS_UNISTORE_PRESERVE
+	printk("%d anon pages, %d non anon pages, unistore_reset_recovery\n",
+		mas_blk_get_recovery_pages(true), mas_blk_get_recovery_pages(false));
 #endif
 }

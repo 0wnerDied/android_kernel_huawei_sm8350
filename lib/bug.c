@@ -48,6 +48,10 @@
 #include <linux/sched.h>
 #include <linux/rculist.h>
 
+#ifdef CONFIG_RAINBOW_REASON
+#include <linux/rainbow_reason.h>
+#endif
+
 extern struct bug_entry __start___bug_table[], __stop___bug_table[];
 
 static inline unsigned long bug_addr(const struct bug_entry *bug)
@@ -197,11 +201,21 @@ enum bug_trap_type report_bug(unsigned long bugaddr, struct pt_regs *regs)
 		return BUG_TRAP_TYPE_WARN;
 	}
 
-	if (file)
+
+	if (file) {
 		pr_crit("kernel BUG at %s:%u!\n", file, line);
-	else
+#ifdef CONFIG_RAINBOW_REASON
+		rb_sreason_set("bug");
+		rb_attach_info_set("BUG at %s:%u!", file, line);
+#endif
+	} else {
 		pr_crit("Kernel BUG at %pB [verbose debug info unavailable]\n",
 			(void *)bugaddr);
+#ifdef CONFIG_RAINBOW_REASON
+		rb_sreason_set("bug_unavail");
+		rb_attach_info_set("BUG unavailable at %p!", (void *)bugaddr);
+#endif
+	}
 
 	return BUG_TRAP_TYPE_BUG;
 }

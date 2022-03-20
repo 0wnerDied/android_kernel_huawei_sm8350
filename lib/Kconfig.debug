@@ -35,6 +35,13 @@ config PRINTK_CALLER
 	  no option to enable/disable at the kernel command line parameter or
 	  sysfs interface.
 
+# add HW_DIE_CATCH config
+config HW_DIE_CATCH
+	bool "unexpected_die_catch feature"
+	default y
+	help
+	  catch a process kill/exit and will transform it SIGABORT
+
 config CONSOLE_LOGLEVEL_DEFAULT
 	int "Default console loglevel (1-15)"
 	range 1 15
@@ -938,6 +945,19 @@ config DETECT_HUNG_TASK
 	  Say Y here to enable the kernel to detect "hung tasks",
 	  which are bugs that cause the task to be stuck in
 	  uninterruptible "D" state indefinitely.
+
+	  When a hung task is detected, the kernel will print the
+	  current stack trace (which you should report), but the
+	  task will stay in uninterruptible state. If lockdep is
+	  enabled then all held locks will also be reported. This
+	  feature has negligible overhead.
+
+config DETECT_HUAWEI_HUNG_TASK
+	bool "Detect Huawei Hung Tasks"
+	depends on DETECT_HUNG_TASK
+	default n
+	help
+	  Say Y here to enable huawei hung tasks detect.
 
 	  When a hung task is detected, the kernel will print the
 	  current stack trace (which you should report), but the
