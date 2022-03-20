@@ -40,11 +40,13 @@ sched_init_task_load_write(struct file *file, const char __user *buf,
 extern int
 sched_init_task_load_open(struct inode *inode, struct file *filp);
 
+#if defined(CONFIG_QCOM_WALT_RTG) || defined(CONFIG_HW_RTG_DEBUG)
 extern int sched_group_id_show(struct seq_file *m, void *v);
 extern ssize_t
 sched_group_id_write(struct file *file, const char __user *buf,
 					size_t count, loff_t *offset);
 extern int sched_group_id_open(struct inode *inode, struct file *filp);
+#endif
 #else
 static inline void sched_update_nr_prod(int cpu, long delta, bool inc) {}
 static inline unsigned int sched_get_cpu_util(int cpu)

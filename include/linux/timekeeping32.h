@@ -11,6 +11,15 @@ static inline unsigned long get_seconds(void)
 	return ktime_get_real_seconds();
 }
 
+static inline struct timespec current_kernel_time(void)
+{
+	struct timespec64 ts64;
+
+	ktime_get_coarse_real_ts64(&ts64);
+
+	return timespec64_to_timespec(ts64);
+}
+
 static inline void getnstimeofday(struct timespec *ts)
 {
 	struct timespec64 ts64;
@@ -43,4 +52,11 @@ static inline void getboottime(struct timespec *ts)
 	*ts = timespec64_to_timespec(ts64);
 }
 
+/*
+ * Timespec interfaces utilizing the ktime based ones
+ */
+static inline void get_monotonic_boottime(struct timespec *ts)
+{
+	*ts = ktime_to_timespec(ktime_get_boottime());
+}
 #endif

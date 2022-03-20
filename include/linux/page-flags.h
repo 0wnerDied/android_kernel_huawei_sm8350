@@ -131,6 +131,26 @@ enum pageflags {
 	PG_young,
 	PG_idle,
 #endif
+#ifdef CONFIG_MM_PAGE_TRACE
+	PG_lslub,
+	PG_vmalloc,
+	PG_skb,
+	PG_ion,
+	PG_zspage,
+	PG_drv,
+#endif
+#ifdef CONFIG_ZRAM_NON_COMPRESS
+	PG_non_compress,
+#endif
+#if defined(CONFIG_TASK_PROTECT_LRU) || defined(CONFIG_MEMCG_PROTECT_LRU)
+	PG_protect,
+#endif
+#ifdef CONFIG_HMFS_FS
+	PG_cpdata,
+#endif
+#ifdef CONFIG_MAS_UNISTORE_PRESERVE
+	PG_cached,
+#endif
 	__NR_PAGEFLAGS,
 
 	/* Filesystems */
@@ -366,6 +386,18 @@ PAGEFLAG(Reclaim, reclaim, PF_NO_TAIL)
 PAGEFLAG(Readahead, reclaim, PF_NO_COMPOUND)
 	TESTCLEARFLAG(Readahead, reclaim, PF_NO_COMPOUND)
 
+#ifdef CONFIG_ZRAM_NON_COMPRESS
+PAGEFLAG(NonCompress, non_compress, PF_NO_TAIL)
+	TESTSCFLAG(NonCompress, non_compress, PF_NO_TAIL)
+#endif
+#ifdef CONFIG_HMFS_FS
+PAGEFLAG(CPdata, cpdata, PF_NO_COMPOUND)
+#endif
+#ifdef CONFIG_MAS_UNISTORE_PRESERVE
+PAGEFLAG(Cached, cached, PF_NO_TAIL)
+	TESTSCFLAG(Cached, cached, PF_NO_TAIL)
+#endif
+
 #ifdef CONFIG_HIGHMEM
 /*
  * Must use a macro here due to header dependency issues. page_zone() is not
@@ -424,11 +456,23 @@ static inline bool set_hwpoison_free_buddy_page(struct page *page)
 #define __PG_HWPOISON 0
 #endif
 
+#if defined(CONFIG_TASK_PROTECT_LRU) || defined(CONFIG_MEMCG_PROTECT_LRU)
+PAGEFLAG(Protect, protect, PF_ANY)
+#endif
 #if defined(CONFIG_IDLE_PAGE_TRACKING) && defined(CONFIG_64BIT)
 TESTPAGEFLAG(Young, young, PF_ANY)
 SETPAGEFLAG(Young, young, PF_ANY)
 TESTCLEARFLAG(Young, young, PF_ANY)
 PAGEFLAG(Idle, idle, PF_ANY)
+#endif
+
+#ifdef CONFIG_MM_PAGE_TRACE
+PAGEFLAG(Lslub, lslub, PF_ANY)
+PAGEFLAG(Vmalloc, vmalloc, PF_ANY)
+PAGEFLAG(ION, ion, PF_ANY)
+PAGEFLAG(SKB, skb, PF_ANY)
+PAGEFLAG(Zspage, zspage, PF_ANY)
+PAGEFLAG(Drv, drv, PF_ANY)
 #endif
 
 /*

@@ -250,6 +250,13 @@ pgoff_t page_cache_prev_miss(struct address_space *mapping,
 struct page *pagecache_get_page(struct address_space *mapping, pgoff_t offset,
 		int fgp_flags, gfp_t cache_gfp_mask);
 
+#ifdef CONFIG_HUAWEI_PAGECACHE_HELPER
+struct page *pch_get_page(struct address_space *mapping, pgoff_t offset,
+					int fgp_flags, gfp_t gfp_mask);
+#else
+#define pch_get_page pagecache_get_page
+#endif
+
 /**
  * find_get_page - find and get a page reference
  * @mapping: the address_space to search

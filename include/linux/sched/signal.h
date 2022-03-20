@@ -223,6 +223,11 @@ struct signal_struct {
 	struct mm_struct *oom_mm;	/* recorded mm when the thread group got
 					 * killed by the oom killer */
 
+#ifdef CONFIG_HW_DIE_CATCH
+	/* Only settable by CAP_SYS_RESOURCE and task */
+	unsigned short unexpected_die_catch_flags;
+#endif
+
 	struct mutex cred_guard_mutex;	/* guard against foreign influences on
 					 * credential calculations
 					 * (notably. ptrace) */
@@ -231,6 +236,21 @@ struct signal_struct {
 	ANDROID_KABI_RESERVE(3);
 	ANDROID_KABI_RESERVE(4);
 } __randomize_layout;
+
+#ifdef CONFIG_HW_DIE_CATCH
+/* if the process will die by SIGKILL,SIGTERM
+ * it will send SIGABORT to notify userspace
+ */
+#define KILL_CATCH_FLAG     0x1
+/* if the process will die by system call exit,
+ * it will print the log
+ */
+#define EXIT_CATCH_FLAG     0x2
+/* if the process will die by system call exit,
+ * it will send SIGABORT to notify userspace
+ */
+#define EXIT_CATCH_ABORT_FLAG       0x4
+#endif
 
 /*
  * Bits in flags field of signal_struct.

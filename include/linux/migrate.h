@@ -62,6 +62,9 @@ static inline struct page *new_page_nodemask(struct page *page,
 #ifdef CONFIG_MIGRATION
 
 extern void putback_movable_pages(struct list_head *l);
+#ifdef CONFIG_FCMA
+extern void __putback_movable_pages(struct list_head *l, bool fcma);
+#endif
 extern int migrate_page(struct address_space *mapping,
 			struct page *newpage, struct page *page,
 			enum migrate_mode mode);
@@ -83,6 +86,9 @@ extern unsigned long release_freepages(struct list_head *freelist);
 #else
 
 static inline void putback_movable_pages(struct list_head *l) {}
+#ifdef CONFIG_FCMA
+static inline void __putback_movable_pages(struct list_head *l, bool fcma) {}
+#endif
 static inline int migrate_pages(struct list_head *l, new_page_t new,
 		free_page_t free, unsigned long private, enum migrate_mode mode,
 		int reason)

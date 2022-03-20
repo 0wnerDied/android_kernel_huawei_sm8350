@@ -21,6 +21,9 @@ struct pagevec {
 	unsigned char nr;
 	bool percpu_pvec_drained;
 	struct page *pages[PAGEVEC_SIZE];
+#ifdef CONFIG_TASK_PROTECT_LRU
+	bool lru_head;
+#endif
 };
 
 void __pagevec_release(struct pagevec *pvec);

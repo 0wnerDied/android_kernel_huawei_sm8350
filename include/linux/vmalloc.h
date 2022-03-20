@@ -249,4 +249,10 @@ extern unsigned long total_vmalloc_size;
 int register_vmap_purge_notifier(struct notifier_block *nb);
 int unregister_vmap_purge_notifier(struct notifier_block *nb);
 
+#ifdef CONFIG_MM_PAGE_TRACE
+void vmap_area_list_lock(void);
+void vmap_area_list_unlock(void);
+struct list_head *get_vmap_area_list(void);
+#endif
+
 #endif /* _LINUX_VMALLOC_H */

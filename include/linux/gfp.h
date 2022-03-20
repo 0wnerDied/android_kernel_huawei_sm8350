@@ -50,6 +50,9 @@ struct vm_area_struct;
 #else
 #define ___GFP_OFFLINABLE	0
 #endif
+#ifdef CONFIG_FCMA
+#define ___GFP_FCMA		0x4000000u
+#endif
 
 /* If the above are modified, __GFP_BITS_SHIFT may need updating */
 
@@ -66,6 +69,9 @@ struct vm_area_struct;
 #define __GFP_MOVABLE	((__force gfp_t)___GFP_MOVABLE)  /* ZONE_MOVABLE allowed */
 #define __GFP_CMA	((__force gfp_t)___GFP_CMA)
 #define __GFP_OFFLINABLE	((__force gfp_t)___GFP_OFFLINABLE)
+#ifdef CONFIG_FCMA
+#define __GFP_FCMA	((__force gfp_t)___GFP_FCMA)
+#endif
 #define GFP_ZONEMASK	(__GFP_DMA|__GFP_HIGHMEM|__GFP_DMA32|__GFP_MOVABLE)
 
 /**
@@ -226,7 +232,12 @@ struct vm_area_struct;
 #define __GFP_NOLOCKDEP ((__force gfp_t)___GFP_NOLOCKDEP)
 
 /* Room for N __GFP_FOO bits */
+#ifdef CONFIG_FCMA
+#define __GFP_BITS_SHIFT 27
+#else
 #define __GFP_BITS_SHIFT (25 + IS_ENABLED(CONFIG_LIMIT_MOVABLE_ZONE_ALLOC))
+#endif
+
 #ifdef CONFIG_LOCKDEP
 #define __GFP_BITS_MASK ((__force gfp_t)((1 << __GFP_BITS_SHIFT) - 1))
 #else
@@ -309,6 +320,9 @@ struct vm_area_struct;
 #define GFP_USER	(__GFP_RECLAIM | __GFP_IO | __GFP_FS | __GFP_HARDWALL)
 #define GFP_DMA		__GFP_DMA
 #define GFP_DMA32	__GFP_DMA32
+#ifdef CONFIG_FCMA
+#define GFP_FCMA	__GFP_FCMA
+#endif
 #define GFP_HIGHUSER	(GFP_USER | __GFP_HIGHMEM)
 #define GFP_HIGHUSER_MOVABLE	(GFP_HIGHUSER | __GFP_MOVABLE)
 #define GFP_TRANSHUGE_LIGHT	((GFP_HIGHUSER_MOVABLE | __GFP_COMP | \
@@ -327,6 +341,11 @@ static inline int gfpflags_to_migratetype(const gfp_t gfp_flags)
 
 	if (unlikely(page_group_by_mobility_disabled))
 		return MIGRATE_UNMOVABLE;
+
+#ifdef CONFIG_FCMA
+	if (IS_ENABLED(CONFIG_FCMA) && (gfp_flags & GFP_FCMA))
+		return MIGRATE_FCMA;
+#endif
 
 	/* Group based on mobility */
 	return (gfp_flags & GFP_MOVABLE_MASK) >> GFP_MOVABLE_SHIFT;
@@ -639,6 +658,9 @@ void free_contig_range(unsigned long pfn, unsigned int nr_pages);
 #ifdef CONFIG_CMA
 /* CMA stuff */
 extern void init_cma_reserved_pageblock(struct page *page);
+#ifdef CONFIG_FCMA
+extern void init_fcma_reserved_pageblock(struct page *page);
+#endif
 #endif
 
 #endif /* __LINUX_GFP_H */

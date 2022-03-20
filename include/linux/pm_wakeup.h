@@ -61,6 +61,10 @@ struct wakeup_source {
 	struct device		*dev;
 	bool			active:1;
 	bool			autosleep_enabled:1;
+#ifdef CONFIG_HUAWEI_DUBAI
+    bool lasting : 1;
+#endif
+	u8				lock_timeout;
 };
 
 #ifdef CONFIG_PM_SLEEP
@@ -182,6 +186,14 @@ static inline void pm_wakeup_dev_event(struct device *dev, unsigned int msec,
 				       bool hard) {}
 
 #endif /* !CONFIG_PM_SLEEP */
+
+extern int wakeup_source_set(const char *name, u8 lock_timeout);
+extern int wake_unlockByName(const char *name);
+extern int wakeup_source_set_all(u8 lock_timeout);
+extern int wake_unlockAll(unsigned int msec);
+#ifdef CONFIG_HUAWEI_DUBAI
+int wakeup_source_getlastingname(char *ws_namelist, int size, int count);
+#endif
 
 static inline void __pm_wakeup_event(struct wakeup_source *ws, unsigned int msec)
 {

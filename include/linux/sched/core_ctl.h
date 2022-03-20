@@ -11,6 +11,10 @@
 #define MAX_CPUS_PER_CLUSTER 6
 #define MAX_CLUSTERS 3
 
+#define BIG_CPU 7
+#define BIG_CLUSTER_ISOLATE 1
+#define BIG_CLUSTER_UNISOLATE 0
+
 struct core_ctl_notif_data {
 	unsigned int nr_big;
 	unsigned int coloc_load_pct;
@@ -24,6 +28,9 @@ struct notifier_block;
 extern int core_ctl_set_boost(bool boost);
 extern void core_ctl_notifier_register(struct notifier_block *n);
 extern void core_ctl_notifier_unregister(struct notifier_block *n);
+extern void isolate_unisolate_notifier_register(struct notifier_block *n);
+extern void isolate_unisolate_notifier_unregister(struct notifier_block *n);
+extern void __core_ctl_check(u64 wallclock);
 #else
 static inline int core_ctl_set_boost(bool boost)
 {
@@ -31,5 +38,8 @@ static inline int core_ctl_set_boost(bool boost)
 }
 static inline void core_ctl_notifier_register(struct notifier_block *n) {}
 static inline void core_ctl_notifier_unregister(struct notifier_block *n) {}
+static inline void isolate_unisolate_notifier_register(struct notifier_block *n) {}
+static inline void isolate_unisolate_notifier_unregister(struct notifier_block *n) {}
+static inline void _core_ctl_check(u64 wallclock) {}
 #endif
 #endif

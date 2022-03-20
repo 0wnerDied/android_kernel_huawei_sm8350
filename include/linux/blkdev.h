@@ -30,6 +30,7 @@
 
 struct module;
 struct scsi_ioctl_command;
+struct Scsi_Host;
 
 struct request_queue;
 struct elevator_queue;
@@ -59,6 +60,14 @@ struct keyslot_manager;
  * Defined here to simplify include dependency.
  */
 #define BLKCG_MAX_POLS		5
+#ifdef CONFIG_HUAWEI_QOS_BLKIO
+#ifndef BLKIO_QOS_HIGH
+#define BLKIO_QOS_HIGH	VALUE_QOS_HIGH
+#endif
+#ifndef BLKIO_QOS_DEFAULT
+#define BLKIO_QOS_DEFAULT	VALUE_QOS_NORMAL
+#endif
+#endif
 
 typedef void (rq_end_io_fn)(struct request *, blk_status_t);
 
@@ -115,6 +124,124 @@ typedef __u32 __bitwise req_flags_t;
 #define RQF_NOMERGE_FLAGS \
 	(RQF_STARTED | RQF_SOFTBARRIER | RQF_FLUSH_SEQ | RQF_SPECIAL_PAYLOAD)
 
+#ifdef CONFIG_MAS_BLK
+enum customer_rq_flag_bits {
+	__REQ_HEAD_OF_QUEUE = 0,
+	__REQ_COMMAND_PRIO,
+	__REQ_COMMAND_ORDER,
+	__REQ_TURBO_ZONE,
+};
+int get_mq_all_tag_used(struct request_queue *q);
+int get_mq_prio_tag_used(struct request_queue *q);
+
+#define CUST_REQ_HEAD_OF_QUEUE (1ULL << __REQ_HEAD_OF_QUEUE)
+#define CUST_REQ_COMMAND_PRIO (1ULL << __REQ_COMMAND_PRIO)
+#define CUST_REQ_ORDER (1ULL << __REQ_COMMAND_ORDER)
+#define CUST_REQ_TURBO_ZONE (1ULL << __REQ_TURBO_ZONE)
+
+#define req_hoq(req) ((req)->mas_req.mas_featrue_flag & CUST_REQ_HEAD_OF_QUEUE)
+#define req_cp(req) ((req)->mas_req.mas_featrue_flag & CUST_REQ_COMMAND_PRIO)
+#define req_tz(req) ((req)->mas_req.mas_featrue_flag & CUST_REQ_TURBO_ZONE)
+
+#define req_order(req) ((req)->mas_req.mas_featrue_flag & CUST_REQ_ORDER)
+
+enum requeue_reason_enum {
+	REQ_REQUEUE_IO_NO_REQUEUE = 0,
+	REQ_REQUEUE_IO_HW_LIMIT,
+	REQ_REQUEUE_IO_SW_LIMIT,
+	REQ_REQUEUE_IO_CP_LIMIT,
+	REQ_REQUEUE_IO_HW_PENDING,
+	REQ_REQUEUE_MAX,
+};
+
+#if defined(CONFIG_MAS_DEBUG_FS) || defined(CONFIG_MAS_BLK_DEBUG)
+enum blk_ft_rq_sim_mode {
+	BLK_FT_RQ_SIM_NONE = 0, /* The value can't be changed! */
+	BLK_FT_RQ_SIM_TIMEOUT_HANDLED,
+	BLK_FT_RQ_SIM_RESET_TIMER,
+};
+#endif
+
+/*
+ * This struct defines all the variable in vendor block layer.
+ */
+struct blk_req_cust {
+	/* Dispatch IO process task struct */
+	struct task_struct *dispatch_task;
+	/* Dispatch IO process PID */
+	pid_t task_pid;
+	/* Dispatch IO process TGID */
+	pid_t task_tgid;
+	/* Dispatch IO process name */
+	char task_comm[TASK_COMM_LEN];
+
+	/* mas feature flag */
+	unsigned long long mas_featrue_flag;
+	/* io comes from fs or not */
+	unsigned char fs_io_flag;
+	/* The reason for IO requeue */
+	enum requeue_reason_enum requeue_reason;
+	unsigned int requeue_cnt[REQ_REQUEUE_MAX - 1];
+	/* The CTX which make the request */
+	struct blk_mq_ctx *mq_ctx_generate;
+	/* Non-FS request endup call back function */
+	rq_end_io_fn *uplayer_end_io;
+#ifdef CONFIG_MAS_QOS_MQ
+	unsigned char mas_rq_qos;
+	unsigned int slot_cpu;
+#endif
+	ktime_t req_stage_ktime[REQ_PROC_STAGE_MAX];
+
+#ifdef CONFIG_MAS_UNISTORE_PRESERVE
+	/*
+	 * Member for Vertical Opti
+	 */
+	unsigned char stream_type;
+	unsigned char cp_tag;
+	unsigned long data_ino;
+	unsigned long data_idx;
+	bool fsync_ind;
+	bool slc_mode;
+	bool fg_io;
+	unsigned int protocol_nr_cnt;
+#endif
+
+	unsigned int make_req_nr;
+	unsigned int protocol_nr;
+	/*
+	 * Below info for inline crypto
+	 */
+	void *ci_key;
+	int ci_key_len;
+	int ci_key_index;
+#ifdef CONFIG_SCSI_UFS_ENHANCED_INLINE_CRYPTO_V3
+	u8 *metadata;
+#endif
+
+/*
+	 * Below info for debug info
+	 */
+
+#if defined(CONFIG_MAS_DEBUG_FS) || defined(CONFIG_MAS_BLK_DEBUG)
+	atomic_t req_used;
+	enum blk_ft_rq_sim_mode simulate_mode;
+#endif
+};
+
+#ifdef CONFIG_MAS_QOS_MQ
+enum mas_mq_qos_val {
+	MAS_MQ_QOS_0 = 0,
+	MAS_MQ_QOS_1,
+	MAS_MQ_QOS_2,
+	MAS_MQ_QOS_3,
+	MAS_MQ_QOS_4,
+	MAS_MQ_QOS_5,
+	MAS_MQ_QOS_6,
+	MAS_MQ_QOS_7,
+};
+#endif /* CONFIG_MAS_QOS_MQ */
+#endif /* CONFIG_MAS_BLK */
+
 /*
  * Request state for blk-mq.
  */
@@ -140,6 +267,8 @@ struct request {
 
 	int tag;
 	int internal_tag;
+
+	unsigned long atomic_flags;
 
 	/* the following two fields are internal, NEVER access directly */
 	unsigned int __data_len;	/* total data len */
@@ -203,6 +332,21 @@ struct request {
 	u64 start_time_ns;
 	/* Time that I/O was submitted to the device. */
 	u64 io_start_time_ns;
+#ifdef CONFIG_MAS_BLK
+	unsigned long mas_cmd_flags;
+
+	struct blk_req_cust mas_req;
+	/*
+	 * Below is for MAS IO Scheduler
+	 */
+	struct list_head async_list;
+	/*
+	 * Below is for MAS Block Debug purpose
+	 */
+	struct list_head cnt_list;
+	unsigned long hold_cnt;
+	unsigned long inflt_flags;
+#endif /* CONFIG_MAS_BLK */
 
 #ifdef CONFIG_BLK_WBT
 	unsigned short wbt_flags;
@@ -245,6 +389,10 @@ struct request {
 	 */
 	rq_end_io_fn *end_io;
 	void *end_io_data;
+#ifdef CONFIG_MAS_BLK
+	ktime_t lat_hist_io_start;
+	int lat_hist_enabled;
+#endif
 };
 
 static inline bool blk_op_is_scsi(unsigned int op)
@@ -294,13 +442,503 @@ struct bio_vec;
 typedef int (dma_drain_needed_fn)(struct request *);
 
 enum blk_eh_timer_return {
-	BLK_EH_DONE,		/* drivers has completed the command */
-	BLK_EH_RESET_TIMER,	/* reset timer and try again */
+	BLK_EH_DONE, /* drivers has completed the command */
+	BLK_EH_RESET_TIMER, /* reset timer and try again */
 };
 
 enum blk_queue_state {
 	Queue_down,
 	Queue_up,
+};
+
+#ifdef CONFIG_MAS_BLK
+enum blk_dump_scene {
+	BLK_DUMP_WARNING = 0,
+	BLK_DUMP_PANIC,
+};
+
+static inline char *mas_blk_prefix_str(enum blk_dump_scene s)
+{
+	return (s == BLK_DUMP_PANIC) ? "dump" : "io_latency";
+}
+
+enum blk_freeze_obj_type {
+	BLK_LLD = 0,
+	BLK_QUEUE,
+};
+
+#ifdef CONFIG_MAS_UNISTORE_PRESERVE
+#define STREAM_TYPE_RPMB    0xf0
+#define STREAM_TYPE_INVALID 0xff
+#define BLK_ORDER_STREAM_NUM 4
+#define DATA_MOVE_STREAM_NUM 2
+#define MAX_RESCUE_SEG_CNT 240
+#define DATA_MOVE_MAX_NUM 768
+
+#if defined(CONFIG_MAS_DEBUG_FS) || defined(CONFIG_MAS_BLK_DEBUG)
+enum reset_debug {
+	RESET_DEBUG_NO = 0,
+	RESET_DEBUG_100E,
+	RESET_DEBUG_DISORDER,
+	RESET_DEBUG_CLOSE,
+};
+#endif
+
+enum unistore_stream_type {
+	BLK_STREAM_META = 0,
+	BLK_STREAM_COLD_NODE,
+	BLK_STREAM_COLD_DATA,
+	BLK_STREAM_HOT_NODE,
+	BLK_STREAM_HOT_DATA,
+
+	/* add new stream above */
+	BLK_STREAM_MAX_STRAM,
+};
+
+enum bkops_fs_work_result {
+	BKOPS_START_SUC = 0,
+	BKOPS_DEV_NOT_SUPPORT,
+	BKOPS_INPUT_ERR,
+	BKOPS_FUNC_NOT_SUPPORT,
+	BKOPS_STATE_NOT_IDLE,
+	BKOPS_ALREADY_START,
+	BKOPS_QUERY_ERR,
+	BKOPS_NO_NEED_START,
+	BKOPS_NEED_START,
+	BKOPS_START_ERR,
+};
+
+enum pwron_type {
+	DM_STRAM0_TYPE = 0,
+	DM_STRAM1_TYPE,
+	RECOVERY_TYPE,
+	PWRON_MAX_TYPE,
+};
+
+typedef void (stor_dev_pwron_info_done_fn)(int, u8);
+
+struct stor_dev_pwron_info_done_info {
+	stor_dev_pwron_info_done_fn *done;
+	u8 pwron_type;
+};
+
+struct stor_dev_pwron_info {
+	unsigned int dev_stream_addr[BLK_STREAM_MAX_STRAM];
+	unsigned int rescue_seg_cnt;
+	unsigned int *rescue_seg;
+	unsigned char pe_limit_status;
+	unsigned int dm_stream_addr[DATA_MOVE_STREAM_NUM];
+	unsigned char stream_lun_info[BLK_STREAM_MAX_STRAM];
+	unsigned char dm_lun_info[DATA_MOVE_STREAM_NUM];
+	unsigned char io_slc_mode_status;
+	unsigned char dm_slc_mode_status;
+	struct stor_dev_pwron_info_done_info done_info;
+};
+
+struct stor_dev_stream_info {
+	unsigned char stream_id;
+	bool dm_stream;
+	unsigned int stream_start_lba;
+};
+
+struct stor_dev_stream_oob_info {
+	unsigned long data_ino;
+	unsigned long data_idx;
+};
+
+struct stor_dev_verify_info {
+	unsigned int next_to_be_verify_4k_lba;
+	unsigned int next_available_write_4k_lba;
+	unsigned char lun_info;
+	unsigned char verify_done_status;
+	unsigned char verify_fail_reason;
+	unsigned int pu_size;
+};
+
+typedef void (stor_dev_data_move_done_fn)(struct stor_dev_verify_info, void *);
+
+struct stor_dev_data_move_done_info {
+	stor_dev_data_move_done_fn *done;
+	void *private_data;
+	sector_t start_addr;
+};
+
+struct stor_dev_data_move_source_addr {
+	unsigned int data_move_source_addr;
+	unsigned char src_lun;
+	unsigned int source_length;
+};
+
+struct stor_dev_data_move_source_inode {
+	unsigned int data_move_source_inode;
+	unsigned int data_move_source_offset;
+};
+
+struct stor_dev_data_move_info {
+	unsigned int data_move_total_length;
+	unsigned int dest_4k_lba;
+	unsigned char dest_lun_info;
+	unsigned char dest_stream_id;
+	unsigned char dest_blk_mode;
+	unsigned char force_flush_option;
+	unsigned char repeat_option;
+	unsigned char error_injection;
+	unsigned int source_addr_num;
+	struct stor_dev_data_move_source_addr *source_addr;
+	unsigned int source_inode_num;
+	struct stor_dev_data_move_source_inode *source_inode;
+	struct stor_dev_verify_info verify_info;
+	struct stor_dev_data_move_done_info done_info;
+};
+
+struct stor_dev_sync_read_verify_info {
+	unsigned char stream_id;
+	unsigned int cp_verify_l4k;
+	unsigned int cp_open_l4k;
+	unsigned int cp_cache_l4k;
+	unsigned char error_injection;
+	struct stor_dev_verify_info verify_info;
+};
+
+struct stor_dev_bad_block_info {
+	unsigned short tlc_total_block_num;
+	unsigned char tlc_bad_block_num;
+};
+
+struct stor_dev_program_size {
+	unsigned short tlc_program_size;
+	unsigned short slc_program_size;
+};
+
+struct stor_dev_reset_ftl {
+	unsigned char op_type; /* 0:reset ftl, 1:close section */
+	unsigned char stream_type; /* 0: normal, 1:datamove */
+	unsigned char stream_id;
+};
+
+enum {
+	PARTITION_TYPE_META0, /* first 4K-mapping region */
+	PARTITION_TYPE_META1, /* second 4K-mapping region */
+	PARTITION_TYPE_USER0, /* first 2M-mapping region */
+	PARTITION_TYPE_USER1, /* second 2M-mapping region */
+	PARTITION_TYPE_MAX
+};
+
+struct stor_dev_mapping_partition {
+	unsigned int partion_start[PARTITION_TYPE_MAX];
+	unsigned int partion_size[PARTITION_TYPE_MAX];
+};
+
+struct stor_dev_section_info {
+	unsigned int section_start_lba;
+	int flash_mode;
+	unsigned char stream_type;
+};
+
+typedef void (*blk_dev_bad_block_notify_fn)(
+		struct stor_dev_bad_block_info, void *);
+typedef int (*lld_dev_pwron_info_sync_fn)(struct request_queue *,
+					  struct stor_dev_pwron_info *,
+					  unsigned int rescue_seg_size);
+typedef int (*lld_dev_stream_oob_info_fetch_fn)(
+	struct request_queue *, struct stor_dev_stream_info, unsigned int,
+	struct stor_dev_stream_oob_info *);
+typedef int (*lld_dev_reset_ftl_fn)(struct request_queue *,
+				    struct stor_dev_reset_ftl *);
+typedef int (*lld_dev_read_section_fn)(struct request_queue *, unsigned int *);
+typedef int (*lld_dev_read_mapping_partition_fn)(
+	struct request_queue *, struct stor_dev_mapping_partition *);
+typedef int (*lld_dev_config_mapping_partition_fn)(
+	struct request_queue *, struct stor_dev_mapping_partition *);
+typedef int (*lld_dev_fs_sync_done_fn)(struct request_queue *);
+typedef int (*lld_dev_data_move_fn)(struct request_queue *,
+				    struct stor_dev_data_move_info *);
+typedef int (*lld_dev_slc_mode_configuration_fn)(struct request_queue *, int *);
+typedef int (*lld_dev_sync_read_verify_fn)(
+	struct request_queue *, struct stor_dev_sync_read_verify_info *);
+typedef int (*lld_dev_get_bad_block_info_fn)(struct request_queue *,
+					     struct stor_dev_bad_block_info *);
+typedef int (*lld_dev_get_program_size_fn)(struct request_queue *,
+					   struct stor_dev_program_size *);
+typedef int (*lld_dev_read_op_size_fn)(struct request_queue *, int *);
+typedef int (*lld_dev_read_lrb_in_use_fn)(struct request_queue *, unsigned long *);
+typedef int (*lld_dev_bad_block_notify_register_fn)(
+	struct request_queue *,
+	void (*func)(struct Scsi_Host *host,
+		     struct stor_dev_bad_block_info *bad_block_info));
+#ifdef CONFIG_MAS_DEBUG_FS
+typedef int (*lld_dev_rescue_block_inject_data_fn)(struct request_queue *,
+						   unsigned int);
+typedef int (*lld_dev_bad_block_error_inject_fn)(struct request_queue *,
+						 unsigned char, unsigned char);
+#endif
+#endif
+#endif
+
+#ifdef CONFIG_MAS_BLK
+typedef void (*lld_dump_status_fn)(struct request_queue *, enum blk_dump_scene);
+typedef int (*lld_tz_query_fn)(struct request_queue *q, u32 type, u8 *buf,
+			       u32 buf_len);
+typedef int (*lld_tz_ctrl_fn)(struct request_queue *q, int desc_id,
+			      uint8_t index);
+typedef int (*blk_direct_flush_fn)(struct request_queue *);
+
+#ifdef CONFIG_HYPERHOLD_CORE
+typedef int (*lld_query_health_fn)(struct request_queue *q,
+	u8 *pre_eol_info, u8 *life_time_est_a, u8 *life_time_est_b);
+#endif
+
+enum blk_lld_base {
+	BLK_LLD_QUEUE_BASE = 0,
+	BLK_LLD_QUEUE_TAG_BASE,
+	BLK_LLD_TAGSET_BASE,
+};
+
+enum blk_busyidle_callback_ret {
+	/* Event Proc won't trigger IO */
+	BUSYIDLE_NO_IO = 0,
+	/* Event Proc will trigger new IO */
+	BUSYIDLE_IO_TRIGGERED,
+	/* Event Proc meets errors */
+	BUSYIDLE_ERR,
+};
+
+enum blk_idle_notify_state {
+	BLK_BUSY_NOTIFY = 0, /* IO Busy Event */
+	BLK_IDLE_NOTIFY, /* IO Idle Event */
+#ifdef CONFIG_MAS_UNISTORE_PRESERVE
+	BLK_FG_BUSY_NOTIFY, /* FG IO Busy Event */
+	BLK_FG_IDLE_NOTIFY, /* FG IO Idle Event */
+#endif
+};
+
+enum blk_io_state {
+	BLK_IO_BUSY = 0,
+	BLK_IO_IDLE,
+};
+
+#ifdef CONFIG_MAS_UNISTORE_PRESERVE
+enum blk_fg_io_state {
+	BLK_FG_IO_BUSY = 0,
+	BLK_FG_IO_IDLE,
+};
+#endif
+enum blk_idle_dur_enum {
+	BLK_IDLE_DUR_IDX_100MS,
+	BLK_IDLE_DUR_IDX_500MS,
+	BLK_IDLE_DUR_IDX_1000MS,
+	BLK_IDLE_DUR_IDX_2000MS,
+	BLK_IDLE_DUR_IDX_4000MS,
+	BLK_IDLE_DUR_IDX_6000MS,
+	BLK_IDLE_DUR_IDX_8000MS,
+	BLK_IDLE_DUR_IDX_10000MS,
+	BLK_IDLE_DUR_IDX_FOR_AGES,
+	BLK_IDLE_DUR_IDX_DUR_NUM,
+};
+
+struct blk_dev_lld;
+
+#define SUBSCRIBER_NAME_LEN 32
+struct blk_busyidle_event_node {
+	/* Identify a subscriber uniquely */
+	char subscriber[SUBSCRIBER_NAME_LEN];
+	/* should be provided by subscriber module */
+	enum blk_busyidle_callback_ret (*busyidle_callback)(
+		struct blk_busyidle_event_node *, enum blk_idle_notify_state);
+	/* optional */
+	void *param_data;
+
+	/* busy idle private data, don't touch it */
+	struct blk_dev_lld *lld;
+};
+
+struct blk_idle_state {
+	/* Hardware idle support or not */
+	bool idle_intr_support;
+	/* Idle event process worker */
+	struct delayed_work idle_notify_worker;
+	/* delay avoid jitter */
+	unsigned int idle_notify_delay_ms;
+
+	/* list of subcribed events */
+	struct list_head subscribed_list;
+	struct blocking_notifier_head nh;
+	atomic_t io_count; /* io count variable */
+	struct mutex io_count_mutex;
+	/* busy idle state*/
+	enum blk_io_state idle_state;
+
+#if defined(CONFIG_MAS_DEBUG_FS) || defined(CONFIG_MAS_BLK_DEBUG)
+	/*
+	 * for busy idle statistic purpose
+	 */
+	ktime_t last_idle_ktime;
+	ktime_t last_busy_ktime;
+	ktime_t total_busy_ktime;
+	ktime_t total_idle_ktime;
+	unsigned long long total_idle_count;
+	/* statistic for idle time */
+	s64 blk_idle_dur[BLK_IDLE_DUR_IDX_DUR_NUM];
+	/* max idle time */
+	s64 max_idle_dur;
+	struct blk_busyidle_event_node busy_idle_test_node;
+	struct blk_busyidle_event_node busy_idle_test_nodes[5];
+#endif
+
+#ifdef CONFIG_MAS_UNISTORE_PRESERVE
+	/* foreground io idle event process worker */
+	struct delayed_work fg_io_idle_notify_worker;
+	unsigned int fg_io_idle_notify_delay_ms;
+	/* foreground io count variable */
+	atomic_t fg_io_count;
+	struct mutex fg_io_count_mutex;
+	/* foreground io busy idle state*/
+	enum blk_fg_io_state fg_io_idle_state;
+	atomic_t idle_trigger_runtime_change;
+#endif
+
+	/*
+	 * Below info is just for busy idle debug purpose!
+	 */
+	/* The number of bios have been counted */
+	u64 bio_count;
+	/* The number of reqs have been counted */
+	u64 req_count;
+	/* The list for all the counted bios */
+	struct list_head bio_list;
+	/* The list for all the counted reqs */
+	struct list_head req_list;
+	spinlock_t counted_list_lock;
+};
+
+#ifdef CONFIG_MAS_UNISTORE_PRESERVE
+struct mas_unistore_ops {
+	lld_dev_pwron_info_sync_fn dev_pwron_info_sync;
+	lld_dev_stream_oob_info_fetch_fn dev_stream_oob_info_fetch;
+	lld_dev_reset_ftl_fn dev_reset_ftl;
+	lld_dev_read_section_fn dev_read_section;
+	lld_dev_config_mapping_partition_fn dev_config_mapping_partition;
+	lld_dev_read_mapping_partition_fn dev_read_mapping_partition;
+	lld_dev_fs_sync_done_fn dev_fs_sync_done;
+	lld_dev_data_move_fn dev_data_move;
+	lld_dev_slc_mode_configuration_fn dev_slc_mode_configuration;
+	lld_dev_sync_read_verify_fn dev_sync_read_verify;
+	lld_dev_get_bad_block_info_fn dev_get_bad_block_info;
+	blk_dev_bad_block_notify_fn dev_bad_block_notfiy_fn;
+	void *dev_bad_block_notfiy_param_data;
+	lld_dev_get_program_size_fn dev_get_program_size;
+	lld_dev_bad_block_notify_register_fn dev_bad_block_notify_register;
+	lld_dev_read_op_size_fn dev_read_op_size;
+	lld_dev_read_lrb_in_use_fn dev_read_lrb_in_use;
+#ifdef CONFIG_MAS_DEBUG_FS
+	lld_dev_rescue_block_inject_data_fn dev_rescue_block_inject_data;
+	lld_dev_bad_block_error_inject_fn dev_bad_block_err_inject;
+#endif
+};
+#endif
+
+struct blk_dev_lld {
+	/* Magic Number for the struct*/
+	unsigned int init_magic;
+	/* The object on queue, tag or tagset*/
+	enum blk_lld_base type;
+	/* Private data */
+	void *data;
+	/* is hw idle enabled */
+	atomic_t hw_idle_en;
+#define MAS_BLK_LLD_IDLE_INTR_EN (1 << 3)
+	/* LLD Feature flag bit */
+	unsigned long features;
+#define MAS_BLK_LLD_IDLE_INTR_CAP (1 << 3)
+	unsigned long lld_cap;
+	lld_dump_status_fn dump_fn;
+	/* IO Latency warning threshold */
+	unsigned int latency_warning_threshold_ms;
+	/* Emergency Flush Operation */
+	blk_direct_flush_fn flush_fn;
+	/* query api of turbu zone */
+	lld_tz_query_fn tz_query;
+	lld_tz_ctrl_fn tz_ctrl;
+#ifdef CONFIG_HYPERHOLD_CORE
+	/* query api of health */
+	lld_query_health_fn health_query;
+#endif
+
+#ifdef CONFIG_MAS_UNISTORE_PRESERVE
+	struct mas_unistore_ops unistore_ops;
+
+	unsigned char lock_map[NR_CPUS];
+
+	unsigned int mas_sec_size;
+	unsigned int mas_pu_size;
+	atomic_t bad_block_atomic;
+	struct work_struct bad_block_work;
+	struct stor_dev_bad_block_info bad_block_info;
+	unsigned char last_stream_type;
+	bool fsync_ind;
+	spinlock_t fsync_ind_lock;
+	struct mas_bkops *bkops;
+	spinlock_t expected_lba_lock[BLK_ORDER_STREAM_NUM];
+	sector_t expected_lba[BLK_ORDER_STREAM_NUM];
+	sector_t expected_pu[BLK_ORDER_STREAM_NUM];
+	sector_t current_pu_size[BLK_ORDER_STREAM_NUM];
+	ktime_t expected_refresh_time[BLK_ORDER_STREAM_NUM];
+	sector_t old_section[BLK_ORDER_STREAM_NUM];
+	struct list_head section_list[BLK_ORDER_STREAM_NUM];
+
+	atomic_t reset_cnt;
+	atomic_t recovery_flag;
+	atomic_t recovery_pwron_flag;
+	atomic_t recovery_pwron_inprocess_flag;
+	struct rw_semaphore recovery_rwsem;
+	struct mutex recovery_mutex;
+	struct list_head buf_bio_list[BLK_ORDER_STREAM_NUM + 1];
+	spinlock_t buf_bio_list_lock[BLK_ORDER_STREAM_NUM + 1];
+	unsigned int buf_bio_size[BLK_ORDER_STREAM_NUM + 1];
+	unsigned int buf_bio_num[BLK_ORDER_STREAM_NUM + 1];
+	unsigned int buf_page_num[BLK_ORDER_STREAM_NUM + 1];
+	atomic_t replaced_page_cnt[BLK_ORDER_STREAM_NUM + 1];
+	sector_t max_recovery_size;
+
+	unsigned int write_curr_cnt;
+	unsigned int write_pre_cnt;
+#endif
+
+	/* For busy idle feature */
+	struct blk_idle_state blk_idle;
+	/* accumulated write len of the whole device */
+	unsigned long write_len;
+	/* accumulated discard len of the whole device */
+	unsigned long discard_len;
+	bool dev_order_en;
+	unsigned int write_num;
+	spinlock_t write_num_lock;
+	unsigned int make_req_nr;
+	spinlock_t make_req_nr_lock;
+	struct list_head lld_list;
+	/*
+	 * MAS IO Scheduler private data
+	 */
+	bool sched_ds_lld_inited;
+	void *sched_ds_lld;
+	int sqr_v;
+	int sqw_v;
+};
+#endif /* CONFIG_MAS_BLK */
+
+struct blk_queue_tag {
+	struct request **tag_index;	/* map of busy tags */
+	unsigned long *tag_map;		/* bit map of free/busy tags */
+	int max_depth;			/* what we will send to device */
+	int real_max_depth;		/* what the array can hold */
+	atomic_t refcnt;		/* map can be shared */
+	int alloc_policy;		/* tag allocation policy */
+	int next_tag;			/* next tag */
+#ifdef CONFIG_MAS_BLK
+	struct mutex tag_list_lock;
+	struct list_head tag_list;
+	struct blk_dev_lld lld_func;
+#endif
 };
 
 #define BLK_TAG_ALLOC_FIFO 0 /* allocate starting from 0 */
@@ -391,6 +1029,55 @@ static inline int blkdev_zone_mgmt_ioctl(struct block_device *bdev,
 }
 
 #endif /* CONFIG_BLK_DEV_ZONED */
+
+#ifdef CONFIG_MAS_BLK
+struct blk_queue_ops;
+
+/*
+ * This struct defines all the variable in vendor block layer.
+ */
+struct blk_queue_cust {
+	/* The disk struct of the request queue */
+	struct gendisk *queue_disk;
+	/* The request queue has the partition table or not */
+	bool blk_part_tbl_exist;
+	unsigned long usr_ctrl_n;
+
+#if defined(CONFIG_MAS_DEBUG_FS) || defined(CONFIG_MAS_BLK_DEBUG)
+	bool io_prio_sim;
+	unsigned long tz_write_bytes;
+#endif
+
+	/*
+	 * Flush Optimise
+	 */
+	struct delayed_work flush_work;
+	atomic_t flush_work_trigger;
+	atomic_t write_after_flush;
+	atomic_t get_budget_cnt;
+	atomic_t put_budget_cnt;
+	struct list_head flush_queue_node;
+	int flush_optimize;
+	/*
+	 * IO latency statistic function
+	 */
+	int io_latency_enable;
+	unsigned int io_lat_warning_thresh;
+	struct list_head dump_list;
+	/*
+	 * IO Latency for test purpose only
+	 */
+	unsigned long sr_l; /* Seq Read Latency */
+	unsigned long sw_l; /* Seq Write Latency */
+	unsigned long rr_l; /* Rand Read Latency */
+	unsigned long rw_l; /* Rand Write Latency */
+	struct timer_list limit_setting_protect_timer;
+	/*
+	 * MAS IO Scheduler private data
+	 */
+	void *cust_queuedata;
+};
+#endif /* CONFIG_MAS_BLK */
 
 struct request_queue {
 	struct request		*last_merge;
@@ -491,6 +1178,12 @@ struct request_queue {
 	struct work_struct	timeout_work;
 
 	struct list_head	icq_list;
+#ifdef CONFIG_MAS_BLK
+	struct blk_queue_cust mas_queue;
+	struct blk_queue_ops *mas_queue_ops;
+	struct blk_dev_lld lld_func;
+#endif
+
 #ifdef CONFIG_BLK_CGROUP
 	DECLARE_BITMAP		(blkcg_pols, BLKCG_MAX_POLS);
 	struct blkcg_gq		*root_blkg;
@@ -563,6 +1256,11 @@ struct request_queue {
 	/* Throttle data */
 	struct throtl_data *td;
 #endif
+
+#ifdef CONFIG_BLK_CGROUP_IOSMART
+	struct iosmart_data *sd;
+#endif
+
 	struct rcu_head		rcu_head;
 	wait_queue_head_t	mq_freeze_wq;
 	/*
@@ -620,6 +1318,9 @@ struct request_queue {
 #define QUEUE_FLAG_PCI_P2PDMA	25	/* device supports PCI p2p requests */
 #define QUEUE_FLAG_ZONE_RESETALL 26	/* supports Zone Reset All */
 #define QUEUE_FLAG_RQ_ALLOC_TIME 27	/* record rq->alloc_time_ns */
+#ifdef CONFIG_HUAWEI_QOS_BLKIO
+#define QUEUE_FLAG_QOS         30	/* device supports qos on off */
+#endif
 
 #define QUEUE_FLAG_MQ_DEFAULT	((1 << QUEUE_FLAG_IO_STAT) |		\
 				 (1 << QUEUE_FLAG_SAME_COMP))
@@ -627,6 +1328,57 @@ struct request_queue {
 void blk_queue_flag_set(unsigned int flag, struct request_queue *q);
 void blk_queue_flag_clear(unsigned int flag, struct request_queue *q);
 bool blk_queue_flag_test_and_set(unsigned int flag, struct request_queue *q);
+bool blk_queue_flag_test_and_clear(unsigned int flag, struct request_queue *q);
+#ifdef CONFIG_BLK_DEV_HI_PRIO_FOR_FG
+static inline void queue_throtl_add_request(struct request_queue *q,
+					    struct request *rq, bool front)
+{
+	struct list_head *head;
+
+	if (rq->cmd_flags & REQ_FG)
+		head = &q->fg_head;
+	else
+		head = &q->bg_head;
+
+	if (front)
+		list_add(&rq->fg_bg_list, head);
+	else
+		list_add_tail(&rq->fg_bg_list, head);
+}
+
+static inline void queue_throtl_add_inflight(struct request_queue *q,
+					     struct request *rq)
+{
+	if (rq->cmd_flags & REQ_FG)
+		q->in_flight[BLK_RW_FG]++;
+	else
+		q->in_flight[BLK_RW_BG]++;
+}
+
+static inline void queue_throtl_dec_inflight(struct request_queue *q,
+					     struct request *rq)
+{
+	if (rq->cmd_flags & REQ_FG)
+		q->in_flight[BLK_RW_FG]--;
+	else
+		q->in_flight[BLK_RW_BG]--;
+}
+#else
+static inline void queue_throtl_add_request(struct request_queue *q,
+					    struct request *rq, bool front)
+{
+}
+
+static inline void queue_throtl_add_inflight(struct request_queue *q,
+					     struct request *rq)
+{
+}
+
+static inline void queue_throtl_dec_inflight(struct request_queue *q,
+					     struct request *rq)
+{
+}
+#endif
 
 #define blk_queue_stopped(q)	test_bit(QUEUE_FLAG_STOPPED, &(q)->queue_flags)
 #define blk_queue_dying(q)	test_bit(QUEUE_FLAG_DYING, &(q)->queue_flags)
@@ -662,6 +1414,9 @@ bool blk_queue_flag_test_and_set(unsigned int flag, struct request_queue *q);
 #define blk_queue_pm_only(q)	atomic_read(&(q)->pm_only)
 #define blk_queue_fua(q)	test_bit(QUEUE_FLAG_FUA, &(q)->queue_flags)
 #define blk_queue_registered(q)	test_bit(QUEUE_FLAG_REGISTERED, &(q)->queue_flags)
+#ifdef CONFIG_HUAWEI_QOS_BLKIO
+#define blk_queue_qos_on(q)	test_bit(QUEUE_FLAG_QOS, &(q)->queue_flags)
+#endif
 
 extern void blk_set_pm_only(struct request_queue *q);
 extern void blk_clear_pm_only(struct request_queue *q);
@@ -759,6 +1514,11 @@ static inline bool rq_mergeable(struct request *rq)
 		return false;
 	if (rq->rq_flags & RQF_NOMERGE_FLAGS)
 		return false;
+
+#ifdef CONFIG_MAS_BLK
+	if (rq->rq_flags & RQF_DONTPREP)
+		return false;
+#endif
 
 	return true;
 }
@@ -1168,6 +1928,10 @@ struct blk_plug {
 	struct list_head cb_list; /* md requires an unplug callback */
 	unsigned short rq_count;
 	bool multiple_queues;
+#ifdef CONFIG_MAS_BLK
+	struct list_head mas_blk_list;
+	void (*flush_plug_list_fn)(struct blk_plug *, bool);
+#endif
 };
 #define BLK_MAX_REQUEST_COUNT 16
 #define BLK_PLUG_FLUSH_SIZE (128 * 1024)
@@ -1207,6 +1971,9 @@ static inline bool blk_needs_flush_plug(struct task_struct *tsk)
 
 	return plug &&
 		 (!list_empty(&plug->mq_list) ||
+#ifdef CONFIG_MAS_BLK
+		!list_empty(&plug->mas_blk_list) ||
+#endif
 		 !list_empty(&plug->cb_list));
 }
 
@@ -1722,6 +2489,250 @@ extern int __blkdev_driver_ioctl(struct block_device *, fmode_t, unsigned int,
 extern int bdev_read_page(struct block_device *, sector_t, struct page *);
 extern int bdev_write_page(struct block_device *, sector_t, struct page *,
 						struct writeback_control *);
+
+/*
+ * X-axis for IO latency histogram support.
+ */
+static const u_int64_t latency_x_axis_us[] = {
+    100,  200,  300,  400,  500,  600,  700,  800,  900,  1000, 1200, 1400,
+    1600, 1800, 2000, 2500, 3000, 4000, 5000, 6000, 7000, 9000, 10000};
+
+#if defined(CONFIG_MAS_BLK)
+#define BLK_IO_LAT_HIST_DISABLE 0
+#define BLK_IO_LAT_HIST_ENABLE 1
+#define BLK_IO_LAT_HIST_ZERO 2
+#define ASYNC_LIMIT_STAGE_ONE 0
+#define ASYNC_LIMIT_STAGE_TWO 1
+#endif
+
+struct io_latency_state {
+	u_int64_t latency_y_axis[ARRAY_SIZE(latency_x_axis_us) + 1];
+	u_int64_t latency_elems;
+	u_int64_t latency_sum;
+};
+static inline void blk_update_latency_hist(struct io_latency_state *s,
+					   u_int64_t delta_us) {
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(latency_x_axis_us); i++)
+		if (delta_us < (u_int64_t)latency_x_axis_us[i]) break;
+	s->latency_y_axis[i]++;
+	s->latency_elems++;
+	s->latency_sum += delta_us;
+}
+
+ssize_t blk_latency_hist_show(char *name, struct io_latency_state *s, char *buf,
+			      int buf_size);
+
+#if defined(CONFIG_MAS_BLK) && defined(CONFIG_MAS_UNISTORE_PRESERVE)
+struct request *mas_blk_get_request_reset(
+	struct request_queue *q, unsigned int op, blk_mq_req_flags_t flags);
+void mas_blk_fsync_barrier(struct block_device *bdev);
+bool mas_blk_match_expected_lba(struct request_queue *q, struct bio *bio);
+void mas_blk_dump_unistore(struct request_queue *q, unsigned char *prefix);
+int mas_blk_data_move(struct block_device *bi_bdev,
+		      struct stor_dev_data_move_info *data_move_info);
+void mas_blk_mq_tagset_data_move_register(struct blk_mq_tag_set *tag_set,
+					  lld_dev_data_move_fn func);
+int mas_blk_slc_mode_configuration(struct block_device *bi_bdev, int *status);
+void mas_blk_mq_tagset_slc_mode_configuration_register(
+	struct blk_mq_tag_set *tag_set, lld_dev_slc_mode_configuration_fn func);
+int mas_blk_sync_read_verify(struct block_device *bi_bdev,
+			     struct stor_dev_sync_read_verify_info *verify_info);
+void mas_blk_mq_tagset_sync_read_verify_register(
+	struct blk_mq_tag_set *tag_set, lld_dev_sync_read_verify_fn func);
+int mas_blk_get_bad_block_info(struct block_device *bi_bdev,
+			       struct stor_dev_bad_block_info *bad_block_info);
+void mas_blk_mq_tagset_get_bad_block_info_register(
+	struct blk_mq_tag_set *tag_set, lld_dev_get_bad_block_info_fn func);
+int mas_blk_device_pwron_info_sync(struct block_device *bi_bdev,
+				   struct stor_dev_pwron_info *stor_info,
+				   unsigned int rescue_seg_size);
+void mas_blk_mq_tagset_pwron_info_sync_register(
+	struct blk_mq_tag_set *tag_set, lld_dev_pwron_info_sync_fn func);
+int mas_blk_stream_oob_info_fetch(struct block_device *bi_bdev,
+				  struct stor_dev_stream_info stream_info,
+				  unsigned int oob_entry_cnt,
+				  struct stor_dev_stream_oob_info *oob_info);
+void mas_blk_mq_tagset_stream_oob_info_register(
+	struct blk_mq_tag_set *tag_set, lld_dev_stream_oob_info_fetch_fn func);
+int mas_blk_device_read_section(struct block_device *bi_bdev,
+				unsigned int *section_size);
+void mas_blk_mq_tagset_read_section_register(struct blk_mq_tag_set *tag_set,
+					     lld_dev_read_section_fn func);
+void mas_blk_mq_tagset_read_lrb_in_use_register(struct blk_mq_tag_set *tag_set,
+						lld_dev_read_lrb_in_use_fn func);
+void mas_blk_mq_tagset_read_op_size_register(struct blk_mq_tag_set *tag_set,
+					     lld_dev_read_op_size_fn func);
+int mas_blk_device_config_mapping_partition(
+	struct block_device *bi_bdev,
+	struct stor_dev_mapping_partition *mapping_info);
+void mas_blk_mq_tagset_config_mapping_partition_register(
+	struct blk_mq_tag_set *tag_set,
+	lld_dev_config_mapping_partition_fn func);
+int mas_blk_device_read_mapping_partition(
+	struct block_device *bi_bdev,
+	struct stor_dev_mapping_partition *mapping_info);
+int mas_blk_device_read_op_size(struct block_device *bi_bdev, int *op_size);
+void mas_blk_mq_tagset_read_mapping_partition_register(
+	struct blk_mq_tag_set *tag_set, lld_dev_read_mapping_partition_fn func);
+int mas_blk_fs_sync_done(struct block_device *bi_bdev);
+void mas_blk_mq_tagset_fs_sync_done_register(struct blk_mq_tag_set *tag_set,
+					     lld_dev_fs_sync_done_fn func);
+int mas_blk_get_program_size(struct block_device *bi_bdev,
+			     struct stor_dev_program_size *program_size);
+void mas_blk_mq_tagset_get_program_size_register(
+	struct blk_mq_tag_set *tag_set, lld_dev_get_program_size_fn func);
+int mas_blk_device_close_section(struct block_device *bi_bdev,
+				 struct stor_dev_reset_ftl *reset_ftl_info);
+void mas_blk_mq_tagset_reset_ftl_register(struct blk_mq_tag_set *tag_set,
+					  lld_dev_reset_ftl_fn func);
+#if defined(CONFIG_MAS_DEBUG_FS) || defined(CONFIG_MAS_BLK_DEBUG)
+int mas_blk_bad_block_error_inject(struct block_device *bi_bdev,
+				   unsigned char bad_slc_cnt,
+				   unsigned char bad_tlc_cnt);
+int mas_blk_rescue_block_inject_data(struct block_device *bi_bdev,
+				     sector_t sect);
+void mas_blk_mq_tagset_rescue_block_inject_data_register(
+	struct blk_mq_tag_set *tag_set,
+	lld_dev_rescue_block_inject_data_fn func);
+void mas_blk_mq_tagset_bad_block_error_inject_register(
+	struct blk_mq_tag_set *tag_set, lld_dev_bad_block_error_inject_fn func);
+unsigned int mas_blk_get_stub_disorder_lba(struct request *req);
+int mas_blk_unistore_debug_en(void);
+int mas_blk_recovery_debug_on(void);
+void mas_blk_recovery_debug_off(void);
+bool mas_blk_reset_recovery_off(void);
+#endif
+void mas_blk_bad_block_notify_register(struct block_device *bi_bdev,
+				       blk_dev_bad_block_notify_fn func,
+				       void *param_data);
+void mas_blk_mq_tagset_bad_block_notify_register(
+	struct blk_mq_tag_set *tag_set,
+	lld_dev_bad_block_notify_register_fn func);
+int mas_bkops_work_query(struct block_device *bdev);
+int mas_bkops_work_start(struct block_device *bdev);
+void mas_bkops_work_stop(struct block_device *bdev);
+void mas_blk_req_get_order_nr_unistore(struct request *req,
+	unsigned char new_stream_type, unsigned char *order,
+	unsigned char *pre_order_cnt, bool extern_protect);
+void mas_blk_mq_tagset_set_bkops(struct request_queue *q,
+				 struct mas_bkops *ufs_bkops);
+void mas_blk_queue_unistore_enable(struct request_queue *q, bool enable);
+void mas_blk_set_up_unistore_env(struct request_queue *q,
+	unsigned int mas_sec_size, unsigned int mas_pu_size, bool enable);
+bool blk_queue_query_unistore_enable(struct request_queue *q);
+int mas_blk_mq_update_unistore_tags(struct blk_mq_tag_set *set);
+void mas_blk_insert_section_list(struct block_device *bdev,
+				 unsigned int start_blkaddr, int stream_type,
+				 int flash_mode);
+unsigned int mas_blk_get_sec_size(struct request_queue *q);
+unsigned int mas_blk_get_pu_size(struct request_queue *q);
+int mas_blk_update_buf_bio_page(struct block_device *bdev,
+	struct page *page, struct page *cached_page);
+void mas_blk_set_recovery_flag(struct request_queue *q);
+int mas_blk_get_recovery_pages(bool page_anon);
+void mas_blk_recovery_pages_add(struct page *page);
+void mas_blk_recovery_pages_sub(struct page *page);
+void mas_blk_clear_section_list(struct block_device *bdev,
+	unsigned char stream_type);
+#else
+static inline bool blk_queue_query_unistore_enable(struct request_queue *q)
+{
+	return false;
+}
+#endif
+
+#ifdef CONFIG_MAS_BLK
+void mas_blk_latency_req_check_ufs(struct request *req,
+					enum req_process_stage_enum req_stage);
+void mas_blk_queue_get_budget(struct request_queue *q);
+void mas_blk_queue_put_budget(struct request_queue *q);
+void blk_queue_dump_register(struct request_queue *q, lld_dump_status_fn func);
+void blk_mq_tagset_dump_register(struct blk_mq_tag_set *tag_set,
+				 lld_dump_status_fn func);
+void blk_mq_tagset_tz_query_register(struct blk_mq_tag_set *tag_set,
+				     lld_tz_query_fn func);
+int blk_lld_tz_query(const struct block_device *bi_bdev, u32 type, u8 *buf,
+		     u32 buf_len);
+void blk_mq_tagset_tz_ctrl_register(struct blk_mq_tag_set *tag_set,
+				    lld_tz_ctrl_fn func);
+int blk_lld_tz_ctrl(const struct block_device *bi_bdev, int desc_id,
+		    uint8_t index);
+#ifdef CONFIG_HYPERHOLD_CORE
+void blk_mq_tagset_health_query_register(struct blk_mq_tag_set *tag_set,
+					 lld_query_health_fn func);
+int blk_lld_health_query(struct block_device *bi_bdev, u8 *pre_eol_info,
+			 u8 *life_time_est_a, u8 *life_time_est_b);
+#endif
+void blk_mq_tagset_latency_warning_set(struct blk_mq_tag_set *tag_set,
+				       unsigned int warning_threshold_ms);
+void blk_queue_latency_warning_set(struct request_queue *q,
+				   unsigned int warning_threshold_ms);
+int blk_busyidle_event_subscribe(
+	const struct block_device *bi_bdev,
+	const struct blk_busyidle_event_node *event_node);
+int blk_queue_busyidle_event_subscribe(
+	const struct request_queue *q,
+	const struct blk_busyidle_event_node *event_node);
+int blk_lld_busyidle_event_subscribe(const struct blk_dev_lld *lld,
+				     struct blk_busyidle_event_node *event_node);
+int blk_busyidle_event_unsubscribe(
+	const struct blk_busyidle_event_node *event_node);
+int blk_queue_busyidle_event_unsubscribe(
+	const struct blk_busyidle_event_node *event_node);
+void blk_queue_busyidle_enable(const struct request_queue *q, int enable);
+void blk_mq_tagset_busyidle_enable(struct blk_mq_tag_set *tag_set, int enable);
+void blk_mq_tagset_hw_idle_notify_enable(struct blk_mq_tag_set *tag_set,
+					 int enable);
+void blk_queue_set_inline_crypto_flag(const struct request_queue *q,
+				      bool enable);
+void blk_queue_direct_flush_register(struct request_queue *q,
+				     blk_direct_flush_fn func);
+void blk_mq_tagset_direct_flush_register(struct blk_mq_tag_set *tag_set,
+					 blk_direct_flush_fn func);
+void blk_queue_flush_reduce_config(struct request_queue *q,
+				   bool flush_reduce_enable);
+void blk_mq_tagset_flush_reduce_config(struct blk_mq_tag_set *tag_set,
+				       bool flush_reduce_enable);
+void blk_flush_set_async(struct bio *bio);
+int blk_flush_async_support(const struct block_device *bi_bdev);
+void blk_mq_tagset_ufs_mq_iosched_enable(struct blk_mq_tag_set *tag_set,
+					 int enable);
+bool ufs_order_panic_wait_datasync_handle(struct blk_dev_lld *blk_lld);
+void ufs_order_panic_datasync_handle(struct blk_dev_lld *blk_lld);
+void blk_power_off_flush(int emergency);
+void mas_blk_panic_flush(void);
+void blk_write_throttle(struct request_queue *queue, int level);
+void blk_generic_freeze(const void *freeze_obj, enum blk_freeze_obj_type type,
+			bool freeze);
+unsigned char req_get_streamid(struct request *req);
+void blk_lld_idle_notify(const struct blk_dev_lld *lld);
+bool blk_dev_write_order_preserved(struct block_device *bdev);
+unsigned int blk_req_get_order_nr(struct request *req, bool extern_protect);
+void blk_queue_order_enable(struct request_queue *q, bool enable);
+bool blk_queue_query_order_enable(struct request_queue *q);
+void blk_order_nr_reset(struct blk_mq_tag_set *tag_set);
+int blk_mq_get_io_in_list_count(struct block_device *bdev);
+#ifdef CONFIG_MAS_MQ_USING_CP
+void blk_queue_cp_enable(struct request_queue *q, bool enable);
+#endif
+#ifdef CONFIG_MAS_QOS_MQ
+void blk_mq_tagset_ufs_qos_mq_iosched_enable(struct blk_mq_tag_set *tag_set,
+					     int enable);
+static __always_inline unsigned int qos_ufs_mq_get_send_cpu(struct request *rq)
+{
+	return rq->mas_req.slot_cpu;
+}
+#endif /* CONFIG_MAS_QOS_MQ */
+
+void blk_dio_ck(struct gendisk *target_disk, ktime_t dio_start, int dio_op,
+		int dio_page_count);
+void blk_mq_tagset_vl_setup(struct blk_mq_tag_set *tag_set,
+			    u64 device_capacity);
+#endif /* CONFIG_MAS_BLK */
+
+extern void print_bdev_access_info(void);
 
 #ifdef CONFIG_BLK_DEV_ZONED
 bool blk_req_needs_zone_write_lock(struct request *rq);

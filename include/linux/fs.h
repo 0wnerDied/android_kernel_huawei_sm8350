@@ -185,6 +185,8 @@ typedef int (dio_iodone_t)(struct kiocb *iocb, loff_t offset,
  */
 #define CHECK_IOVEC_ONLY -1
 
+#define WRITE_FLUSH_FUA		(REQ_SYNC | REQ_NOIDLE | REQ_PREFLUSH | REQ_FUA)
+
 /*
  * Attribute flags.  These should be or-ed together to figure out what
  * has been changed!
@@ -452,6 +454,7 @@ int pagecache_write_end(struct file *, struct address_space *mapping,
 struct address_space {
 	struct inode		*host;
 	struct xarray		i_pages;
+	spinlock_t		tree_lock;	/* and lock protecting it */
 	gfp_t			gfp_mask;
 	atomic_t		i_mmap_writable;
 #ifdef CONFIG_READ_ONLY_THP_FOR_FS
@@ -693,7 +696,9 @@ struct inode {
 	/* Misc */
 	unsigned long		i_state;
 	struct rw_semaphore	i_rwsem;
-
+#ifdef CONFIG_SDP_ENCRYPTION
+	struct rw_semaphore     i_sdp_sem; /* protect sdp */
+#endif
 	unsigned long		dirtied_when;	/* jiffies of first dirtying */
 	unsigned long		dirtied_time_when;
 
@@ -753,6 +758,9 @@ struct inode {
 #endif
 
 	void			*i_private; /* fs or device private pointer */
+#if defined(CONFIG_TASK_PROTECT_LRU) || defined(CONFIG_MEMCG_PROTECT_LRU)
+	int			i_protect;
+#endif
 
 	ANDROID_KABI_RESERVE(1);
 	ANDROID_KABI_RESERVE(2);
@@ -940,6 +948,9 @@ struct file_ra_state {
 					   there are only # of pages ahead */
 
 	unsigned int ra_pages;		/* Maximum readahead window */
+#ifdef CONFIG_MAS_BUFFERED_READAHEAD
+	unsigned int ra_pages_cr;
+#endif
 	unsigned int mmap_miss;		/* Cache miss stat for mmap accesses */
 	loff_t prev_pos;		/* Cache last read() position */
 };
@@ -991,6 +1002,10 @@ struct file {
 #endif /* #ifdef CONFIG_EPOLL */
 	struct address_space	*f_mapping;
 	errseq_t		f_wb_err;
+
+#ifdef CONFIG_HMFS_FS
+	unsigned char hm_fsync_flag;
+#endif
 
 	ANDROID_KABI_RESERVE(1);
 	ANDROID_VENDOR_DATA(1);
@@ -1592,7 +1607,6 @@ struct super_block {
 
 	spinlock_t		s_inode_wblist_lock;
 	struct list_head	s_inodes_wb;	/* writeback inodes */
-
 	ANDROID_KABI_RESERVE(1);
 	ANDROID_KABI_RESERVE(2);
 	ANDROID_KABI_RESERVE(3);
@@ -2035,6 +2049,9 @@ struct super_operations {
 				  struct shrink_control *);
 	long (*free_cached_objects)(struct super_block *,
 				    struct shrink_control *);
+#ifdef CONFIG_F2FS_JOURNAL_APPEND
+	void (*flush_mbio)(struct super_block *sb );
+#endif
 
 	ANDROID_KABI_RESERVE(1);
 	ANDROID_KABI_RESERVE(2);
@@ -2066,6 +2083,10 @@ struct super_operations {
 #define S_ENCRYPTED	16384	/* Encrypted file (using fs/crypto/) */
 #define S_CASEFOLD	32768	/* Casefolded file */
 #define S_VERITY	65536	/* Verity file (using fs/verity/) */
+
+#ifdef CONFIG_FCMA
+#define S_ONEREAD	(1U << 30)
+#endif
 
 /*
  * Note that nosuid etc flags are inode-specific: setting some file-system
@@ -3165,6 +3186,38 @@ extern void inode_sb_list_add(struct inode *inode);
 #ifdef CONFIG_BLOCK
 extern int bdev_read_only(struct block_device *);
 #endif
+
+#ifdef CONFIG_BLK_CGROUP_IOSMART
+#define THROTL_WB_SYNC_PAGE_CNT	128
+#define THROTL_WB_SYNC_BIO_CNT	8
+extern bool blk_throtl_get_quota(struct block_device *,
+				 unsigned int, unsigned long, bool);
+static inline void blk_throtl_get_quotas(struct block_device *bdev,
+					 unsigned int size,
+					 unsigned long jiffies_time_out,
+					 bool wait,
+					 unsigned int cnt)
+{
+	while (cnt--)
+		blk_throtl_get_quota(bdev, PAGE_SIZE, jiffies_time_out, wait);
+}
+#else
+static inline bool blk_throtl_get_quota(struct block_device *bdev,
+					unsigned int size,
+					unsigned long jiffies_time_out,
+					bool wait)
+{
+	return true;
+}
+static inline void blk_throtl_get_quotas(struct block_device *bdev,
+					 unsigned int size,
+					 unsigned long jiffies_time_out,
+					 bool wait,
+					 unsigned int cnt)
+{
+}
+#endif
+
 extern int set_blocksize(struct block_device *, int);
 extern int sb_set_blocksize(struct super_block *, int);
 extern int sb_min_blocksize(struct super_block *, int);
@@ -3706,6 +3759,12 @@ static inline void simple_fill_fsxattr(struct fsxattr *fa, __u32 xflags)
 	memset(fa, 0, sizeof(*fa));
 	fa->fsx_xflags = xflags;
 }
+
+#if defined(CONFIG_OVERLAY_FS) && (defined(CONFIG_TASK_PROTECT_LRU) || \
+	defined(CONFIG_MEMCG_PROTECT_LRU) || \
+	defined(CONFIG_HW_CGROUP_WORKINGSET))
+struct file *get_real_file(struct file *filp);
+#endif
 
 /*
  * Flush file data before changing attributes.  Caller must hold any locks

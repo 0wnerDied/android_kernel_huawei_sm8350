@@ -105,6 +105,11 @@ struct partition_meta_info {
 	char uuid[PARTITION_META_INFO_UUIDLTH];
 	u8 volname[PARTITION_META_INFO_VOLNAMELTH];
 };
+#ifdef CONFIG_MAS_UNISTORE_PRESERVE
+struct hd_cust {
+	unsigned char default_stream_id;
+};
+#endif
 
 struct hd_struct {
 	sector_t start_sect;
@@ -132,6 +137,10 @@ struct hd_struct {
 #endif
 	struct percpu_ref ref;
 	struct rcu_work rcu_work;
+
+#ifdef CONFIG_MAS_UNISTORE_PRESERVE
+	struct hd_cust mas_hd;
+#endif
 
 	ANDROID_KABI_RESERVE(1);
 	ANDROID_KABI_RESERVE(2);

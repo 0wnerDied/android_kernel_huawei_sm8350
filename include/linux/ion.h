@@ -19,6 +19,8 @@
 #include <linux/shrinker.h>
 #include <linux/types.h>
 #include <uapi/linux/ion.h>
+#include <linux/sysfs.h>
+
 
 /**
  * struct ion_buffer - metadata for a particular buffer
@@ -339,6 +341,10 @@ int ion_free(struct ion_buffer *buffer);
  */
 
 size_t ion_query_heaps_kernel(struct ion_heap_data *hdata, size_t size);
+
+int ion_heap_watermark_init(const char *name,
+				const struct attribute_group *watermark_attribute_group);
+
 #else
 
 static inline int __ion_device_add_heap(struct ion_heap *heap,
@@ -414,6 +420,13 @@ static inline size_t ion_query_heaps_kernel(struct ion_heap_data *hdata,
 					 size_t size)
 {
 	return 0;
+}
+
+int ion_heap_watermark_init(const char *name,
+				const struct attribute_group *watermark_attribute_group)
+
+{
+	return -ENODEV;
 }
 #endif /* CONFIG_ION */
 #endif /* _ION_KERNEL_H */

@@ -120,7 +120,11 @@ struct compat_blk_user_trace_setup {
 
 #endif
 
+#ifdef CONFIG_MAS_BLK
+extern void blk_fill_rwbs(char *rwbs, unsigned int op, unsigned int mas_op, int bytes);
+#else
 extern void blk_fill_rwbs(char *rwbs, unsigned int op, int bytes);
+#endif
 
 static inline sector_t blk_rq_trace_sector(struct request *rq)
 {

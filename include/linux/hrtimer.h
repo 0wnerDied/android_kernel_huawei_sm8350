@@ -127,7 +127,10 @@ struct hrtimer {
 	u8				is_rel;
 	u8				is_soft;
 	u8				is_hard;
-
+#ifdef CONFIG_HUAWEI_DUBAI
+    int				pid;
+    char			comm[16];
+#endif
 	ANDROID_KABI_RESERVE(1);
 };
 

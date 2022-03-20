@@ -2,7 +2,7 @@
 /*
  * Backlight Lowlevel Control Abstraction
  *
- * Copyright (C) 2003,2004 Hewlett-Packard Company
+ * Copyright (C) 2003,2021 Hewlett-Packard Company
  *
  */
 
@@ -88,6 +88,8 @@ struct backlight_properties {
 	unsigned int state;
 	/* Type of the brightness scale (linear, non-linear, ...) */
 	enum backlight_scale scale;
+	/* The display that the backlight device is binded to */
+	int display_count;
 
 #define BL_CORE_SUSPENDED	(1 << 0)	/* backlight is suspended */
 #define BL_CORE_FBBLANK		(1 << 1)	/* backlight is under an fb blank event */
@@ -190,6 +192,8 @@ extern void backlight_force_update(struct backlight_device *bd,
 extern int backlight_register_notifier(struct notifier_block *nb);
 extern int backlight_unregister_notifier(struct notifier_block *nb);
 extern struct backlight_device *backlight_device_get_by_type(enum backlight_type type);
+struct backlight_device *backlight_device_get_by_type_and_display_count(
+	enum backlight_type type, int display_count);
 extern int backlight_device_set_brightness(struct backlight_device *bd, unsigned long brightness);
 
 #define to_backlight_device(obj) container_of(obj, struct backlight_device, dev)

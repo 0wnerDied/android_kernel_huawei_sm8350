@@ -1275,6 +1275,13 @@ int ksys_ipc(unsigned int call, int first, unsigned long second,
 	unsigned long third, void __user * ptr, long fifth);
 int compat_ksys_ipc(u32 call, int first, int second,
 	u32 third, u32 ptr, u32 fifth);
+#ifdef CONFIG_BOOT_DETECTOR_QCOM
+long ksys_fsync(unsigned int fd);
+long ksys_statfs(const char __user * path, struct statfs __user *buf);
+long ksys_newlstat(const char __user *filename, struct stat __user *statbuf);
+long ksys_lstat64(const char __user *filename, struct stat64 __user *statbuf);
+long ksys_readlink(const char __user *path, char __user *buf, int bufsiz);
+#endif
 
 /*
  * The following kernel syscall equivalents are just wrappers to fs-internal

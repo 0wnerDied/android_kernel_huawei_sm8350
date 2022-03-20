@@ -90,6 +90,9 @@ enum hctx_type {
 	HCTX_MAX_TYPES,
 };
 
+#ifdef CONFIG_MAS_BLK
+struct blk_tagset_ops;
+#endif
 struct blk_mq_tag_set {
 	/*
 	 * map[] holds ctx -> hctx mappings, one map exists for each type
@@ -100,6 +103,11 @@ struct blk_mq_tag_set {
 	struct blk_mq_queue_map	map[HCTX_MAX_TYPES];
 	unsigned int		nr_maps;	/* nr entries in map[] */
 	const struct blk_mq_ops	*ops;
+#ifdef CONFIG_MAS_BLK
+	struct blk_dev_lld lld_func;
+	struct blk_tagset_ops	*mas_tagset_ops;
+	unsigned int		high_prio_tags;
+#endif
 	unsigned int		nr_hw_queues;	/* nr hw queues across maps */
 	unsigned int		queue_depth;	/* max hw supported */
 	unsigned int		reserved_tags;

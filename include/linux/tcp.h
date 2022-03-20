@@ -20,6 +20,9 @@
 #include <net/inet_connection_sock.h>
 #include <net/inet_timewait_sock.h>
 #include <uapi/linux/tcp.h>
+#ifdef CONFIG_TCP_ARGO
+#include <emcom/argo/tcp_argo.h>
+#endif /* CONFIG_TCP_ARGO */
 
 static inline struct tcphdr *tcp_hdr(const struct sk_buff *skb)
 {
@@ -248,6 +251,16 @@ struct tcp_sock {
 
 /* RTT measurement */
 	u64	tcp_mstamp;	/* most recent packet received/sent */
+#ifdef CONFIG_HW_NETWORK_QOE
+	u32 ofo_tstamp; /* timestamp of ofo queue become not null */
+	u32 rcv_nxt_ofo;    /* equals rcv_nxt+rcv_wnd */
+	u32 rtt_update_tstamp;  /* timestamp of rtt update */
+	u32 prior_srtt_us;  /* srtt << 3 in usecs at last rtt update */
+	u32 last_pkt_tstamp;    /* timestamp of last data packet */
+		/* Through the hook */
+	u32 key_flow;   /* key flow flag */
+	u32 content_length; /* content_length value in http head. */
+#endif
 	u32	srtt_us;	/* smoothed round trip time << 3 in usecs */
 	u32	mdev_us;	/* medium deviation			*/
 	u32	mdev_max_us;	/* maximal mdev for the last rtt period	*/
@@ -373,6 +386,15 @@ struct tcp_sock {
 		u64	time;
 	} rcvq_space;
 
+#ifdef CONFIG_HW_NETQOS_SCHED
+	struct {
+		u32	segs;
+		u32	min_rtt;
+		u32	bw;
+		u32	rcv_wnd;
+	} rcv_rate;
+#endif
+
 /* TCP-specific MTU probe information. */
 	struct {
 		u32		  probe_seq_start;
@@ -397,6 +419,15 @@ struct tcp_sock {
 	 */
 	struct request_sock __rcu *fastopen_rsk;
 	u32	*saved_syn;
+
+#ifdef CONFIG_CHR_NETLINK_MODULE
+	u8 first_data_flag;
+	u8 data_net_flag;
+#endif
+#ifdef CONFIG_TCP_ARGO
+/* TCP ARGO */
+	struct tcp_argo *argo;
+#endif /* CONFIG_TCP_ARGO */
 };
 
 enum tsq_enum {

@@ -189,6 +189,9 @@ struct backing_dev_info {
 	u64 id;
 	struct rb_node rb_node; /* keyed by ->id */
 	struct list_head bdi_list;
+#ifdef CONFIG_MAS_BUFFERED_READAHEAD
+	int ra_pages_cr;
+#endif
 	unsigned long ra_pages;	/* max readahead in PAGE_SIZE units */
 	unsigned long io_pages;	/* max allowed IO size */
 	congested_fn *congested_fn; /* Function pointer if device is md/dm */
@@ -224,6 +227,9 @@ struct backing_dev_info {
 	struct device *owner;
 
 	struct timer_list laptop_mode_wb_timer;
+#ifdef CONFIG_MAS_BLK
+	struct request_queue *queue;
+#endif
 
 #ifdef CONFIG_DEBUG_FS
 	struct dentry *debug_dir;

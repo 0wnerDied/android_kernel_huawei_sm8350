@@ -531,6 +531,11 @@ struct skb_shared_info {
 	 * remains valid until skb destructor */
 	void *		destructor_arg;
 
+#ifdef CONFIG_HW_PACKET_TRACKER
+	unsigned long born_stamp;
+	__u32 proc_bitmask;
+#endif
+
 	ANDROID_VENDOR_DATA_ARRAY(1, 3);
 
 	/* must be last field, see pskb_expand_head() */
@@ -1138,6 +1143,9 @@ int __must_check skb_to_sgvec_nomark(struct sk_buff *skb, struct scatterlist *sg
 int __must_check skb_to_sgvec(struct sk_buff *skb, struct scatterlist *sg,
 			      int offset, int len);
 int skb_cow_data(struct sk_buff *skb, int tailbits, struct sk_buff **trailer);
+// HMDFS ktls solution, alloc page with GFP_KERNEL flag
+int skb_cow_data_hmdfs(struct sk_buff *skb, int tailbits, struct sk_buff **trailer);
+
 int __skb_pad(struct sk_buff *skb, int pad, bool free_on_error);
 
 /**
@@ -2291,6 +2299,8 @@ static inline void *skb_pull_inline(struct sk_buff *skb, unsigned int len)
 }
 
 void *__pskb_pull_tail(struct sk_buff *skb, int delta);
+// HMDFS ktls solution, alloc page with GFP_KERNEL flag
+void *__pskb_pull_tail_hmdfs(struct sk_buff *skb, int delta);
 
 static inline void *__pskb_pull(struct sk_buff *skb, unsigned int len)
 {
@@ -3212,7 +3222,7 @@ static inline int skb_padto(struct sk_buff *skb, unsigned int len)
  */
 static inline int __must_check __skb_put_padto(struct sk_buff *skb,
 					       unsigned int len,
-					       bool free_on_error)
+				  bool free_on_error)
 {
 	unsigned int size = skb->len;
 

@@ -74,6 +74,18 @@ struct fscrypt_operations {
 	int (*get_num_devices)(struct super_block *sb);
 	void (*get_devices)(struct super_block *sb,
 			    struct request_queue **devs);
+#ifdef CONFIG_SDP_ENCRYPTION
+	int (*get_keyinfo)(struct inode *, void *, int *);
+	int (*is_file_sdp_encrypted)(struct inode *);
+	int (*get_sdp_context)(struct inode *, void *, size_t, void *);
+	int (*set_sdp_context)(struct inode *, const void *, size_t, void *);
+	int (*get_sdp_encrypt_flags)(struct inode *, void *, u32 *);
+	int (*set_sdp_encrypt_flags)(struct inode *, void *, u32 *);
+#endif
+#ifdef CONFIG_HWDPS
+	int (*set_hwdps_flags)(struct inode *, void *, u32 *);
+	int (*get_hwdps_flags)(struct inode *, void *, u32 *);
+#endif
 };
 #endif
 
@@ -182,6 +194,10 @@ int fscrypt_ioctl_add_key(struct file *filp, void __user *arg);
 int fscrypt_ioctl_remove_key(struct file *filp, void __user *arg);
 int fscrypt_ioctl_remove_key_all_users(struct file *filp, void __user *arg);
 int fscrypt_ioctl_get_key_status(struct file *filp, void __user *arg);
+#ifdef CONFIG_HYPERHOLD_CORE
+int hyperhold_get_keyring_key(u32 key_id, u8 *key_buffer,
+	u8 key_buffer_len, u32 *key_len);
+#endif
 
 /* keysetup.c */
 int fscrypt_get_encryption_info(struct inode *inode);
@@ -388,6 +404,14 @@ static inline int fscrypt_ioctl_get_key_status(struct file *filp,
 {
 	return -EOPNOTSUPP;
 }
+
+#ifdef CONFIG_HYPERHOLD_CORE
+static inline int hyperhold_get_keyring_key(u32 key_id, u8 *key_buffer,
+	u8 key_buffer_len, u32 *key_len)
+{
+	return -EOPNOTSUPP;
+}
+#endif
 
 /* keysetup.c */
 static inline int fscrypt_get_encryption_info(struct inode *inode)

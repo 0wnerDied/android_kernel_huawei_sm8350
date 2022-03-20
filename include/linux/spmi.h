@@ -178,5 +178,7 @@ int spmi_command_reset(struct spmi_device *sdev);
 int spmi_command_sleep(struct spmi_device *sdev);
 int spmi_command_wakeup(struct spmi_device *sdev);
 int spmi_command_shutdown(struct spmi_device *sdev);
+int huawei_pmic_reg_read(u8 sid, u16 addr, u8 *buf, size_t len);
+int huawei_pmic_reg_write(u8 sid, u16 addr, const u8 *buf, size_t len);
 
 #endif

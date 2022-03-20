@@ -21,6 +21,9 @@
 #include <linux/vmstat.h>
 #include <linux/writeback.h>
 #include <linux/page-flags.h>
+#ifdef CONFIG_HYPERHOLD
+#include <linux/memcg_policy.h>
+#endif
 
 struct mem_cgroup;
 struct page;
@@ -61,6 +64,18 @@ struct mem_cgroup_reclaim_cookie {
 	int priority;
 	unsigned int generation;
 };
+
+#ifdef CONFIG_MEMCG_PROTECT_LRU
+static inline bool is_prot_page(struct page *page)
+{
+	return PageProtect(page);
+}
+#else
+static inline bool is_prot_page(struct page *page)
+{
+	return false;
+}
+#endif
 
 #ifdef CONFIG_MEMCG
 
@@ -306,6 +321,49 @@ struct mem_cgroup {
 	bool			tcpmem_active;
 	int			tcpmem_pressure;
 
+#ifdef CONFIG_HYPERHOLD_CORE
+	unsigned long zram_lru;
+	unsigned long ext_lru;
+	struct list_head link_list;
+	spinlock_t zram_init_lock;
+	struct zram *zram;
+
+	atomic64_t zram_stored_size;
+	atomic64_t zram_page_size;
+	unsigned long zram_watermark;
+
+	atomic_t hyperhold_extcnt;
+	atomic_t hyperhold_peakextcnt;
+
+	atomic64_t hyperhold_stored_pages;
+	atomic64_t hyperhold_stored_size;
+	atomic64_t hyperhold_ext_notify_free;
+
+	atomic64_t hyperhold_outcnt;
+	atomic64_t hyperhold_incnt;
+	atomic64_t hyperhold_allfaultcnt;
+	atomic64_t hyperhold_faultcnt;
+
+	atomic64_t hyperhold_outextcnt;
+	atomic64_t hyperhold_inextcnt;
+
+	atomic64_t zram_idle_size;
+	atomic64_t zram_idle_page;
+
+	atomic64_t zram_swapout_cnt;
+	atomic64_t zram_swapin_cnt;
+
+	bool in_swapin;
+#endif
+#ifdef CONFIG_HYPERHOLD
+	struct memcg_reclaim memcg_reclaimed;
+	struct list_head score_node;
+	struct list_head son_head;
+	struct list_head list_node;
+#define MEM_CGROUP_NAME_MAX_LEN 100
+	char name[MEM_CGROUP_NAME_MAX_LEN];
+#endif
+
 #ifdef CONFIG_MEMCG_KMEM
         /* Index in the kmem_cache->memcg_params.memcg_caches array */
 	int kmemcg_id;
@@ -345,6 +403,10 @@ struct mem_cgroup {
 #define MEMCG_CHARGE_BATCH 32U
 
 extern struct mem_cgroup *root_mem_cgroup;
+#ifdef CONFIG_HYPERHOLD
+struct mem_cgroup *get_next_memcg(struct mem_cgroup *prev);
+void get_next_memcg_break(struct mem_cgroup *prev);
+#endif
 
 static inline bool mem_cgroup_is_root(struct mem_cgroup *memcg)
 {
@@ -384,6 +446,17 @@ void mem_cgroup_cancel_charge(struct page *page, struct mem_cgroup *memcg,
 		bool compound);
 void mem_cgroup_uncharge(struct page *page);
 void mem_cgroup_uncharge_list(struct list_head *page_list);
+
+#ifdef CONFIG_MEMCG_PROTECT_LRU
+void protect_memcg_drain_all_stock(struct mem_cgroup *root_memcg);
+void protect_memcg_cancel_charge(
+	struct mem_cgroup *memcg, unsigned int nr_pages);
+int protect_memcg_move_account(
+	struct page *page, bool compound,
+	struct mem_cgroup *from, struct mem_cgroup *to);
+int protect_memcg_resize_limit(struct mem_cgroup *memcg, unsigned long limit);
+unsigned long protect_memcg_usage(struct mem_cgroup *memcg, bool swap);
+#endif
 
 void mem_cgroup_migrate(struct page *oldpage, struct page *newpage);
 
@@ -475,7 +548,10 @@ static inline struct mem_cgroup *lruvec_memcg(struct lruvec *lruvec)
 
 	if (mem_cgroup_disabled())
 		return NULL;
-
+#ifdef CONFIG_HYPERHOLD_FILE_LRU
+	if (is_node_lruvec(lruvec))
+		return NULL;
+#endif
 	mz = container_of(lruvec, struct mem_cgroup_per_node, lruvec);
 	return mz->memcg;
 }
@@ -673,6 +749,11 @@ static inline unsigned long lruvec_page_state(struct lruvec *lruvec,
 	if (mem_cgroup_disabled())
 		return node_page_state(lruvec_pgdat(lruvec), idx);
 
+#ifdef CONFIG_HYPERHOLD_FILE_LRU
+	if (is_node_lruvec(lruvec))
+		return node_page_state(lruvec_pgdat(lruvec), idx);
+#endif
+
 	pn = container_of(lruvec, struct mem_cgroup_per_node, lruvec);
 	x = atomic_long_read(&pn->lruvec_stat[idx]);
 #ifdef CONFIG_SMP
@@ -691,6 +772,11 @@ static inline unsigned long lruvec_page_state_local(struct lruvec *lruvec,
 
 	if (mem_cgroup_disabled())
 		return node_page_state(lruvec_pgdat(lruvec), idx);
+
+#ifdef CONFIG_HYPERHOLD_FILE_LRU
+	if (is_node_lruvec(lruvec))
+		return node_page_state(lruvec_pgdat(lruvec), idx);
+#endif
 
 	pn = container_of(lruvec, struct mem_cgroup_per_node, lruvec);
 	for_each_possible_cpu(cpu)
@@ -717,11 +803,28 @@ static inline void mod_lruvec_state(struct lruvec *lruvec,
 	local_irq_restore(flags);
 }
 
+#ifdef CONFIG_HYPERHOLD_FILE_LRU
+static __always_inline bool is_file_page(struct page *page)
+{
+	if (!PageUnevictable(page) && !PageSwapBacked(page))
+		return true;
+
+	return false;
+}
+#endif
+
 static inline void __mod_lruvec_page_state(struct page *page,
 					   enum node_stat_item idx, int val)
 {
 	pg_data_t *pgdat = page_pgdat(page);
 	struct lruvec *lruvec;
+
+#ifdef CONFIG_HYPERHOLD_FILE_LRU
+	if(is_file_page(page) && !is_prot_page(page)) {
+		__mod_node_page_state(pgdat, idx, val);
+		return;
+	}
+#endif
 
 	/* Untracked pages have no memcg, no lruvec. Update only the node */
 	if (!page->mem_cgroup) {

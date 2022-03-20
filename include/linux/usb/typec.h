@@ -228,6 +228,8 @@ struct typec_partner *typec_register_partner(struct typec_port *port,
 					     struct typec_partner_desc *desc);
 void typec_unregister_partner(struct typec_partner *partner);
 
+int typec_partner_get(struct typec_partner *partner);
+
 struct typec_cable *typec_register_cable(struct typec_port *port,
 					 struct typec_cable_desc *desc);
 void typec_unregister_cable(struct typec_cable *cable);

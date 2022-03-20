@@ -29,7 +29,21 @@
 /* Max limits for throttle policy */
 #define THROTL_IOPS_MAX		UINT_MAX
 
+/* Block Throttle Weight specific */
+#define BLKIO_WEIGHT_MIN	10
+#define BLKIO_WEIGHT_MAX	1000
+#define BLKIO_WEIGHT_DEFAULT	500
+
 #ifdef CONFIG_BLK_CGROUP
+
+enum blk_throtl_type {
+	BLK_THROTL_TA,
+	BLK_THROTL_FG,
+	BLK_THROTL_KBG,
+	BLK_THROTL_SBG,
+	BLK_THROTL_BG,
+	BLK_THROTL_TYPE_NR,
+};
 
 enum blkg_rwstat_type {
 	BLKG_RWSTAT_READ,
@@ -58,6 +72,10 @@ struct blkcg {
 #ifdef CONFIG_CGROUP_WRITEBACK
 	struct list_head		cgwb_list;
 	refcount_t			cgwb_refcnt;
+#endif
+#ifdef CONFIG_BLK_CGROUP_IOSMART
+	unsigned int			weight;
+	unsigned int			type;
 #endif
 };
 
@@ -123,6 +141,10 @@ struct blkcg_gq {
 
 	/* reference count */
 	struct percpu_ref		refcnt;
+#ifdef CONFIG_BLK_CGROUP_IOSMART
+	atomic_t			writers;
+	unsigned int			weight;
+#endif
 
 	/* is this blkg online? protected by both blkcg and q locks */
 	bool				online;
@@ -259,6 +281,11 @@ static inline struct cgroup_subsys_state *blkcg_css(void)
 static inline struct blkcg *css_to_blkcg(struct cgroup_subsys_state *css)
 {
 	return css ? container_of(css, struct blkcg, css) : NULL;
+}
+
+static inline struct blkcg *task_blkcg(struct task_struct *tsk)
+{
+	return css_to_blkcg(task_css(tsk, io_cgrp_id));
 }
 
 /**
@@ -726,6 +753,9 @@ static inline void blkcg_bio_issue_init(struct bio *bio)
 static inline bool blkcg_bio_issue_check(struct request_queue *q,
 					 struct bio *bio)
 {
+#ifdef CONFIG_BLK_CGROUP_IOSMART
+	struct blkcg *blkcg = NULL;
+#endif
 	struct blkcg_gq *blkg;
 	bool throtl = false;
 
@@ -742,6 +772,11 @@ static inline bool blkcg_bio_issue_check(struct request_queue *q,
 
 	blkg = bio->bi_blkg;
 
+#ifdef CONFIG_BLK_CGROUP_IOSMART
+	blkcg = blkg ? blkg->blkcg : NULL;
+	if (blkcg && blkcg != &blkcg_root && blkcg->type <= BLK_THROTL_FG)
+		bio->bi_opf |= REQ_FG;
+#endif
 	throtl = blk_throtl_bio(q, blkg, bio);
 
 	if (!throtl) {
@@ -815,6 +850,16 @@ static inline void blkcg_clear_delay(struct blkcg_gq *blkg)
 void blkcg_add_delay(struct blkcg_gq *blkg, u64 now, u64 delta);
 void blkcg_schedule_throttle(struct request_queue *q, bool use_memdelay);
 void blkcg_maybe_throttle_current(void);
+
+#ifdef CONFIG_BLK_CGROUP_IOSMART
+struct blkcg_gq *task_blkg_get(struct task_struct *tsk,
+			       struct block_device *bdev);
+void task_blkg_put(struct blkcg_gq *blkg);
+void task_blkg_inc_writer(struct blkcg_gq *blkg);
+void task_blkg_dec_writer(struct blkcg_gq *blkg);
+unsigned int blkcg_weight(struct blkcg_gq *blkg);
+#endif /* CONFIG_BLK_CGROUP_IOSMART */
+
 #else	/* CONFIG_BLK_CGROUP */
 
 struct blkcg {

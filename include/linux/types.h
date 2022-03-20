@@ -197,6 +197,24 @@ struct ustat {
 	char			f_fpack[6];
 };
 
+#ifdef CONFIG_HW_QOS_THREAD
+struct set_qos {
+	atomic_t dynamic_qos;
+	atomic_t usage;
+};
+
+struct trans_qos_allow {
+	pid_t allow_pid;
+	pid_t allow_tgid;
+};
+
+struct transact_qos {
+	struct trans_qos_allow *trans_from;
+	pid_t trans_pid;
+	unsigned int trans_type;
+};
+#endif
+
 /**
  * struct callback_head - callback structure for use with RCU and task_work
  * @next: next update requests in a list

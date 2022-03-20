@@ -4,7 +4,9 @@
 
 #include <linux/huge_mm.h>
 #include <linux/swap.h>
-
+#ifdef CONFIG_HW_PAGE_TRACKER
+#include <linux/hw/page_tracker.h>
+#endif
 /**
  * page_is_file_cache - should the page be on a file LRU or anon LRU?
  * @page: the page to test
@@ -49,6 +51,14 @@ static __always_inline void add_page_to_lru_list(struct page *page,
 {
 	update_lru_size(lruvec, lru, page_zonenum(page), hpage_nr_pages(page));
 	list_add(&page->lru, &lruvec->lists[lru]);
+#ifdef CONFIG_HW_PAGE_TRACKER
+	if ((NR_INACTIVE_ANON == NR_LRU_BASE + lru) ||
+		(NR_ACTIVE_ANON == NR_LRU_BASE + lru))
+		page_tracker_set_type(page, TRACK_ANON, 0);
+	else if ((NR_INACTIVE_FILE == NR_LRU_BASE + lru) ||
+		(NR_ACTIVE_FILE == NR_LRU_BASE + lru))
+		page_tracker_set_type(page, TRACK_FILE, 0);
+#endif
 }
 
 static __always_inline void add_page_to_lru_list_tail(struct page *page,

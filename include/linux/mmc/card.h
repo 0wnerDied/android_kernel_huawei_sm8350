@@ -154,6 +154,9 @@ struct sd_ssr {
 	unsigned int		au;			/* In sectors */
 	unsigned int		erase_timeout;		/* In milliseconds */
 	unsigned int		erase_offset;		/* In milliseconds */
+#ifdef CONFIG_HW_SD_HEALTH_DETECT
+	unsigned int		speed_class;
+#endif
 };
 
 struct sd_switch_caps {

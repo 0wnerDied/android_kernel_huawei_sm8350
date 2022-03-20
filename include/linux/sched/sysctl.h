@@ -25,6 +25,22 @@ enum { sysctl_hung_task_timeout_secs = 0 };
 /* MAX_MARGIN_LEVELS should be one less than MAX_CLUSTERS */
 #define MAX_MARGIN_LEVELS (MAX_CLUSTERS - 1)
 
+#ifdef CONFIG_BOOST_KILL
+extern unsigned int sysctl_boost_killing;
+#endif
+
+#ifdef CONFIG_HW_VIP_THREAD
+#include <chipset_common/hwcfs/hwcfs_sysctl.h>
+#endif
+
+#ifdef CONFIG_HW_QOS_THREAD
+#include <chipset_common/hwqos/hwqos_sysctl.h>
+#endif
+
+#if defined(CONFIG_HW_RT_CAS) || defined(CONFIG_HW_RT_ACTIVE_LB)
+#include <linux/hw/hw_rt/rt_cap.h>
+#endif
+
 extern unsigned int sysctl_sched_latency;
 extern unsigned int sysctl_sched_min_granularity;
 extern unsigned int sysctl_sched_wakeup_granularity;
@@ -63,6 +79,21 @@ extern unsigned int sysctl_walt_rtg_cfs_boost_prio;
 extern unsigned int sysctl_walt_low_latency_task_threshold;
 extern unsigned int sysctl_sched_sync_hint_enable;
 
+#ifdef CONFIG_HW_SCHED_WALT
+extern unsigned int sysctl_sched_use_walt_cpu_util;
+extern unsigned int sysctl_sched_use_walt_task_util;
+extern unsigned int sysctl_sched_walt_init_task_load_pct;
+extern unsigned int sysctl_sched_walt_cpu_overload_irqload;
+
+extern int sysctl_sched_walt_init_task_load_pct_sysctl_handler(
+			struct ctl_table *table, int write, void __user *buffer,
+			size_t *length, loff_t *ppos);
+extern ssize_t walt_init_task_load_pct_show(struct kobject *kobj,
+			struct kobj_attribute *attr, char *buf);
+extern ssize_t walt_init_task_load_pct_store(struct kobject *kobj,
+			struct kobj_attribute *attr, const char *buf,
+			size_t count);
+#endif
 extern int
 walt_proc_group_thresholds_handler(struct ctl_table *table, int write,
 			void __user *buffer, size_t *lenp,

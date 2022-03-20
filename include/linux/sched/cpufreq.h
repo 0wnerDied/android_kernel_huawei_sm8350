@@ -15,6 +15,7 @@
 #define SCHED_CPUFREQ_PL	(1U << 5)
 #define SCHED_CPUFREQ_EARLY_DET	(1U << 6)
 #define SCHED_CPUFREQ_CONTINUE	(1U << 8)
+#define SCHED_CPUFREQ_HW	(1U << 9)
 
 #ifdef CONFIG_CPU_FREQ
 struct cpufreq_policy;
@@ -35,5 +36,23 @@ static inline unsigned long map_util_freq(unsigned long util,
 	return (freq + (freq >> 2)) * util / cap;
 }
 #endif /* CONFIG_CPU_FREQ */
+
+#define SUGOV_START 0
+#define SUGOV_STOP 1
+#define SUGOV_ACTIVE 2
+
+#ifdef CONFIG_HW_CPU_FREQ_GOV_SCHEDUTIL
+int sugov_register_notifier(struct notifier_block *nb);
+int sugov_unregister_notifier(struct notifier_block *nb);
+#else
+static inline int sugov_register_notifier(struct notifier_block *nb)
+{
+	return 0;
+}
+static inline int sugov_unregister_notifier(struct notifier_block *nb)
+{
+	return 0;
+}
+#endif
 
 #endif /* _LINUX_SCHED_CPUFREQ_H */

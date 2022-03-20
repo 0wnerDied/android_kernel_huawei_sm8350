@@ -407,6 +407,9 @@ struct dma_buf {
 	struct list_head list_node;
 	void *priv;
 	struct dma_resv *resv;
+	unsigned long long timestamp;
+	pid_t tgid;
+	pid_t pid;
 #ifdef CONFIG_DMABUF_DESTRUCTOR_SUPPORT
 	dma_buf_destructor dtor;
 	void *dtor_data;
@@ -489,6 +492,11 @@ struct dma_buf_export_info {
 	void *priv;
 };
 
+struct dma_buf_list {
+	struct list_head head;
+	struct mutex lock;
+};
+
 /**
  * DEFINE_DMA_BUF_EXPORT_INFO - helper macro for exporters
  * @name: export-info name
@@ -556,6 +564,8 @@ void *dma_buf_vmap(struct dma_buf *);
 void dma_buf_vunmap(struct dma_buf *, void *vaddr);
 int dma_buf_get_flags(struct dma_buf *dmabuf, unsigned long *flags);
 int dma_buf_get_uuid(struct dma_buf *dmabuf, uuid_t *uuid);
+int is_dma_buf_file(struct file *file);
+struct dma_buf_list get_dma_buf_list(void);
 
 #ifdef CONFIG_DMABUF_DESTRUCTOR_SUPPORT
 /**

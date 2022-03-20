@@ -72,10 +72,15 @@ extern bool set_freezable(void);
 
 #ifdef CONFIG_CGROUP_FREEZER
 extern bool cgroup_freezing(struct task_struct *task);
+extern unsigned int cgroup_state(struct task_struct *task);
 #else /* !CONFIG_CGROUP_FREEZER */
 static inline bool cgroup_freezing(struct task_struct *task)
 {
 	return false;
+}
+static inline unsigned int cgroup_state(struct task_struct *task)
+{
+	return 0;
 }
 #endif /* !CONFIG_CGROUP_FREEZER */
 
