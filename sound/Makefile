@@ -17,3 +17,5 @@ ifeq ($(CONFIG_SND),y)
 endif
 
 soundcore-objs  := sound_core.o
+obj-$(CONFIG_HW_AUDIO_INFO) += hw_audio/
+obj-$(CONFIG_HUAWEI_QCOM_ADSP_MISC) += adsp_misc/

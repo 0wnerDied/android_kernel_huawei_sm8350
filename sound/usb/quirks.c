@@ -8,11 +8,14 @@
 #include <linux/usb/audio.h>
 #include <linux/usb/midi.h>
 #include <linux/bits.h>
+#include <linux/audio_interface.h>
 
 #include <sound/control.h>
 #include <sound/core.h>
 #include <sound/info.h>
 #include <sound/pcm.h>
+#include <chipset_common/hwpower/common_module/power_event_ne.h>
+#include <huawei_platform/usb/hw_pd_dev.h>
 
 #include "usbaudio.h"
 #include "card.h"
@@ -25,6 +28,10 @@
 #include "pcm.h"
 #include "clock.h"
 #include "stream.h"
+
+#define USB_REQ_SET_VOLUME 0x2
+
+static struct usb_headphone_ops usb_otg_headphone_vbus_ops;
 
 /*
  * handle the quirks for the contained interfaces
@@ -1269,6 +1276,142 @@ int snd_usb_apply_interface_quirk(struct snd_usb_audio *chip,
 	return 0;
 }
 
+int is_huawei_usb_c_audio_adapter(struct usb_device *udev)
+{
+	if (!udev->parent) {
+		WARN_ON(1);
+		return 0;
+	}
+	if (udev->parent->parent) {
+		WARN_ON(1);
+		return 0;
+	}
+
+	if (udev->product) {
+		if (strncmp(udev->product, HUAWEI_USB_C_AUDIO_ADAPTER,
+			sizeof(HUAWEI_USB_C_AUDIO_ADAPTER)) == 0)
+			if ((udev->actconfig && (udev->actconfig->desc.bNumInterfaces == 1)) ||
+				(udev->config && (udev->config[0].desc.bNumInterfaces == 1))) {
+				return 1;
+			}
+	}
+
+	return 0;
+}
+
+void register_usb_low_power_otg(struct usb_headphone_ops *ops)
+{
+	if (!ops)
+		return;
+
+	if (ops->otg_enable)
+		usb_otg_headphone_vbus_ops.otg_enable = ops->otg_enable;
+
+	if (ops->otg_switch_mode)
+		usb_otg_headphone_vbus_ops.otg_switch_mode = ops->otg_switch_mode;
+
+	if (ops->otg_need_gpio_switch)
+		usb_otg_headphone_vbus_ops.otg_need_gpio_switch = ops->otg_need_gpio_switch;
+
+	usb_otg_headphone_vbus_ops.low_power_state = 0;
+}
+EXPORT_SYMBOL(register_usb_low_power_otg);
+
+void usb_low_power_enable(int enable)
+{
+	usb_otg_headphone_vbus_ops.active = !!enable;
+}
+EXPORT_SYMBOL(usb_low_power_enable);
+
+static void set_low_power_usb_headphone(struct usb_device *dev)
+{
+	int vbus_enable = 0;
+
+	if (!usb_otg_headphone_vbus_ops.active) {
+		dev_info(&dev->dev, "vbus 5V return\n");
+		return;
+	}
+
+	if (usb_otg_headphone_vbus_ops.low_power_state) {
+		dev_info(&dev->dev, "already in low power\n");
+		return;
+	}
+	dev_info(&dev->dev, "set low power\n");
+
+	/* switch buckboost 3.45V to vbus */
+	if (usb_otg_headphone_vbus_ops.otg_need_gpio_switch) {
+		usb_otg_headphone_vbus_ops.otg_need_gpio_switch(1);
+	} else {
+		/* enable otg */
+		if (usb_otg_headphone_vbus_ops.otg_enable) {
+			usb_otg_headphone_vbus_ops.otg_enable(1);
+		} else {
+			dev_info(&dev->dev, "no need enable otg-vbus\n");
+			return;
+		}
+
+		/* switch otg 3.45V */
+		if (usb_otg_headphone_vbus_ops.otg_switch_mode) {
+			usb_otg_headphone_vbus_ops.otg_switch_mode(1);
+		} else {
+			usb_otg_headphone_vbus_ops.otg_enable(0);
+			dev_info(&dev->dev, "no need switch vbus\n");
+			return;
+		}
+
+		if (pd_dpm_get_otg_ocp_check_para())
+			power_event_bnc_notify(POWER_BNT_OTG, POWER_NE_OTG_OCP_CHECK_STOP, NULL);
+	}
+	/* close 5V */
+	power_event_bnc_notify(POWER_BNT_HW_PD, POWER_NE_HW_PD_LOW_POWER_VBUS, &vbus_enable);
+
+	usb_otg_headphone_vbus_ops.low_power_state = 1;
+}
+
+void put_low_power_usb_headphone(struct usb_device *dev)
+{
+	if (!usb_otg_headphone_vbus_ops.active)
+		return;
+
+	if (!usb_otg_headphone_vbus_ops.low_power_state) {
+		dev_info(&dev->dev, "already leave low power\n");
+		return;
+	}
+
+	dev_info(&dev->dev, "put low power\n");
+
+	/* switch buckboost 3.45V to vbus */
+	if (usb_otg_headphone_vbus_ops.otg_need_gpio_switch) {
+		usb_otg_headphone_vbus_ops.otg_need_gpio_switch(0);
+	} else {
+		/* switch otg 5V */
+		if (usb_otg_headphone_vbus_ops.otg_switch_mode)
+			usb_otg_headphone_vbus_ops.otg_switch_mode(0);
+		else
+			dev_info(&dev->dev, "switch otg 5V fail\n");
+
+		/* enable otg */
+		if (usb_otg_headphone_vbus_ops.otg_enable)
+			usb_otg_headphone_vbus_ops.otg_enable(0);
+		else
+			dev_info(&dev->dev, "disable otg fail\n");
+	}
+	usb_otg_headphone_vbus_ops.low_power_state = 0;
+}
+
+void proprietary_headset_volume_limit_lift(struct usb_device *dev)
+{
+	u8 result = 0;
+	snd_usb_ctl_msg(dev, usb_rcvctrlpipe(dev, 0),
+                        USB_REQ_SET_VOLUME,
+                        USB_DIR_IN | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
+                        0, 0, &result, 1);
+	if (result == 1)
+		dev_info(&dev->dev, "volume set success\n");
+	else
+		dev_info(&dev->dev, "do not set volume\n");
+}
+
 int snd_usb_apply_boot_quirk(struct usb_device *dev,
 			     struct usb_interface *intf,
 			     const struct snd_usb_audio_quirk *quirk,
@@ -1324,6 +1467,15 @@ int snd_usb_apply_boot_quirk(struct usb_device *dev,
 		    USB_CLASS_VENDOR_SPEC &&
 		    get_iface_desc(intf->altsetting)->bInterfaceNumber < 3)
 			return snd_usb_motu_microbookii_boot_quirk(dev);
+		break;
+	case USB_ID(0x12d1, 0x3a07):
+		if (is_huawei_usb_c_audio_adapter(dev))
+			dev_info(&dev->dev, "384K usb adapter\n");
+
+		set_low_power_usb_headphone(dev);
+
+		proprietary_headset_volume_limit_lift(dev);
+
 		break;
 	}
 

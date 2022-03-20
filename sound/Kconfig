@@ -113,3 +113,6 @@ config AC97_BUS
 	  sound subsystem and other function drivers completely unrelated to
 	  sound although they're sharing the AC97 bus. Concerned drivers
 	  should "select" this.
+
+source "sound/hw_audio/Kconfig"
+source "sound/adsp_misc/Kconfig"
