@@ -473,6 +473,8 @@ config ENABLE_GSB
           Fulfills requirement of GSB network stack receive.
           Change is supposed to go only on targets supporting gsb.
 
+source "net/hw_dual_connection/Kconfig"
+source "net/waudio/Kconfig"
 endif   # if NET
 
 # Used by archs to tell that they support BPF JIT compiler plus which flavour.

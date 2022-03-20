@@ -2347,7 +2347,7 @@ static int nl80211_send_wiphy(struct cfg80211_registered_device *rdev,
 		 * but break unconditionally so unsplit data stops here.
 		 */
 		if (state->split)
-			state->split_start++;
+		state->split_start++;
 		else
 			state->split_start = 0;
 		break;
@@ -4665,10 +4665,10 @@ static int nl80211_parse_he_obss_pd(struct nlattr *attrs,
 		return err;
 
 	if (tb[NL80211_HE_OBSS_PD_ATTR_MIN_OFFSET])
-		he_obss_pd->min_offset =
+	he_obss_pd->min_offset =
 			nla_get_u8(tb[NL80211_HE_OBSS_PD_ATTR_MIN_OFFSET]);
 	if (tb[NL80211_HE_OBSS_PD_ATTR_MAX_OFFSET])
-		he_obss_pd->max_offset =
+	he_obss_pd->max_offset =
 			nla_get_u8(tb[NL80211_HE_OBSS_PD_ATTR_MAX_OFFSET]);
 
 	if (he_obss_pd->min_offset > he_obss_pd->max_offset)
@@ -5396,6 +5396,31 @@ static int nl80211_send_station(struct sk_buff *msg, u32 cmd, u32 portid,
 		    sizeof(struct nl80211_sta_flag_update),
 		    &sinfo->sta_flags))
 		goto nla_put_failure;
+
+#ifdef CONFIG_HW_GET_EXT_SIG
+	if ((sinfo->filled & BIT_ULL(NL80211_STA_INFO_NOISE))) {
+		if (nla_put_s32(msg, NL80211_STA_INFO_NOISE, sinfo->noise))
+			goto nla_put_failure;
+	}
+
+	if ((sinfo->filled & BIT_ULL(NL80211_STA_INFO_SNR))) {
+		if (nla_put_s32(msg, NL80211_STA_INFO_SNR, sinfo->snr))
+			goto nla_put_failure;
+	}
+
+	if ((sinfo->filled & BIT_ULL(NL80211_STA_INFO_CNAHLOAD))) {
+		if (nla_put_s32(msg, NL80211_STA_INFO_CNAHLOAD, sinfo->chload))
+			goto nla_put_failure;
+	}
+#endif
+
+#ifdef CONFIG_HW_GET_EXT_SIG_ULDELAY
+	if (sinfo->filled & BIT_ULL(NL80211_STA_INFO_UL_DELAY)) {
+		if (nla_put_s32(msg, NL80211_STA_INFO_UL_DELAY,
+			sinfo->ul_delay))
+			goto nla_put_failure;
+	}
+#endif
 
 	PUT_SINFO_U64(T_OFFSET, t_offset);
 	PUT_SINFO_U64(RX_DROP_MISC, rx_dropped_misc);
@@ -10441,6 +10466,7 @@ static int nl80211_disconnect(struct sk_buff *skb, struct genl_info *info)
 	wdev_lock(dev->ieee80211_ptr);
 	ret = cfg80211_disconnect(rdev, dev, reason, true);
 	wdev_unlock(dev->ieee80211_ptr);
+
 	return ret;
 }
 

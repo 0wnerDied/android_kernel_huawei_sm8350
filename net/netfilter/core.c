@@ -27,6 +27,9 @@
 #include <net/sock.h>
 
 #include "nf_internals.h"
+#ifdef CONFIG_HW_PACKET_FILTER_BYPASS
+#include <hwnet/booster/hw_packet_filter_bypass.h>
+#endif
 
 const struct nf_ipv6_ops __rcu *nf_ipv6_ops __read_mostly;
 EXPORT_SYMBOL_GPL(nf_ipv6_ops);
@@ -507,6 +510,10 @@ int nf_hook_slow(struct sk_buff *skb, struct nf_hook_state *state,
 {
 	unsigned int verdict;
 	int ret;
+#ifdef CONFIG_HW_PACKET_FILTER_BYPASS
+	int hook = hw_translate_hook_num(state->pf, state->hook);
+	bool bypass = false;
+#endif
 
 	for (; s < e->num_hook_entries; s++) {
 		verdict = nf_hook_entry_hookfn(&e->hooks[s], skb, state);
@@ -514,6 +521,13 @@ int nf_hook_slow(struct sk_buff *skb, struct nf_hook_state *state,
 		case NF_ACCEPT:
 			break;
 		case NF_DROP:
+#ifdef CONFIG_HW_PACKET_FILTER_BYPASS
+			if (hw_bypass_skb(state->pf, hook, NULL, skb,
+							  state->in, state->out, DROP)) {
+				bypass = true;
+				break;
+			}
+#endif
 			kfree_skb(skb);
 			ret = NF_DROP_GETERR(verdict);
 			if (ret == 0)
@@ -531,7 +545,11 @@ int nf_hook_slow(struct sk_buff *skb, struct nf_hook_state *state,
 			return 0;
 		}
 	}
-
+#ifdef CONFIG_HW_PACKET_FILTER_BYPASS
+	if (!bypass)
+		hw_bypass_skb(state->pf, hook, NULL, skb, state->in,
+					  state->out, PASS);
+#endif
 	return 1;
 }
 EXPORT_SYMBOL(nf_hook_slow);

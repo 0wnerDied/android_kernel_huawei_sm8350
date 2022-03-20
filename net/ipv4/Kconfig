@@ -655,6 +655,12 @@ config TCP_CONG_BBR
 	bufferbloat, policers, or AQM schemes that do not provide a delay
 	signal. It requires the fq ("Fair Queue") pacing packet scheduler.
 
+config TCP_CONG_MIBO
+	tristate "MIBO TCP"
+	default n
+	---help---
+	MIBO is new algorithm
+
 choice
 	prompt "Default TCP congestion control"
 	default DEFAULT_CUBIC
@@ -692,6 +698,9 @@ choice
 	config DEFAULT_BBR
 		bool "BBR" if TCP_CONG_BBR=y
 
+config DEFAULT_MIBO
+		bool "MIBO" if TCP_CONG_MIBO=y
+
 	config DEFAULT_RENO
 		bool "Reno"
 endchoice
@@ -716,6 +725,7 @@ config DEFAULT_TCP_CONG
 	default "dctcp" if DEFAULT_DCTCP
 	default "cdg" if DEFAULT_CDG
 	default "bbr" if DEFAULT_BBR
+	default "mibo" if DEFAULT_MIBO
 	default "cubic"
 
 config TCP_MD5SIG
@@ -728,3 +738,10 @@ config TCP_MD5SIG
 	  on the Internet.
 
 	  If unsure, say N.
+
+config TCP_AUTOTUNING
+	bool "tcp autotuning congestion avoid"
+	default n
+	---help---
+	  In wireless scenarios, it is easy to lose packets.
+	  TCP_AUTOTUNING optimizes the tcp download rate for this scenario.

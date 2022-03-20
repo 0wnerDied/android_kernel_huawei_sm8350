@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2015, Sony Mobile Communications Inc.
- * Copyright (c) 2013, 2018-2019 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013, 2018-201i9, 2021 The Linux Foundation. All rights reserved.
  */
 #include <linux/kthread.h>
 #include <linux/module.h>
@@ -39,6 +39,18 @@
 #define QRTR_STATE_INIT		-1
 
 #define AID_VENDOR_QRTR	KGIDT_INIT(2906)
+
+#if defined(CONFIG_RPMSG_QCOM_GLINK_NATIVE)
+extern bool glink_resume_pkt;
+#endif
+extern unsigned int qrtr_get_service_id(unsigned int node_id,
+					unsigned int port_id);
+
+#if defined(CONFIG_FINAL_RELEASE)
+extern int s2idle_state_flag;
+extern int suspend_freeze_processes_flag;
+extern int dpm_suspend_start_flag;
+#endif
 
 /**
  * struct qrtr_hdr_v1 - (I|R)PCrouter packet header version 1
@@ -216,6 +228,50 @@ static int qrtr_bcast_enqueue(struct qrtr_node *node, struct sk_buff *skb,
 static struct qrtr_sock *qrtr_port_lookup(int port);
 static void qrtr_port_put(struct qrtr_sock *ipc);
 
+#if defined(CONFIG_FINAL_RELEASE)
+static void qrtr_log_tx_suspend_debug(struct qrtr_hdr_v1 *cb, u64 pl_buf)
+{
+	if (s2idle_state_flag || suspend_freeze_processes_flag \
+		|| dpm_suspend_start_flag) {
+		pr_info(
+			"[qrtr tx_suspend_debug]:Len:0x%x CF:0x%x src[0x%x:0x%x] \
+			dst[0x%x:0x%x] [%08x %08x] [%s], s2idle_state_flag[%d] \
+			suspend_freeze_processes_flag[%d] \
+			dpm_suspend_start_flag[%d]\n",
+			cb->size, cb->confirm_rx, cb->src_node_id,
+			cb->src_port_id, cb->dst_node_id, cb->dst_port_id,
+			(unsigned int)pl_buf, (unsigned int)(pl_buf >> 32),
+			current->comm, s2idle_state_flag,
+			suspend_freeze_processes_flag,
+			dpm_suspend_start_flag);
+		s2idle_state_flag = 0;
+		suspend_freeze_processes_flag  = 0;
+		dpm_suspend_start_flag = 0;
+	}
+}
+
+static void qrtr_log_rx_suspend_debug(struct qrtr_cb *cb, u64 pl_buf)
+{
+	if (s2idle_state_flag || suspend_freeze_processes_flag \
+		|| dpm_suspend_start_flag) {
+		pr_info(
+			"[qrtr rx_suspend_debug]: src[0x%x:0x%x] dst[0x%x:0x%x] \
+			[%08x %08x]: comm [%s], s2idle_state_flag[%d] \
+			suspend_freeze_processes_flag[%d] \
+			dpm_suspend_start_flag[%d]\n",
+			cb->src_node, cb->src_port,
+			cb->dst_node, cb->dst_port,
+			(unsigned int)pl_buf, (unsigned int)(pl_buf >> 32),
+			current->comm, s2idle_state_flag,
+			suspend_freeze_processes_flag,
+			dpm_suspend_start_flag);
+		s2idle_state_flag = 0;
+		suspend_freeze_processes_flag  = 0;
+		dpm_suspend_start_flag = 0;
+	}
+}
+#endif
+
 static void qrtr_log_tx_msg(struct qrtr_node *node, struct qrtr_hdr_v1 *hdr,
 			    struct sk_buff *skb)
 {
@@ -236,6 +292,9 @@ static void qrtr_log_tx_msg(struct qrtr_node *node, struct qrtr_hdr_v1 *hdr,
 			  hdr->dst_node_id, hdr->dst_port_id,
 			  (unsigned int)pl_buf, (unsigned int)(pl_buf >> 32),
 			  current->comm);
+#if defined(CONFIG_FINAL_RELEASE)
+		qrtr_log_tx_suspend_debug(hdr, pl_buf);
+#endif
 	} else {
 		skb_copy_bits(skb, QRTR_HDR_MAX_SIZE, &pkt, sizeof(pkt));
 		if (type == QRTR_TYPE_NEW_SERVER ||
@@ -269,6 +328,25 @@ static void qrtr_log_tx_msg(struct qrtr_node *node, struct qrtr_hdr_v1 *hdr,
 	}
 }
 
+#if defined(CONFIG_RPMSG_QCOM_GLINK_NATIVE)
+static void qrtr_log_resume_pkt(struct qrtr_cb *cb, u64 pl_buf)
+{
+	unsigned int service_id;
+	if (glink_resume_pkt) {
+		glink_resume_pkt = false;
+		service_id = qrtr_get_service_id(cb->src_node, cb->src_port);
+		if (!service_id)
+			service_id = qrtr_get_service_id(cb->dst_node,cb->dst_port);
+		pr_info(
+		"[QRTR RESUME PKT]: src[0x%x:0x%x] dst[0x%x:0x%x] [%08x %08x]: service[0x%x]\n",
+	         cb->src_node, cb->src_port,
+		 cb->dst_node, cb->dst_port,
+		 (unsigned int)pl_buf, (unsigned int)(pl_buf >> 32),
+		 service_id);
+	}
+}
+#endif
+
 static void qrtr_log_rx_msg(struct qrtr_node *node, struct sk_buff *skb)
 {
 	struct qrtr_ctrl_pkt pkt = {0,};
@@ -287,6 +365,12 @@ static void qrtr_log_rx_msg(struct qrtr_node *node, struct sk_buff *skb)
 			  skb->len, cb->confirm_rx, cb->src_node, cb->src_port,
 			  cb->dst_node, cb->dst_port,
 			  (unsigned int)pl_buf, (unsigned int)(pl_buf >> 32));
+#if defined(CONFIG_RPMSG_QCOM_GLINK_NATIVE)
+		qrtr_log_resume_pkt(cb, pl_buf);
+#endif
+#if defined(CONFIG_FINAL_RELEASE)
+		qrtr_log_rx_suspend_debug(cb, pl_buf);
+#endif
 	} else {
 		skb_copy_bits(skb, 0, &pkt, sizeof(pkt));
 		if (cb->type == QRTR_TYPE_NEW_SERVER ||
@@ -1389,9 +1473,9 @@ static int qrtr_port_assign(struct qrtr_sock *ipc, int *port)
 		if (rc >= 0)
 			*port = rc;
 	} else if (*port < QRTR_MIN_EPH_SOCKET &&
-			!(capable(CAP_NET_ADMIN) ||
-			in_egroup_p(AID_VENDOR_QRTR) ||
-			in_egroup_p(GLOBAL_ROOT_GID))) {
+		   !(capable(CAP_NET_ADMIN) ||
+		   in_egroup_p(AID_VENDOR_QRTR) ||
+		   in_egroup_p(GLOBAL_ROOT_GID))) {
 		rc = -EACCES;
 	} else if (*port == QRTR_PORT_CTRL) {
 		rc = idr_alloc(&qrtr_ports, ipc, 0, 1, GFP_ATOMIC);
@@ -1776,6 +1860,11 @@ static int qrtr_recvmsg(struct socket *sock, struct msghdr *msg,
 	rc = copied;
 
 	if (addr) {
+		/* There is an anonymous 2-byte hole after sq_family,
+		 * make sure to clear it.
+		 */
+		memset(addr, 0, sizeof(*addr));
+
 		addr->sq_family = AF_QIPCRTR;
 		addr->sq_node = cb->src_node;
 		addr->sq_port = cb->src_port;

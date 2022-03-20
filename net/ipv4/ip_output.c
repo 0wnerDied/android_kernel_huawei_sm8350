@@ -83,6 +83,23 @@
 #include <linux/netlink.h>
 #include <linux/tcp.h>
 
+#ifdef CONFIG_HW_BOOSTER
+#include <hwnet/booster/tcp_para_collec.h>
+#endif
+
+#ifdef CONFIG_HW_WIFIPRO
+#include <linux/snmp.h>
+#include <hwnet/ipv4/wifipro_tcp_monitor.h>
+#endif
+
+#ifdef CONFIG_HW_PACKET_FILTER_BYPASS
+#include <hwnet/booster/hw_packet_filter_bypass.h>
+#endif
+
+#ifdef CONFIG_HW_PACKET_TRACKER
+#include <hwnet/booster/hw_pt.h>
+#endif
+
 static int
 ip_fragment(struct net *net, struct sock *sk, struct sk_buff *skb,
 	    unsigned int mtu,
@@ -299,6 +316,16 @@ static int __ip_finish_output(struct net *net, struct sock *sk, struct sk_buff *
 		return dst_output(net, sk, skb);
 	}
 #endif
+
+#ifdef CONFIG_HW_WIFIPRO
+	wifipro_update_tcp_statistics(WIFIPRO_TCP_MIB_OUTSEGS, skb, NULL);
+#endif
+
+#ifdef CONFIG_HW_BOOSTER
+	if (skb_dst(skb))
+		booster_update_tcp_statistics(AF_INET, skb, NULL,
+			skb_dst(skb)->dev);
+#endif
 	mtu = ip_skb_dst_mtu(sk, skb);
 	if (skb_is_gso(skb))
 		return ip_finish_output_gso(net, sk, skb, mtu);
@@ -314,6 +341,12 @@ static int ip_finish_output(struct net *net, struct sock *sk, struct sk_buff *sk
 	int ret;
 
 	ret = BPF_CGROUP_RUN_PROG_INET_EGRESS(sk, skb);
+#ifdef CONFIG_HW_PACKET_FILTER_BYPASS
+	if (skb_dst(skb) &&
+	    hw_bypass_skb(AF_INET, HW_PFB_INET_BPF_EGRESS, sk, skb,
+					  NULL, skb_dst(skb)->dev, ret ? DROP : PASS))
+		ret = 0;
+#endif
 	switch (ret) {
 	case NET_XMIT_SUCCESS:
 		return __ip_finish_output(net, sk, skb);
@@ -333,6 +366,12 @@ static int ip_mc_finish_output(struct net *net, struct sock *sk,
 	int ret, err;
 
 	ret = BPF_CGROUP_RUN_PROG_INET_EGRESS(sk, skb);
+#ifdef CONFIG_HW_PACKET_FILTER_BYPASS
+	if (skb_dst(skb) &&
+	    hw_bypass_skb(AF_INET, HW_PFB_INET_BPF_EGRESS, sk, skb,
+					  NULL, skb_dst(skb)->dev, ret ? DROP : PASS))
+		ret = 0;
+#endif
 	switch (ret) {
 	case NET_XMIT_CN:
 		do_cn = true;
@@ -529,6 +568,12 @@ packet_routed:
 	/* TODO : should we use skb->sk here instead of sk ? */
 	skb->priority = sk->sk_priority;
 	skb->mark = sk->sk_mark;
+
+#ifdef CONFIG_HW_PACKET_FILTER_BYPASS
+	if (skb_dst(skb))
+		hw_bypass_skb(AF_INET, HW_PFB_INET_IP_XMIT, sk, skb, NULL,
+					  skb_dst(skb)->dev, PASS);
+#endif
 
 	res = ip_local_out(net, sk, skb);
 	rcu_read_unlock();
@@ -1668,6 +1713,10 @@ void ip_send_unicast_reply(struct sock *sk, struct sk_buff *skb,
 	struct sk_buff *nskb;
 	int err;
 	int oif;
+
+#ifdef CONFIG_HW_PACKET_TRACKER
+	hw_pt_set_skb_stamp(skb);
+#endif
 
 	if (__ip_options_echo(net, &replyopts.opt.opt, skb, sopt))
 		return;

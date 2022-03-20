@@ -43,6 +43,12 @@
 #include <net/raw.h>
 
 #define TCPUDP_MIB_MAX max_t(u32, UDP_MIB_MAX, TCP_MIB_MAX)
+#ifndef CONFIG_HW_WIFIPRO
+ #undef CONFIG_HW_WIFIPRO_PROC
+ #endif
+ #ifdef CONFIG_HW_WIFIPRO_PROC
+ #include <hwnet/ipv4/wifipro_tcp_monitor.h>
+ #endif
 
 /*
  *	Report socket allocation statistics [mea@utu.fi]
@@ -498,6 +504,11 @@ static __net_init int ip_proc_init_net(struct net *net)
 			NULL))
 		goto out_snmp;
 
+#ifdef CONFIG_HW_WIFIPRO_PROC
+	if (wifipro_init_proc(net)) {
+		WIFIPRO_WARNING("wifipro_init_proc fail!");
+	}
+#endif
 	return 0;
 
 out_snmp:

@@ -68,6 +68,12 @@
 
 #include <trace/events/tcp.h>
 
+#ifdef CONFIG_HW_NETWORK_SLICE
+#include <hwnet/booster/network_slice_route.h>
+#endif
+#ifdef CONFIG_HUAWEI_XENGINE
+#include <emcom/emcom_xengine.h>
+#endif
 static void	tcp_v6_send_reset(const struct sock *sk, struct sk_buff *skb);
 static void	tcp_v6_reqsk_send_ack(const struct sock *sk, struct sk_buff *skb,
 				      struct request_sock *req);
@@ -257,6 +263,13 @@ static int tcp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 
 		return err;
 	}
+
+#ifdef CONFIG_HW_NETWORK_SLICE
+	slice_rules_lookup(sk, uaddr, IPPROTO_TCP);
+#endif
+#ifdef CONFIG_HUAWEI_XENGINE
+	emcom_xengine_mpflow_ai_bind2device(sk, uaddr);
+#endif
 
 	if (!ipv6_addr_any(&sk->sk_v6_rcv_saddr))
 		saddr = &sk->sk_v6_rcv_saddr;

@@ -866,7 +866,9 @@ void inet_csk_destroy_sock(struct sock *sk)
 
 	/* If it has not 0 inet_sk(sk)->inet_num, it must be bound */
 	WARN_ON(inet_sk(sk)->inet_num && !inet_csk(sk)->icsk_bind_hash);
-
+#ifdef CONFIG_TCP_ARGO
+	argo_deinit(sk);
+#endif /* CONFIG_TCP_ARGO */
 	sk->sk_prot->destroy(sk);
 
 	sk_stream_kill_queues(sk);

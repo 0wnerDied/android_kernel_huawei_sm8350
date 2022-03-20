@@ -82,6 +82,22 @@
 
 #include <trace/events/tcp.h>
 
+#ifdef CONFIG_HW_WIFIPRO
+#include <hwnet/ipv4/wifipro_tcp_monitor.h>
+#endif
+
+#ifdef CONFIG_HW_NETWORK_SLICE
+#include <hwnet/booster/network_slice_route.h>
+#endif
+
+#ifdef CONFIG_APP_ACCELERATOR
+#include <hwnet/booster/app_accelerator.h>
+#endif
+
+#ifdef CONFIG_HUAWEI_XENGINE
+#include <emcom/emcom_xengine.h>
+#endif
+
 #ifdef CONFIG_TCP_MD5SIG
 static int tcp_v4_md5_hash_hdr(char *md5_hash, const struct tcp_md5sig_key *key,
 			       __be32 daddr, __be32 saddr, const struct tcphdr *th);
@@ -214,6 +230,14 @@ int tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 
 	if (usin->sin_family != AF_INET)
 		return -EAFNOSUPPORT;
+
+#ifdef CONFIG_HUAWEI_XENGINE
+	emcom_xengine_mpflow_bind2device(sk, uaddr);
+#endif
+
+#ifdef CONFIG_HW_NETWORK_SLICE
+	slice_rules_lookup(sk, uaddr, IPPROTO_TCP);
+#endif
 
 	nexthop = daddr = usin->sin_addr.s_addr;
 	inet_opt = rcu_dereference_protected(inet->inet_opt,
@@ -1561,6 +1585,10 @@ int tcp_v4_do_rcv(struct sock *sk, struct sk_buff *skb)
 	if (sk->sk_state == TCP_ESTABLISHED) { /* Fast path */
 		struct dst_entry *dst = sk->sk_rx_dst;
 
+#ifdef CONFIG_APP_ACCELERATOR
+		app_sock_acc_start_check(sk, skb);
+#endif
+
 		sock_rps_save_rxhash(sk, skb);
 		sk_mark_napi_id(sk, skb);
 		if (dst) {
@@ -1935,7 +1963,9 @@ process:
 	th = (const struct tcphdr *)skb->data;
 	iph = ip_hdr(skb);
 	tcp_v4_fill_cb(skb, iph, th);
-
+#ifdef CONFIG_TCP_ARGO
+	argo_try_to_init(sk, skb);
+#endif /* CONFIG_TCP_ARGO */
 	skb->dev = NULL;
 
 	if (sk->sk_state == TCP_LISTEN) {
@@ -1948,6 +1978,9 @@ process:
 	bh_lock_sock_nested(sk);
 	tcp_segs_in(tcp_sk(sk), skb);
 	ret = 0;
+#ifdef CONFIG_HW_WIFIPRO
+	wifipro_update_tcp_statistics(WIFIPRO_TCP_MIB_INSEGS, skb, sk);
+#endif
 	if (!sock_owned_by_user(sk)) {
 		skb_to_free = sk->sk_rx_skb_cache;
 		sk->sk_rx_skb_cache = NULL;
@@ -2724,6 +2757,9 @@ static int __net_init tcp_sk_init(struct net *net)
 	net->ipv4.sysctl_tcp_invalid_ratelimit = HZ/2;
 	net->ipv4.sysctl_tcp_pacing_ss_ratio = 200;
 	net->ipv4.sysctl_tcp_pacing_ca_ratio = 120;
+#ifdef CONFIG_TCP_AUTOTUNING
+	net->ipv4.sysctl_tcp_autotuning = 0;
+#endif
 	if (net != &init_net) {
 		memcpy(net->ipv4.sysctl_tcp_rmem,
 		       init_net.ipv4.sysctl_tcp_rmem,

@@ -2721,6 +2721,56 @@ static int neigh_valid_dump_req(const struct nlmsghdr *nlh,
 	return 0;
 }
 
+#ifdef CONFIG_HW_NETWORK_QOE
+static int is_wifi_gateway(u32 gateway, struct neighbour *n)
+{
+	u32 wlan_gateway;
+
+	if (n == NULL || gateway == 0 || n->tbl == NULL)
+		return 0;
+	if (n->tbl->key_len != 4)
+		return 0;
+	wlan_gateway = *((u32 *)n->primary_key);
+	if (wlan_gateway == gateway)
+		return 1;
+	return 0;
+}
+
+u32 get_wifi_arp_state(const char *name, int name_size, u32 gateway)
+{
+	int h;
+	struct neigh_table *tbl = NULL;
+	struct neighbour *n = NULL;
+	struct neigh_hash_table *nht = NULL;
+
+	if (name == NULL || gateway == 0 || name_size == 0)
+		return 0;
+
+	tbl = neigh_find_table(AF_INET);
+	if (tbl == NULL || tbl->nht == NULL)
+		return 0;
+
+	rcu_read_lock_bh();
+	nht = rcu_dereference_bh(tbl->nht);
+	if (nht == NULL) {
+		rcu_read_unlock_bh();
+		return 0;
+	}
+	for (h = 0; h < (1 << nht->hash_shift); h++) {
+		for (n = rcu_dereference_bh(nht->hash_buckets[h]); n != NULL;
+			n = rcu_dereference_bh(n->next)) {
+			if (strcmp(n->dev->name, name) == 0 &&
+				is_wifi_gateway(gateway, n)) {
+				rcu_read_unlock_bh();
+				return (u32)n->nud_state;
+			}
+		}
+	}
+	rcu_read_unlock_bh();
+	return 0;
+}
+#endif
+
 static int neigh_dump_info(struct sk_buff *skb, struct netlink_callback *cb)
 {
 	const struct nlmsghdr *nlh = cb->nlh;

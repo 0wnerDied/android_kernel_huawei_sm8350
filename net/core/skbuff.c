@@ -79,6 +79,10 @@
 
 #include "datagram.h"
 
+#ifdef CONFIG_HW_PACKET_TRACKER
+#include <hwnet/booster/hw_pt.h>
+#endif
+
 struct kmem_cache *skbuff_head_cache __ro_after_init;
 static struct kmem_cache *skbuff_fclone_cache __ro_after_init;
 #ifdef CONFIG_SKB_EXTENSIONS
@@ -236,6 +240,9 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
 
 	/* make sure we initialize shinfo sequentially */
 	shinfo = skb_shinfo(skb);
+#ifdef CONFIG_HW_PACKET_TRACKER
+	hw_pt_set_skb_stamp(skb);
+#endif
 	memset(shinfo, 0, offsetof(struct skb_shared_info, dataref));
 	atomic_set(&shinfo->dataref, 1);
 
@@ -2171,6 +2178,131 @@ end:
 	return skb_tail_pointer(skb);
 }
 EXPORT_SYMBOL(__pskb_pull_tail);
+
+
+void *__pskb_pull_tail_hmdfs(struct sk_buff *skb, int delta)
+{
+	/* If skb has not enough free space at tail, get new one
+	 * plus 128 bytes for future expansions. If we have enough
+	 * room at tail, reallocate without expansion only if skb is cloned.
+	 */
+	int i, k, eat = (skb->tail + delta) - skb->end;
+
+	if (eat > 0 || skb_cloned(skb)) {
+		if (pskb_expand_head(skb, 0, eat > 0 ? eat + 128 : 0,
+				     GFP_KERNEL))
+			return NULL;
+	}
+
+	BUG_ON(skb_copy_bits(skb, skb_headlen(skb),
+			     skb_tail_pointer(skb), delta));
+
+	/* Optimization: no fragments, no reasons to preestimate
+	 * size of pulled pages. Superb.
+	 */
+	if (!skb_has_frag_list(skb))
+		goto pull_pages;
+
+	/* Estimate size of pulled pages. */
+	eat = delta;
+	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
+		int size = skb_frag_size(&skb_shinfo(skb)->frags[i]);
+
+		if (size >= eat)
+			goto pull_pages;
+		eat -= size;
+	}
+
+	/* If we need update frag list, we are in troubles.
+	 * Certainly, it is possible to add an offset to skb data,
+	 * but taking into account that pulling is expected to
+	 * be very rare operation, it is worth to fight against
+	 * further bloating skb head and crucify ourselves here instead.
+	 * Pure masohism, indeed. 8)8)
+	 */
+	if (eat) {
+		struct sk_buff *list = skb_shinfo(skb)->frag_list;
+		struct sk_buff *clone = NULL;
+		struct sk_buff *insp = NULL;
+
+		do {
+			if (list->len <= eat) {
+				/* Eaten as whole. */
+				eat -= list->len;
+				list = list->next;
+				insp = list;
+			} else {
+				/* Eaten partially. */
+
+				if (skb_shared(list)) {
+					/* Sucks! We need to fork list. :-( */
+					clone = skb_clone(list, GFP_KERNEL);
+					if (!clone)
+						return NULL;
+					insp = list->next;
+					list = clone;
+				} else {
+					/* This may be pulled without
+					 * problems. */
+					insp = list;
+				}
+				if (!pskb_pull(list, eat)) {
+					kfree_skb(clone);
+					return NULL;
+				}
+				break;
+			}
+		} while (eat);
+
+		/* Free pulled out fragments. */
+		while ((list = skb_shinfo(skb)->frag_list) != insp) {
+			skb_shinfo(skb)->frag_list = list->next;
+			kfree_skb(list);
+		}
+		/* And insert new clone at head. */
+		if (clone) {
+			clone->next = list;
+			skb_shinfo(skb)->frag_list = clone;
+		}
+	}
+	/* Success! Now we may commit changes to skb data. */
+
+pull_pages:
+	eat = delta;
+	k = 0;
+	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
+		int size = skb_frag_size(&skb_shinfo(skb)->frags[i]);
+
+		if (size <= eat) {
+			skb_frag_unref(skb, i);
+			eat -= size;
+		} else {
+			skb_frag_t *frag = &skb_shinfo(skb)->frags[k];
+
+			*frag = skb_shinfo(skb)->frags[i];
+			if (eat) {
+				skb_frag_off_add(frag, eat);
+				skb_frag_size_sub(frag, eat);
+				if (!i)
+					goto end;
+				eat = 0;
+			}
+			k++;
+		}
+	}
+	skb_shinfo(skb)->nr_frags = k;
+
+end:
+	skb->tail     += delta;
+	skb->data_len -= delta;
+
+	if (!skb->data_len)
+		skb_zcopy_clear(skb, false);
+
+	return skb_tail_pointer(skb);
+}
+EXPORT_SYMBOL(__pskb_pull_tail_hmdfs);
+
 
 /**
  *	skb_copy_bits - copy bits from skb to kernel buffer
@@ -4487,6 +4619,101 @@ int skb_cow_data(struct sk_buff *skb, int tailbits, struct sk_buff **trailer)
 }
 EXPORT_SYMBOL_GPL(skb_cow_data);
 
+// HMDFS ktls solution, alloc page with GFP_KERNEL flag
+int skb_cow_data_hmdfs(struct sk_buff *skb, int tailbits, struct sk_buff **trailer)
+{
+	int copyflag;
+	int elt;
+	struct sk_buff *skb1, **skb_p;
+
+	/* If skb is cloned or its head is paged, reallocate
+	 * head pulling out all the pages (pages are considered not writable
+	 * at the moment even if they are anonymous).
+	 */
+	if ((skb_cloned(skb) || skb_shinfo(skb)->nr_frags) &&
+	    __pskb_pull_tail_hmdfs(skb, skb_pagelen(skb)-skb_headlen(skb)) == NULL)
+		return -ENOMEM;
+
+	/* Easy case. Most of packets will go this way. */
+	if (!skb_has_frag_list(skb)) {
+		/* A little of trouble, not enough of space for trailer.
+		 * This should not happen, when stack is tuned to generate
+		 * good frames. OK, on miss we reallocate and reserve even more
+		 * space, 128 bytes is fair. */
+
+		if (skb_tailroom(skb) < tailbits &&
+		    pskb_expand_head(skb, 0, tailbits-skb_tailroom(skb)+128, GFP_KERNEL))
+			return -ENOMEM;
+
+		/* Voila! */
+		*trailer = skb;
+		return 1;
+	}
+
+	/* Misery. We are in troubles, going to mincer fragments... */
+
+	elt = 1;
+	skb_p = &skb_shinfo(skb)->frag_list;
+	copyflag = 0;
+
+	while ((skb1 = *skb_p) != NULL) {
+		int ntail = 0;
+
+		/* The fragment is partially pulled by someone,
+		 * this can happen on input. Copy it and everything
+		 * after it. */
+
+		if (skb_shared(skb1))
+			copyflag = 1;
+
+		/* If the skb is the last, worry about trailer. */
+
+		if (skb1->next == NULL && tailbits) {
+			if (skb_shinfo(skb1)->nr_frags ||
+			    skb_has_frag_list(skb1) ||
+			    skb_tailroom(skb1) < tailbits)
+				ntail = tailbits + 128;
+		}
+
+		if (copyflag ||
+		    skb_cloned(skb1) ||
+		    ntail ||
+		    skb_shinfo(skb1)->nr_frags ||
+		    skb_has_frag_list(skb1)) {
+			struct sk_buff *skb2;
+
+			/* Fuck, we are miserable poor guys... */
+			if (ntail == 0)
+				skb2 = skb_copy(skb1, GFP_KERNEL);
+			else
+				skb2 = skb_copy_expand(skb1,
+						       skb_headroom(skb1),
+						       ntail,
+						       GFP_KERNEL);
+			if (unlikely(skb2 == NULL))
+				return -ENOMEM;
+
+			if (skb1->sk)
+				skb_set_owner_w(skb2, skb1->sk);
+
+			/* Looking around. Are we still alive?
+			 * OK, link new skb, drop old one */
+
+			skb2->next = skb1->next;
+			*skb_p = skb2;
+			kfree_skb(skb1);
+			skb1 = skb2;
+		}
+		elt++;
+		*trailer = skb1;
+		skb_p = &skb1->next;
+	}
+
+	return elt;
+}
+EXPORT_SYMBOL_GPL(skb_cow_data_hmdfs);
+
+
 static void sock_rmem_free(struct sk_buff *skb)
 {
 	struct sock *sk = skb->sk;
@@ -5979,7 +6206,7 @@ static int pskb_carve_inside_nonlinear(struct sk_buff *skb, const u32 off,
 	if (skb_has_frag_list(skb))
 		skb_clone_fraglist(skb);
 
-	/* split line is in frag list */
+		/* split line is in frag list */
 	if (k == 0 && pskb_carve_frag_list(skb, shinfo, off - pos, gfp_mask)) {
 		/* skb_frag_unref() is not needed here as shinfo->nr_frags = 0. */
 		if (skb_has_frag_list(skb))

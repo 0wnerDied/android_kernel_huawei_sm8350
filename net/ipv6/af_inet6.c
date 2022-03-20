@@ -65,6 +65,14 @@
 
 #include "ip6_offload.h"
 
+#ifdef CONFIG_HW_DPIMARK_MODULE
+#include <hwnet/hw_dpi_mark/dpi_hw_hook.h>
+#endif
+
+#ifdef CONFIG_HUAWEI_XENGINE
+#include <emcom/emcom_xengine.h>
+#endif
+
 MODULE_AUTHOR("Cast of dozens");
 MODULE_DESCRIPTION("IPv6 protocol stack for Linux");
 MODULE_LICENSE("GPL");
@@ -221,7 +229,9 @@ lookup_protocol:
 	inet->mc_index	= 0;
 	inet->mc_list	= NULL;
 	inet->rcv_tos	= 0;
-
+#if defined(CONFIG_HUAWEI_BASTET) || defined(CONFIG_HUAWEI_XENGINE)
+	sk->acc_state	= 0;
+#endif
 	if (net->ipv4.sysctl_ip_no_pmtu_disc)
 		inet->pmtudisc = IP_PMTUDISC_DONT;
 	else
@@ -265,6 +275,24 @@ lookup_protocol:
 		}
 	}
 out:
+
+#ifdef CONFIG_CGROUP_BPF
+	if (!err)
+		get_task_comm(sk->sk_process_name, current->group_leader);
+#endif
+#ifdef CONFIG_HUAWEI_XENGINE
+	if (!err)
+		emcom_xengine_bind(sk);
+#endif
+#ifdef CONFIG_HUAWEI_KSTATE
+	if (!err)
+		sk->sk_pid = current->tgid;
+#endif
+
+#ifdef CONFIG_HW_DPIMARK_MODULE
+	if (!err)
+		mplk_try_nw_bind(sk);
+#endif
 	return err;
 out_rcu_unlock:
 	rcu_read_unlock();

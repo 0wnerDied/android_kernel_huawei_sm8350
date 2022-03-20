@@ -54,6 +54,22 @@
 #include <trace/events/skb.h>
 #include "udp_impl.h"
 
+#ifdef CONFIG_HW_NETWORK_QOE
+#include <hwnet/booster/ip_para_collec_ex.h>
+#endif
+#ifdef CONFIG_HW_BOOSTER
+#include <hwnet/booster/tcp_para_collec.h>
+#endif
+#ifdef CONFIG_HW_NETWORK_SLICE
+#include <hwnet/booster/network_slice_route.h>
+#endif
+#ifdef CONFIG_HW_HIDATA_HIMOS
+#include <huawei_platform/net/himos/hw_himos_udp_stats.h>
+#endif
+#ifdef CONFIG_HUAWEI_XENGINE
+#include <emcom/emcom_xengine.h>
+#endif
+
 static u32 udp6_ehashfn(const struct net *net,
 			const struct in6_addr *laddr,
 			const u16 lport,
@@ -334,8 +350,13 @@ try_again:
 		kfree_skb(skb);
 		return err;
 	}
-	if (!peeking)
+	if (!peeking) {
 		SNMP_INC_STATS(mib, UDP_MIB_INDATAGRAMS);
+
+#ifdef CONFIG_HW_HIDATA_HIMOS
+		himos_udp_stats(sk, ulen, 0);
+#endif
+	}
 
 	sock_recv_ts_and_drops(msg, sk, skb);
 
@@ -626,6 +647,9 @@ static int udpv6_queue_rcv_one_skb(struct sock *sk, struct sk_buff *skb)
 		encap_rcv = READ_ONCE(up->encap_rcv);
 		if (encap_rcv) {
 			int ret;
+#ifdef CONFIG_HW_HIDATA_HIMOS
+			int len = skb->len;
+#endif
 
 			/* Verify checksum before giving to encap */
 			if (udp_lib_checksum_complete(skb))
@@ -636,6 +660,9 @@ static int udpv6_queue_rcv_one_skb(struct sock *sk, struct sk_buff *skb)
 				__UDP_INC_STATS(sock_net(sk),
 						UDP_MIB_INDATAGRAMS,
 						is_udplite);
+#ifdef CONFIG_HW_HIDATA_HIMOS
+				himos_udp_stats(sk, len, 0);
+#endif
 				return -ret;
 			}
 		}
@@ -831,6 +858,14 @@ static int udp6_unicast_rcv_skb(struct sock *sk, struct sk_buff *skb,
 
 	if (inet_get_convert_csum(sk) && uh->check && !IS_UDPLITE(sk))
 		skb_checksum_try_convert(skb, IPPROTO_UDP, ip6_compute_pseudo);
+
+#ifdef CONFIG_HW_NETWORK_QOE
+	udp6_in_hook(skb, sk);
+#endif
+
+#ifdef CONFIG_HW_BOOSTER
+	booster_update_udp6_recv_statistics(skb, sk);
+#endif
 
 	ret = udpv6_queue_rcv_skb(sk, skb);
 
@@ -1113,6 +1148,9 @@ static int udp_v6_send_skb(struct sk_buff *skb, struct flowi6 *fl6,
 	int offset = skb_transport_offset(skb);
 	int len = skb->len - offset;
 	int datalen = len - sizeof(*uh);
+#ifdef CONFIG_HW_HIDATA_HIMOS
+	int skb_len = skb->len;
+#endif
 
 	/*
 	 * Create a UDP header
@@ -1183,6 +1221,9 @@ send:
 	} else {
 		UDP6_INC_STATS(sock_net(sk),
 			       UDP_MIB_OUTDATAGRAMS, is_udplite);
+#ifdef CONFIG_HW_HIDATA_HIMOS
+		himos_udp_stats(sk, 0, skb_len);
+#endif
 	}
 	return err;
 }
@@ -1297,6 +1338,10 @@ do_udp_sendmsg:
 	if (len > INT_MAX - sizeof(struct udphdr))
 		return -EMSGSIZE;
 
+#ifdef CONFIG_HW_NETWORK_SLICE
+	slice_rules_lookup(sk, (struct sockaddr *)sin6, IPPROTO_UDP);
+#endif
+
 	getfrag  =  is_udplite ?  udplite_getfrag : ip_generic_getfrag;
 	if (up->pending) {
 		/*
@@ -1356,6 +1401,11 @@ do_udp_sendmsg:
 		connected = true;
 	}
 
+#ifdef CONFIG_HUAWEI_XENGINE
+	if (sin6) {
+		emcom_xengine_mpflow_ai_bind2device(sk, (struct sockaddr *)sin6);
+	}
+#endif
 	if (!fl6.flowi6_oif)
 		fl6.flowi6_oif = sk->sk_bound_dev_if;
 
@@ -1539,6 +1589,9 @@ void udpv6_destroy_sock(struct sock *sk)
 {
 	struct udp_sock *up = udp_sk(sk);
 	lock_sock(sk);
+
+	/* protects from races with udp_abort() */
+	sock_set_flag(sk, SOCK_DEAD);
 	udp_v6_flush_pending_frames(sk);
 	release_sock(sk);
 

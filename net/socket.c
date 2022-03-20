@@ -103,7 +103,9 @@
 #include <linux/sockios.h>
 #include <net/busy_poll.h>
 #include <linux/errqueue.h>
-
+#ifdef CONFIG_HUAWEI_XENGINE
+#include <emcom/emcom_xengine.h>
+#endif
 #ifdef CONFIG_NET_RX_BUSY_POLL
 unsigned int sysctl_net_busy_read __read_mostly;
 unsigned int sysctl_net_busy_poll __read_mostly;
@@ -567,6 +569,12 @@ struct socket *sock_alloc(void)
 	inode->i_uid = current_fsuid();
 	inode->i_gid = current_fsgid();
 	inode->i_op = &sockfs_inode_ops;
+#if defined(CONFIG_HUAWEI_KSTATE) || defined(CONFIG_MPTCP)
+	if (sock != NULL && current != NULL) {
+		sock->pid = current->tgid;
+		sock->tpid = current->pid;
+	}
+#endif
 
 	return sock;
 }
@@ -1436,7 +1444,9 @@ int __sock_create(struct net *net, int family, int type, int protocol,
 	if (err)
 		goto out_sock_release;
 	*res = sock;
-
+#ifdef CONFIG_HUAWEI_XENGINE
+	emcom_xengine_mpip_bind2device(sock->sk);
+#endif
 	return 0;
 
 out_module_busy:

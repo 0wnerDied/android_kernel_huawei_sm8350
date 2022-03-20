@@ -88,3 +88,6 @@ obj-$(CONFIG_QRTR)		+= qrtr/
 obj-$(CONFIG_NET_NCSI)		+= ncsi/
 obj-$(CONFIG_XDP_SOCKETS)	+= xdp/
 obj-$(CONFIG_NEURON)		+= neuron/
+obj-$(CONFIG_HW_NETQOS_SCHED)  += netqos_sched/
+obj-$(CONFIG_HW_DC_MODULE) += hw_dual_connection/
+obj-$(CONFIG_HW_WAUDIO_MODULE) += waudio/

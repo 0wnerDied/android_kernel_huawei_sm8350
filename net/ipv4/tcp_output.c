@@ -46,6 +46,27 @@
 
 #include <trace/events/tcp.h>
 
+#ifdef CONFIG_HUAWEI_XENGINE
+#include <emcom/emcom_xengine.h>
+#endif
+
+#ifdef CONFIG_HUAWEI_FEATURE_PRINT_PID_NAME
+#include <huawei_platform/power/pid_socket.h>
+#endif
+
+#ifdef CONFIG_HW_WIFIPRO
+#include <hwnet/ipv4/wifipro_tcp_monitor.h>
+#endif
+
+#ifdef CONFIG_HW_PACKET_TRACKER
+#include <hwnet/booster/hw_pt.h>
+#endif
+
+#ifdef CONFIG_HW_NETQOS_SCHED
+#include <netqos_sched/netqos_sched.h>
+#include <trace/events/netqos.h>
+#endif
+
 /* Refresh clocks of a TCP socket,
  * ensuring monotically increasing values.
  */
@@ -262,6 +283,9 @@ static u16 tcp_select_window(struct sock *sk)
 	u32 cur_win = tcp_receive_window(tp);
 	u32 new_win = __tcp_select_window(sk);
 
+#ifdef CONFIG_HUAWEI_XENGINE
+	emcom_xengine_speedctrl_winsize(sk, &new_win);
+#endif
 	/* Never shrink the offered window */
 	if (new_win < cur_win) {
 		/* Danger Will Robinson!
@@ -278,6 +302,10 @@ static u16 tcp_select_window(struct sock *sk)
 	}
 	tp->rcv_wnd = new_win;
 	tp->rcv_wup = tp->rcv_nxt;
+
+#ifdef CONFIG_HW_NETQOS_SCHED
+	netqos_rcvwnd(sk, &new_win);
+#endif
 
 	/* Make sure we do not exceed the maximum possible
 	 * scaled window.
@@ -1061,6 +1089,9 @@ static int __tcp_transmit_skb(struct sock *sk, struct sk_buff *skb,
 	memset(&opts, 0, sizeof(opts));
 
 	if (unlikely(tcb->tcp_flags & TCPHDR_SYN)) {
+#ifdef CONFIG_HUAWEI_FEATURE_PRINT_PID_NAME
+		print_process_pid_name(inet);
+#endif
 		tcp_options_size = tcp_syn_options(sk, skb, &opts, &md5);
 	} else {
 		tcp_options_size = tcp_established_options(sk, skb, &opts,
@@ -3582,9 +3613,14 @@ int tcp_connect(struct sock *sk)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct sk_buff *buff;
 	int err;
+#ifdef CONFIG_HW_WIFIPRO
+	int wifipro_dev_max_len = 0;
+#endif
 
 	tcp_call_bpf(sk, BPF_SOCK_OPS_TCP_CONNECT_CB, 0, NULL);
-
+#ifdef CONFIG_HW_NETQOS_SCHED
+	trace_netqos_trx(sk, 0, false, jiffies);
+#endif
 	if (inet_csk(sk)->icsk_af_ops->rebuild_header(sk))
 		return -EHOSTUNREACH; /* Routing failure or similar. */
 
@@ -3612,11 +3648,23 @@ int tcp_connect(struct sock *sk)
 	if (err == -ECONNREFUSED)
 		return err;
 
+#ifdef CONFIG_HW_PACKET_TRACKER
+	hw_pt_set_skb_stamp(buff);
+#endif
+
 	/* We change tp->snd_nxt after the tcp_transmit_skb() call
 	 * in order to make this packet get counted in tcpOutSegs.
 	 */
 	WRITE_ONCE(tp->snd_nxt, tp->write_seq);
 	tp->pushed_seq = tp->write_seq;
+#ifdef CONFIG_HW_WIFIPRO
+	if (buff->dev) {
+		wifipro_dev_max_len = strnlen(buff->dev->name, IFNAMSIZ - 1);
+		strncpy(buff->sk->wifipro_dev_name, buff->dev->name, wifipro_dev_max_len);
+		buff->sk->wifipro_dev_name[wifipro_dev_max_len] = '\0';
+		WIFIPRO_DEBUG("wifipro_dev_name is %s", buff->dev->name);
+	}
+#endif
 	buff = tcp_send_head(sk);
 	if (unlikely(buff)) {
 		WRITE_ONCE(tp->snd_nxt, TCP_SKB_CB(buff)->seq);
@@ -3676,6 +3724,12 @@ void tcp_send_delayed_ack(struct sock *sk)
 		 */
 		if (icsk->icsk_ack.blocked ||
 		    time_before_eq(icsk->icsk_ack.timeout, jiffies + (ato >> 2))) {
+#ifdef CONFIG_TCP_ARGO
+			if (tcp_sk(sk)->argo &&
+			    tcp_sk(sk)->argo->delay_ack_nums)
+				/* Delay ack failed, disable argo */
+				tcp_sk(sk)->argo->delay_ack_nums = 0;
+#endif /* CONFIG_TCP_ARGO */
 			tcp_send_ack(sk);
 			return;
 		}
@@ -3710,6 +3764,9 @@ void __tcp_send_ack(struct sock *sk, u32 rcv_nxt)
 					  TCP_DELACK_MAX, TCP_RTO_MAX);
 		return;
 	}
+#ifdef CONFIG_HW_PACKET_TRACKER
+	hw_pt_set_skb_stamp(buff);
+#endif
 
 	/* Reserve space for headers and prepare control bits. */
 	skb_reserve(buff, MAX_TCP_HEADER);

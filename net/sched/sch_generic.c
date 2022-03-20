@@ -29,6 +29,9 @@
 #include <net/dst.h>
 #include <trace/events/qdisc.h>
 #include <trace/events/net.h>
+#ifdef CONFIG_HW_NETQOS_SCHED
+#include <netqos_sched/netqos_sched.h>
+#endif
 #include <net/xfrm.h>
 
 /* Qdisc to use by default */
@@ -622,12 +625,20 @@ static inline struct skb_array *band2list(struct pfifo_fast_priv *priv,
 static int pfifo_fast_enqueue(struct sk_buff *skb, struct Qdisc *qdisc,
 			      struct sk_buff **to_free)
 {
-	int band = prio2band[skb->priority & TC_PRIO_MAX];
-	struct pfifo_fast_priv *priv = qdisc_priv(qdisc);
-	struct skb_array *q = band2list(priv, band);
-	unsigned int pkt_len = qdisc_pkt_len(skb);
+	int band;
+	struct pfifo_fast_priv *priv = NULL;
+	struct skb_array *q = NULL;
+	unsigned int pkt_len;
 	int err;
 
+	band = prio2band[skb->priority & TC_PRIO_MAX];
+#ifdef CONFIG_HW_NETQOS_SCHED
+	if (band > 0)
+		band = netqos_qdisc_band(skb, band);
+#endif
+	priv = qdisc_priv(qdisc);
+	q = band2list(priv, band);
+	pkt_len = qdisc_pkt_len(skb);
 	err = skb_array_produce(q, skb);
 
 	if (unlikely(err)) {
@@ -1150,15 +1161,15 @@ static void dev_reset_queue(struct net_device *dev,
 
 	nolock = qdisc->flags & TCQ_F_NOLOCK;
 
-	if (nolock)
-		spin_lock_bh(&qdisc->seqlock);
-	spin_lock_bh(qdisc_lock(qdisc));
+		if (nolock)
+			spin_lock_bh(&qdisc->seqlock);
+		spin_lock_bh(qdisc_lock(qdisc));
 
-	qdisc_reset(qdisc);
+		qdisc_reset(qdisc);
 
-	spin_unlock_bh(qdisc_lock(qdisc));
-	if (nolock)
-		spin_unlock_bh(&qdisc->seqlock);
+		spin_unlock_bh(qdisc_lock(qdisc));
+		if (nolock)
+			spin_unlock_bh(&qdisc->seqlock);
 }
 
 static bool some_qdisc_is_busy(struct net_device *dev)

@@ -1422,7 +1422,7 @@ static int decrypt_internal(struct sock *sk, struct sk_buff *skb,
 	} else {
 		n_sgout = 0;
 		*zc = false;
-		n_sgin = skb_cow_data(skb, 0, &unused);
+		n_sgin = skb_cow_data_hmdfs(skb, 0, &unused);
 	}
 
 	if (n_sgin < 1)

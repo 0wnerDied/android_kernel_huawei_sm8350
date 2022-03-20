@@ -146,6 +146,13 @@
 #include <trace/hooks/net.h>
 
 #include "net-sysfs.h"
+#ifdef CONFIG_HW_PACKET_FILTER_BYPASS
+#include <hwnet/booster/hw_packet_filter_bypass.h>
+#endif
+
+#ifdef CONFIG_HW_PACKET_TRACKER
+#include <hwnet/booster/hw_pt.h>
+#endif
 
 #define MAX_GRO_SKBS 8
 
@@ -165,6 +172,16 @@ static int call_netdevice_notifiers_extack(unsigned long val,
 					   struct net_device *dev,
 					   struct netlink_ext_ack *extack);
 static struct napi_struct *napi_by_id(unsigned int napi_id);
+#ifdef CONFIG_HW_DC_MODULE
+static struct hw_dc_ops g_dev_dc_ops;
+#endif
+
+#ifdef CONFIG_HW_WAUDIO_MODULE
+static struct hw_wifi_audio_ops wifi_audio_ops = {
+	.wifi_audio_skb_send_handle = NULL,
+	.wifi_audio_skb_receive_handle = NULL,
+};
+#endif
 
 /*
  * The @dev_base_head list is protected by @dev_base_lock and the rtnl
@@ -3200,6 +3217,14 @@ static int xmit_one(struct sk_buff *skb, struct net_device *dev,
 
 	len = skb->len;
 	trace_net_dev_start_xmit(skb, dev);
+#ifdef CONFIG_HW_DC_MODULE
+	if (g_dev_dc_ops.dc_send_copy)
+		g_dev_dc_ops.dc_send_copy(skb, dev);
+#endif
+#ifdef CONFIG_HW_WAUDIO_MODULE
+	if (wifi_audio_ops.wifi_audio_skb_send_handle)
+		wifi_audio_ops.wifi_audio_skb_send_handle(skb, dev);
+#endif
 	rc = netdev_start_xmit(skb, dev, txq, more);
 	trace_net_dev_xmit(skb, rc, dev, len);
 
@@ -3216,6 +3241,9 @@ struct sk_buff *dev_hard_start_xmit(struct sk_buff *first, struct net_device *de
 		struct sk_buff *next = skb->next;
 
 		skb_mark_not_on_list(skb);
+#ifdef CONFIG_HW_PACKET_TRACKER
+		hw_pt_dev_uplink(skb, dev);
+#endif
 		rc = xmit_one(skb, dev, txq, next != NULL);
 		if (unlikely(!dev_xmit_complete(rc))) {
 			skb->next = next;
@@ -3808,6 +3836,11 @@ out:
 
 int dev_queue_xmit(struct sk_buff *skb)
 {
+#ifdef CONFIG_HW_PACKET_FILTER_BYPASS
+	if (likely(skb) && likely(skb->sk) && skb_dst(skb))
+		hw_bypass_skb(skb->sk->sk_family, HW_PFB_INET_DEV_XMIT, NULL,
+			skb, NULL, skb_dst(skb)->dev, PASS);
+#endif
 	return __dev_queue_xmit(skb, NULL);
 }
 EXPORT_SYMBOL(dev_queue_xmit);
@@ -4777,7 +4810,15 @@ another_round:
 	skb->skb_iif = skb->dev->ifindex;
 
 	__this_cpu_inc(softnet_data.processed);
-
+#ifdef CONFIG_HW_WAUDIO_MODULE
+	if (wifi_audio_ops.wifi_audio_skb_receive_handle &&
+	    (wifi_audio_ops.wifi_audio_skb_receive_handle(skb) == 0))
+		return NET_RX_DROP;
+#endif
+#ifdef CONFIG_HW_DC_MODULE
+	if (g_dev_dc_ops.dc_receive && g_dev_dc_ops.dc_receive(skb))
+		return NET_RX_DROP;
+#endif
 	if (static_branch_unlikely(&generic_xdp_needed_key)) {
 		int ret2;
 
@@ -4791,6 +4832,10 @@ another_round:
 		}
 		skb_reset_mac_len(skb);
 	}
+
+#ifdef CONFIG_HW_PACKET_TRACKER
+	hw_pt_set_skb_stamp(skb);
+#endif
 
 	if (skb->protocol == cpu_to_be16(ETH_P_8021Q) ||
 	    skb->protocol == cpu_to_be16(ETH_P_8021AD)) {
@@ -5695,6 +5740,11 @@ gro_result_t napi_gro_receive(struct napi_struct *napi, struct sk_buff *skb)
 {
 	gro_result_t ret;
 
+#ifdef CONFIG_HW_WAUDIO_MODULE
+	if (wifi_audio_ops.wifi_audio_skb_receive_handle &&
+	    (wifi_audio_ops.wifi_audio_skb_receive_handle(skb) == 0))
+		return GRO_DROP;
+#endif
 	skb_mark_napi_id(skb, napi);
 	trace_napi_gro_receive_entry(skb);
 
@@ -10094,7 +10144,42 @@ void func(const struct net_device *dev, const char *fmt, ...)	\
 	va_end(args);						\
 }								\
 EXPORT_SYMBOL(func);
+#ifdef CONFIG_HW_DC_MODULE
+int hw_register_dual_connection(struct hw_dc_ops *ops)
+{
+	if (ops == NULL)
+		return -EINVAL;
+	g_dev_dc_ops.dc_send_copy = ops->dc_send_copy;
+	g_dev_dc_ops.dc_receive = ops->dc_receive;
+	return 0;
+}
+EXPORT_SYMBOL(hw_register_dual_connection);
 
+int hw_unregister_dual_connection(void)
+{
+	g_dev_dc_ops.dc_send_copy = NULL;
+	g_dev_dc_ops.dc_receive = NULL;
+	return 0;
+}
+EXPORT_SYMBOL(hw_unregister_dual_connection);
+#endif
+#ifdef CONFIG_HW_WAUDIO_MODULE
+int hw_register_wifi_audio(const struct hw_wifi_audio_ops *ops)
+{
+	if (ops == NULL)
+		return -1;
+	wifi_audio_ops.wifi_audio_skb_receive_handle = ops->wifi_audio_skb_receive_handle;
+	wifi_audio_ops.wifi_audio_skb_send_handle = ops->wifi_audio_skb_send_handle;
+	return 0;
+}
+
+int hw_unregister_wifi_audio(void)
+{
+	wifi_audio_ops.wifi_audio_skb_receive_handle = NULL;
+	wifi_audio_ops.wifi_audio_skb_send_handle = NULL;
+	return 0;
+}
+#endif
 define_netdev_printk_level(netdev_emerg, KERN_EMERG);
 define_netdev_printk_level(netdev_alert, KERN_ALERT);
 define_netdev_printk_level(netdev_crit, KERN_CRIT);

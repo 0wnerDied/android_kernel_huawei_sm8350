@@ -279,6 +279,31 @@
 #include <asm/ioctls.h>
 #include <net/busy_poll.h>
 
+#ifdef CONFIG_HW_NETWORK_QOE
+#include <hwnet/booster/ip_para_collec_ex.h>
+#endif
+#ifdef CONFIG_APP_ACCELERATOR
+#include <hwnet/booster/app_accelerator.h>
+#endif
+#ifdef CONFIG_CHR_NETLINK_MODULE
+#include <hwnet/chr/chr_interface.h>
+#endif
+#ifdef CONFIG_HW_NETWORK_AWARE
+#include <network_aware/network_aware.h>
+#endif
+#ifdef CONFIG_HW_NETQOS_SCHED
+#include <netqos_sched/netqos_sched.h>
+#endif
+#ifdef CONFIG_HW_WIFIPRO
+#include <hwnet/ipv4/wifipro_tcp_monitor.h>
+#endif
+#ifdef CONFIG_HUAWEI_XENGINE
+#include <emcom/emcom_xengine.h>
+#endif
+#ifdef CONFIG_HW_BOOSTER
+#include <hwnet/booster/hongbao_wechat.h>
+#endif
+
 struct percpu_counter tcp_orphan_count;
 EXPORT_SYMBOL_GPL(tcp_orphan_count);
 
@@ -432,6 +457,10 @@ void tcp_init_sock(struct sock *sk)
 	 */
 	tp->snd_cwnd = TCP_INIT_CWND;
 
+#ifdef CONFIG_APP_ACCELERATOR
+	update_sock_send_win(sk);
+#endif
+
 	/* There's a bubble in the pipe until at least the first ACK. */
 	tp->app_limited = ~0U;
 
@@ -441,6 +470,13 @@ void tcp_init_sock(struct sock *sk)
 	tp->snd_ssthresh = TCP_INFINITE_SSTHRESH;
 	tp->snd_cwnd_clamp = ~0;
 	tp->mss_cache = TCP_MSS_DEFAULT;
+
+#ifdef CONFIG_HW_NETQOS_SCHED
+	tp->rcv_rate.min_rtt = ~0U;
+	tp->rcv_rate.rcv_wnd = ~0U;
+	sk->sk_netqos_level = get_net_qos_level(current);
+	sk->sk_netqos_time = jiffies;
+#endif
 
 	tp->reordering = sock_net(sk)->ipv4.sysctl_tcp_reordering;
 	tcp_assign_congestion_control(sk);
@@ -1203,6 +1239,17 @@ int tcp_sendmsg_locked(struct sock *sk, struct msghdr *msg, size_t size)
 	bool zc = false;
 	long timeo;
 
+#ifdef CONFIG_HUAWEI_XENGINE
+	bool accelerate = false;
+#endif
+#ifdef CONFIG_HW_NETWORK_AWARE
+	tcp_network_aware(false);
+	stat_bg_network_flow(false, size);
+#endif
+#ifdef CONFIG_HW_NETQOS_SCHED
+	netqos_sendrcv(sk, size, false);
+#endif
+
 	flags = msg->msg_flags;
 
 	if (flags & MSG_ZEROCOPY && size && sock_flag(sk, SOCK_ZEROCOPY)) {
@@ -1264,6 +1311,24 @@ int tcp_sendmsg_locked(struct sock *sk, struct msghdr *msg, size_t size)
 		}
 	}
 
+#ifdef CONFIG_HW_BOOSTER
+	hook_ul_stub(sk, msg);
+#endif
+#ifdef CONFIG_HUAWEI_XENGINE
+#ifdef CONFIG_HUAWEI_BASTET
+	accelerate = bst_fg_hook_ul_stub(sk, msg);
+#endif
+
+	if (!accelerate)
+		accelerate = emcom_xengine_hook_ul_stub(sk);
+
+	if (!accelerate)
+		EMCOM_XENGINE_SET_ACCSTATE(sk, EMCOM_XENGINE_ACC_NORMAL);
+#else
+#ifdef CONFIG_HUAWEI_BASTET
+	bst_fg_hook_ul_stub(sk, msg);
+#endif
+#endif
 	/* This should be in poll */
 	sk_clear_bit(SOCKWQ_ASYNC_NOSPACE, sk);
 
@@ -1541,10 +1606,16 @@ static void tcp_cleanup_rbuf(struct sock *sk, int copied)
 
 	struct sk_buff *skb = skb_peek(&sk->sk_receive_queue);
 
+#ifdef CONFIG_APP_ACCELERATOR
+	if (!app_acc_start_check(sk))
+		WARN(skb && !before(tp->copied_seq, TCP_SKB_CB(skb)->end_seq),
+		     "cleanup rbuf bug: copied %X seq %X rcvnxt %X\n",
+		     tp->copied_seq, TCP_SKB_CB(skb)->end_seq, tp->rcv_nxt);
+#else
 	WARN(skb && !before(tp->copied_seq, TCP_SKB_CB(skb)->end_seq),
 	     "cleanup rbuf bug: copied %X seq %X rcvnxt %X\n",
 	     tp->copied_seq, TCP_SKB_CB(skb)->end_seq, tp->rcv_nxt);
-
+#endif
 	if (inet_csk_ack_scheduled(sk)) {
 		const struct inet_connection_sock *icsk = inet_csk(sk);
 		   /* Delayed ACKs frequently hit locked sockets during bulk
@@ -1591,8 +1662,13 @@ static void tcp_cleanup_rbuf(struct sock *sk, int copied)
 				time_to_ack = true;
 		}
 	}
+#ifdef CONFIG_TCP_ARGO
+	if (time_to_ack && tcp_argo_send_ack_immediatly(tp))
+		tcp_send_ack(sk);
+#else
 	if (time_to_ack)
 		tcp_send_ack(sk);
+#endif /* CONFIG_TCP_ARGO */
 }
 
 static struct sk_buff *tcp_recv_skb(struct sock *sk, u32 seq, u32 *off)
@@ -1981,6 +2057,10 @@ int tcp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int nonblock,
 	if (unlikely(flags & MSG_ERRQUEUE))
 		return inet_recv_error(sk, msg, len, addr_len);
 
+#ifdef CONFIG_HW_NETWORK_AWARE
+	tcp_network_aware(true);
+#endif
+
 	if (sk_can_busy_loop(sk) && skb_queue_empty_lockless(&sk->sk_receive_queue) &&
 	    (sk->sk_state == TCP_ESTABLISHED))
 		sk_busy_loop(sk, nonblock);
@@ -2042,17 +2122,39 @@ int tcp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int nonblock,
 			/* Now that we have two receive queues this
 			 * shouldn't happen.
 			 */
+#ifdef CONFIG_APP_ACCELERATOR
+			if (before(*seq, TCP_SKB_CB(skb)->seq)) {
+				if (app_acc_start_check(sk)) {
+					*seq = TCP_SKB_CB(skb)->seq;
+				} else {
+					WARN(true, //lint !e1564
+					     "C %X, seq %X, nxt %X, fl %X\n",
+					     *seq, TCP_SKB_CB(skb)->seq,
+					     tp->rcv_nxt, flags);
+					break;
+				}
+			}
+#else
 			if (WARN(before(*seq, TCP_SKB_CB(skb)->seq),
 				 "TCP recvmsg seq # bug: copied %X, seq %X, rcvnxt %X, fl %X\n",
 				 *seq, TCP_SKB_CB(skb)->seq, tp->rcv_nxt,
 				 flags))
 				break;
-
+#endif
+#ifdef CONFIG_CHR_NETLINK_MODULE
+			chr_update_buf_time(ktime_to_ns(skb->tstamp), SOL_TCP);
+#endif
 			offset = *seq - TCP_SKB_CB(skb)->seq;
 			if (unlikely(TCP_SKB_CB(skb)->tcp_flags & TCPHDR_SYN)) {
 				pr_err_once("%s: found a SYN, please report !\n", __func__);
 				offset--;
 			}
+#ifdef CONFIG_APP_ACCELERATOR
+			if (offset >= skb->len && app_acc_start_check(sk)) {
+				offset = 0;
+				*seq = TCP_SKB_CB(skb)->seq;
+			}
+#endif
 			if (offset < skb->len)
 				goto found_ok_skb;
 			if (TCP_SKB_CB(skb)->tcp_flags & TCPHDR_FIN)
@@ -2199,6 +2301,12 @@ found_fin_ok:
 	/* Clean up data we have read: This will do ACK frames. */
 	tcp_cleanup_rbuf(sk, copied);
 
+#ifdef CONFIG_HW_NETWORK_AWARE
+	stat_bg_network_flow(true, copied);
+#endif
+#ifdef CONFIG_HW_NETQOS_SCHED
+	netqos_sendrcv(sk, copied, true);
+#endif
 	release_sock(sk);
 
 	if (cmsg_flags) {
@@ -2229,6 +2337,18 @@ EXPORT_SYMBOL(tcp_recvmsg);
 void tcp_set_state(struct sock *sk, int state)
 {
 	int oldstate = sk->sk_state;
+#ifdef CONFIG_HW_WIFIPRO
+	struct inet_sock *inet_temp = inet_sk(sk);
+	unsigned int dest_addr = 0;
+	unsigned int dest_port = 0;
+	if (inet_temp != NULL) {
+		dest_addr = htonl(inet_temp->inet_daddr);
+		dest_port = htons(inet_temp->inet_dport);
+	}
+#endif
+#ifdef CONFIG_HUAWEI_XENGINE
+	emcom_xengine_mpflow_fallback(sk, EMCOM_MPFLOW_FALLBACK_NOPAYLOAD, state);
+#endif
 
 	/* We defined a new enum for TCP states that are exported in BPF
 	 * so as not force the internal TCP states to be frozen. The
@@ -2254,6 +2374,10 @@ void tcp_set_state(struct sock *sk, int state)
 	if (BPF_SOCK_OPS_TEST_FLAG(tcp_sk(sk), BPF_SOCK_OPS_STATE_CB_FLAG))
 		tcp_call_bpf_2arg(sk, BPF_SOCK_OPS_STATE_CB, oldstate, state);
 
+#ifdef CONFIG_HW_NETWORK_QOE
+	dec_sk_num_for_qoe(sk, state);
+#endif
+
 	switch (state) {
 	case TCP_ESTABLISHED:
 		if (oldstate != TCP_ESTABLISHED)
@@ -2273,11 +2397,23 @@ void tcp_set_state(struct sock *sk, int state)
 		if (oldstate == TCP_ESTABLISHED)
 			TCP_DEC_STATS(sock_net(sk), TCP_MIB_CURRESTAB);
 	}
-
+#ifdef CONFIG_HW_BOOSTER
+	check_sock_uid(sk, state);
+#endif
 	/* Change state AFTER socket is unhashed to avoid closed
 	 * socket sitting in hash tables.
 	 */
 	inet_sk_state_store(sk, state);
+#ifdef CONFIG_HW_WIFIPRO
+	if (state == TCP_SYN_SENT) {
+		if (is_wifipro_on && is_mcc_china && wifipro_is_not_local_or_lan_sock(dest_addr)) {
+			if (wifipro_is_google_sock(current, dest_addr)) {
+				sk->wifipro_is_google_sock = 1;
+				WIFIPRO_DEBUG("add a google sock:%s", wifipro_ntoa(dest_addr));
+			}
+		}
+	}
+#endif
 }
 EXPORT_SYMBOL_GPL(tcp_set_state);
 
@@ -2528,15 +2664,6 @@ out:
 	sock_put(sk);
 }
 EXPORT_SYMBOL(tcp_close);
-
-/* These states need RST on ABORT according to RFC793 */
-
-static inline bool tcp_need_reset(int state)
-{
-	return (1 << state) &
-	       (TCPF_ESTABLISHED | TCPF_CLOSE_WAIT | TCPF_FIN_WAIT1 |
-		TCPF_FIN_WAIT2 | TCPF_SYN_RECV | TCPF_SYN_SENT);
-}
 
 static void tcp_rtx_queue_purge(struct sock *sk)
 {

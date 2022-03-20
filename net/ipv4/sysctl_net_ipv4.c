@@ -626,7 +626,39 @@ static struct ctl_table ipv4_table[] = {
 		.extra1		= &tcp_use_userconfig_min,
 		.extra2		= &tcp_use_userconfig_max,
 	},
-
+#ifdef CONFIG_HW_NETQOS_SCHED
+	{
+		.procname	= "netqos_switch",
+		.data		= &sysctl_netqos_switch,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+	},
+	{
+		.procname	= "netqos_debug",
+		.data		= &sysctl_netqos_debug,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+	},
+	{
+		.procname	= "netqos_limit",
+		.data		= &sysctl_netqos_limit,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+	},
+	{
+		.procname	= "netqos_period",
+		.data		= &sysctl_netqos_period,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec,
+	},
+#endif
 	{ }
 };
 
@@ -872,6 +904,17 @@ static struct ctl_table ipv4_net_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec
 	},
+#ifdef CONFIG_TCP_AUTOTUNING
+	{
+		.procname	= "tcp_autotuning",
+		.data		= &init_net.ipv4.sysctl_tcp_autotuning,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_ONE,
+	},
+#endif
 	{
 		.procname	= "igmp_max_memberships",
 		.data		= &init_net.ipv4.sysctl_igmp_max_memberships,
@@ -1345,6 +1388,15 @@ static struct ctl_table ipv4_net_table[] = {
 		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= SYSCTL_ONE
 	},
+#ifdef CONFIG_TCP_ARGO
+	{
+		.procname	= "tcp_argo",
+		.data		= &sysctl_tcp_argo,
+		.maxlen		= sizeof(sysctl_tcp_argo),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec,
+	},
+#endif /* CONFIG_TCP_ARGO */
 	{ }
 };
 

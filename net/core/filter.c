@@ -73,6 +73,9 @@
 #include <net/lwtunnel.h>
 #include <net/ipv6_stubs.h>
 #include <net/bpf_sk_storage.h>
+#ifdef CONFIG_HW_PACKET_FILTER_BYPASS
+#include <hwnet/booster/hw_packet_filter_bypass.h>
+#endif
 
 /**
  *	sk_filter_trim_cap - run a packet through a socket filter
@@ -91,6 +94,10 @@ int sk_filter_trim_cap(struct sock *sk, struct sk_buff *skb, unsigned int cap)
 {
 	int err;
 	struct sk_filter *filter;
+#ifdef CONFIG_HW_PACKET_FILTER_BYPASS
+	int hook = HW_PFB_INET_BPF_INGRESS;
+	struct net_device *dev = NULL;
+#endif
 
 	/*
 	 * If the skb was allocated from pfmemalloc reserves, only
@@ -102,6 +109,16 @@ int sk_filter_trim_cap(struct sock *sk, struct sk_buff *skb, unsigned int cap)
 		return -ENOMEM;
 	}
 	err = BPF_CGROUP_RUN_PROG_INET_INGRESS(sk, skb);
+#ifdef CONFIG_HW_PACKET_FILTER_BYPASS
+	if (sk->sk_family == AF_INET6)
+		hook = HW_PFB_INET6_BPF_INGRESS;
+	rcu_read_lock();
+	dev = dev_get_by_index_rcu(sock_net(sk), skb->skb_iif);
+	rcu_read_unlock();
+	if (hw_bypass_skb(sk->sk_family, hook, sk, skb, dev,
+					  NULL, err ? DROP : PASS))
+		err = 0;
+#endif
 	if (err)
 		return err;
 
@@ -3146,19 +3163,14 @@ static int bpf_skb_net_shrink(struct sk_buff *skb, u32 off, u32 len_diff,
 	return 0;
 }
 
-static u32 __bpf_skb_max_len(const struct sk_buff *skb)
-{
-	if (skb_at_tc_ingress(skb) || !skb->dev)
-		return SKB_MAX_ALLOC;
-	return skb->dev->mtu + skb->dev->hard_header_len;
-}
+#define BPF_SKB_MAX_LEN SKB_MAX_ALLOC
 
 BPF_CALL_4(bpf_skb_adjust_room, struct sk_buff *, skb, s32, len_diff,
 	   u32, mode, u64, flags)
 {
 	u32 len_cur, len_diff_abs = abs(len_diff);
 	u32 len_min = bpf_skb_net_base_len(skb);
-	u32 len_max = __bpf_skb_max_len(skb);
+	u32 len_max = BPF_SKB_MAX_LEN;
 	__be16 proto = skb->protocol;
 	bool shrink = len_diff < 0;
 	u32 off;
@@ -3238,7 +3250,7 @@ static int bpf_skb_trim_rcsum(struct sk_buff *skb, unsigned int new_len)
 static inline int __bpf_skb_change_tail(struct sk_buff *skb, u32 new_len,
 					u64 flags)
 {
-	u32 max_len = __bpf_skb_max_len(skb);
+	u32 max_len = BPF_SKB_MAX_LEN;
 	u32 min_len = __bpf_skb_min_len(skb);
 	int ret;
 
@@ -3314,7 +3326,7 @@ static const struct bpf_func_proto sk_skb_change_tail_proto = {
 static inline int __bpf_skb_change_head(struct sk_buff *skb, u32 head_room,
 					u64 flags)
 {
-	u32 max_len = __bpf_skb_max_len(skb);
+	u32 max_len = BPF_SKB_MAX_LEN;
 	u32 new_len = skb->len + head_room;
 	int ret;
 
@@ -4217,6 +4229,30 @@ static const struct bpf_func_proto bpf_get_socket_uid_proto = {
 	.arg1_type      = ARG_PTR_TO_CTX,
 };
 
+BPF_CALL_1(bpf_get_socket_pid, struct sk_buff *, skb)
+{
+#if defined(CONFIG_HUAWEI_KSTATE)
+	struct socket *socket = NULL;
+	struct sock *sk = sk_to_full_sk(skb->sk);
+	if (!sk || !sk_fullsock(sk))
+		return 0;
+
+	socket = sk->sk_socket;
+	if (!socket)
+		return 0;
+
+	return socket->pid;
+#endif
+	return 0;
+}
+
+static const struct bpf_func_proto bpf_get_socket_pid_proto = {
+	.func           = bpf_get_socket_pid,
+	.gpl_only       = false,
+	.ret_type       = RET_INTEGER,
+	.arg1_type      = ARG_PTR_TO_CTX,
+};
+
 BPF_CALL_5(bpf_sockopt_event_output, struct bpf_sock_ops_kern *, bpf_sock,
 	   struct bpf_map *, map, u64, flags, void *, data, u64, size)
 {
@@ -4235,6 +4271,34 @@ static const struct bpf_func_proto bpf_sockopt_event_output_proto =  {
 	.arg3_type      = ARG_ANYTHING,
 	.arg4_type      = ARG_PTR_TO_MEM,
 	.arg5_type      = ARG_CONST_SIZE_OR_ZERO,
+};
+
+BPF_CALL_3(bpf_get_socket_process, struct sk_buff *, skb,
+	void *, comm, u32, size)
+{
+	struct sock *sk = NULL;
+
+	if (!comm || size < TASK_COMM_LEN)
+		return -EINVAL;
+
+	sk = sk_to_full_sk(skb->sk);
+	if (!sk || !sk_fullsock(sk))
+		return -EINVAL;
+
+#if defined(CONFIG_CGROUP_BPF)
+	strncpy(comm, sk->sk_process_name, TASK_COMM_LEN);
+#endif
+
+	return 0;
+}
+
+static const struct bpf_func_proto bpf_get_socket_process_proto = {
+	.func           = bpf_get_socket_process,
+	.gpl_only       = false,
+	.ret_type       = RET_INTEGER,
+	.arg1_type      = ARG_PTR_TO_CTX,
+	.arg2_type      = ARG_PTR_TO_UNINIT_MEM,
+	.arg3_type      = ARG_CONST_SIZE,
 };
 
 BPF_CALL_5(bpf_setsockopt, struct bpf_sock_ops_kern *, bpf_sock,
@@ -6000,6 +6064,8 @@ bpf_base_func_proto(enum bpf_func_id func_id)
 		return &bpf_ktime_get_ns_proto;
 	case BPF_FUNC_ktime_get_boot_ns:
 		return &bpf_ktime_get_boot_ns_proto;
+	case BPF_FUNC_get_socket_pid:
+		return &bpf_get_socket_pid_proto;
 	default:
 		break;
 	}
@@ -6087,6 +6153,8 @@ sk_filter_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 		return &bpf_get_socket_cookie_proto;
 	case BPF_FUNC_get_socket_uid:
 		return &bpf_get_socket_uid_proto;
+	case BPF_FUNC_get_socket_process:
+		return &bpf_get_socket_process_proto;
 	case BPF_FUNC_perf_event_output:
 		return &bpf_skb_event_output_proto;
 	default:

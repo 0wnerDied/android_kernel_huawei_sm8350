@@ -84,6 +84,7 @@
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+#define AID_INET         KGIDT_INIT(3003)
 
 #include <asm/unaligned.h>
 #include <linux/capability.h>
@@ -113,6 +114,7 @@
 #include <linux/static_key.h>
 #include <linux/memcontrol.h>
 #include <linux/prefetch.h>
+#include <linux/uidgid.h>
 
 #include <linux/uaccess.h>
 
@@ -138,6 +140,14 @@
 
 #include <net/tcp.h>
 #include <net/busy_poll.h>
+
+#ifdef CONFIG_HW_DPIMARK_MODULE
+#include <hwnet/hw_dpi_mark/dpi_hw_hook.h>
+#endif
+
+#ifdef CONFIG_HUAWEI_XENGINE
+#include <emcom/emcom_xengine.h>
+#endif
 
 static DEFINE_MUTEX(proto_list_mutex);
 static LIST_HEAD(proto_list);
@@ -578,7 +588,7 @@ static int sock_setbindtodevice_locked(struct sock *sk, int ifindex)
 
 	/* Sorry... */
 	ret = -EPERM;
-	if (!ns_capable(net->user_ns, CAP_NET_RAW))
+	if (!ns_capable(net->user_ns, CAP_NET_RAW) && !in_egroup_p(AID_INET))
 		goto out;
 
 	ret = -EINVAL;
@@ -733,7 +743,16 @@ int sock_setsockopt(struct socket *sock, int level, int optname,
 	/*
 	 *	Options without arguments
 	 */
+#ifdef CONFIG_HUAWEI_XENGINE
+	if (optname == SO_XENGINE_PROXYUID)
+		return emcom_xengine_setproxyuid(sk, optval, optlen);
 
+	if (optname == SO_XENGINE_SOCKFLAG)
+		return emcom_xengine_setsockflag(sk, optval, optlen);
+
+	if (optname == SO_XENGINE_BINDTODEVICE)
+		return emcom_xengine_setbind2device(sk, optval, optlen);
+#endif
 	if (optname == SO_BINDTODEVICE)
 		return sock_setbindtodevice(sk, optval, optlen);
 
@@ -1062,7 +1081,11 @@ set_rcvbuf:
 		if (!ns_capable(sock_net(sk)->user_ns, CAP_NET_ADMIN)) {
 			ret = -EPERM;
 		} else if (val != sk->sk_mark) {
+#ifdef CONFIG_HW_DPIMARK_MODULE
+			sk->sk_mark = get_mplk_somark(sk, val);
+#else
 			sk->sk_mark = val;
+#endif
 			sk_dst_reset(sk);
 		}
 		break;
@@ -1499,6 +1522,13 @@ int sock_getsockopt(struct socket *sock, int level, int optname,
 		break;
 #endif
 
+#ifdef CONFIG_HUAWEI_XENGINE
+
+	case SO_XENGINE_SOCKFLAG:
+		v.val = sk->hicom_flag;
+		break;
+#endif
+
 	case SO_COOKIE:
 		lv = sizeof(u64);
 		if (len < lv)
@@ -1677,9 +1707,27 @@ struct sock *sk_alloc(struct net *net, int family, gfp_t priority,
 
 		mem_cgroup_sk_alloc(sk);
 		cgroup_sk_alloc(&sk->sk_cgrp_data);
+#ifdef CONFIG_HW_NETQOS_SCHED
+		sk->sk_netqos_level = -1;
+		sk->sk_netqos_time = 0;
+		sk->sk_netqos_ttime = 0;
+		sk->sk_netqos_tx = 0;
+		sk->sk_netqos_rx = 0;
+#endif
+#ifdef CONFIG_HWDPI_MODULE
+		sk->sk_hwdpi_mark = 0;
+#endif
 		sock_update_classid(&sk->sk_cgrp_data);
 		sock_update_netprioidx(&sk->sk_cgrp_data);
 		sk_tx_queue_clear(sk);
+
+#ifdef CONFIG_CGROUP_BPF
+		*(sk->sk_process_name) = '\0';
+#endif
+
+#ifdef CONFIG_HUAWEI_KSTATE
+		sk->sk_pid = 0;
+#endif
 	}
 
 	return sk;
@@ -2947,7 +2995,14 @@ void sock_init_data(struct socket *sock, struct sock *sk)
 	WRITE_ONCE(sk->sk_pacing_shift, 10);
 	sk->sk_incoming_cpu = -1;
 
+#ifdef CONFIG_HW_DPIMARK_MODULE
+	sk->sk_born_stamp = jiffies;
+#endif
 	sk_rx_queue_clear(sk);
+#ifdef CONFIG_HUAWEI_XENGINE
+	sk->hicom_flag = 0;
+	sk->is_mp_flow_bind = 0;
+#endif
 	/*
 	 * Before updating sk_refcnt, we must commit prior changes to memory
 	 * (Documentation/RCU/rculist_nulls.txt for details)
