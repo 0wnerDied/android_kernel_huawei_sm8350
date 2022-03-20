@@ -10,9 +10,13 @@
 #include "cam_res_mgr_api.h"
 #include "cam_common_util.h"
 #include "cam_packet_util.h"
+#include "cam_torch_thermal_protect_classdev.h"
 
 static uint default_on_timer = 2;
 module_param(default_on_timer, uint, 0644);
+
+/* flashlight vote for Multi-camera switching scene */
+static int g_flash_ctrl_timer;
 
 int cam_flash_led_prepare(struct led_trigger *trigger, int options,
 	int *max_current, bool is_wled)
@@ -375,6 +379,13 @@ static int cam_flash_ops(struct cam_flash_ctrl *flash_ctrl,
 	struct cam_flash_private_soc *soc_private = NULL;
 	int i = 0;
 
+	int thermal_protect_value;
+
+	thermal_protect_value = cam_torch_thermal_protect_get_value();
+	if (thermal_protect_value == FLASH_STATUS_LOCKED) {
+		CAM_ERR(CAM_FLASH, "cam_flash_low thermal_protect_status locked");
+		return 0;
+	}
 	if (!flash_ctrl || !flash_data) {
 		CAM_ERR(CAM_FLASH, "Fctrl or Data NULL");
 		return -EINVAL;
@@ -462,6 +473,18 @@ int cam_flash_off(struct cam_flash_ctrl *flash_ctrl)
 		CAM_ERR(CAM_FLASH, "Flash control Null");
 		return -EINVAL;
 	}
+
+	CAM_INFO(CAM_FLASH, "%s g_flash_ctrl_timer = %d", __func__, g_flash_ctrl_timer);
+	if (g_flash_ctrl_timer <= 0) {
+		g_flash_ctrl_timer = 0;
+		CAM_INFO(CAM_FLASH, "g_flash_ctrl_timer is an abnormal value, reset to 0");
+		return 0;
+	}
+
+	g_flash_ctrl_timer--;
+	if (g_flash_ctrl_timer > 0)
+		return 0;
+
 	CAM_DBG(CAM_FLASH, "Flash OFF Triggered");
 	if (flash_ctrl->switch_trigger)
 		cam_res_mgr_led_trigger_event(flash_ctrl->switch_trigger,
@@ -479,6 +502,11 @@ static int cam_flash_low(
 		CAM_ERR(CAM_FLASH, "Flash Data Null");
 		return -EINVAL;
 	}
+
+	CAM_INFO(CAM_FLASH, "%s g_flash_ctrl_timer = %d", __func__, g_flash_ctrl_timer);
+	g_flash_ctrl_timer++;
+	if (g_flash_ctrl_timer > 1)
+		return rc;
 
 	for (i = 0; i < flash_ctrl->flash_num_sources; i++)
 		if (flash_ctrl->flash_trigger[i])
@@ -505,6 +533,11 @@ static int cam_flash_high(
 		return -EINVAL;
 	}
 
+	CAM_INFO(CAM_FLASH, "%s g_flash_ctrl_timer = %d", __func__, g_flash_ctrl_timer);
+	g_flash_ctrl_timer++;
+	if (g_flash_ctrl_timer > 1)
+		return rc;
+
 	for (i = 0; i < flash_ctrl->torch_num_sources; i++)
 		if (flash_ctrl->torch_trigger[i])
 			cam_res_mgr_led_trigger_event(
@@ -528,6 +561,11 @@ static int cam_flash_duration(struct cam_flash_ctrl *fctrl,
 		CAM_ERR(CAM_FLASH, "Flash Data NULL");
 		return -EINVAL;
 	}
+
+	CAM_INFO(CAM_FLASH, "%s g_flash_ctrl_timer = %d", __func__, g_flash_ctrl_timer);
+	g_flash_ctrl_timer++;
+	if (g_flash_ctrl_timer > 1)
+		return rc;
 
 	for (i = 0; i < fctrl->torch_num_sources; i++)
 		if (fctrl->torch_trigger[i])

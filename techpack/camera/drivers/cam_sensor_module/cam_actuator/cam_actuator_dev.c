@@ -24,6 +24,12 @@ static long cam_actuator_subdev_ioctl(struct v4l2_subdev *sd,
 			CAM_ERR(CAM_ACTUATOR,
 				"Failed for driver_cmd: %d", rc);
 		break;
+	case CAM_DATA_CONCTROL:
+		rc = cam_actuator_data_transfer(a_ctrl, arg);
+		if (rc)
+			CAM_ERR(CAM_ACTUATOR,
+				"Failed for data_transfer: %d", rc);
+		break;
 	default:
 		CAM_ERR(CAM_ACTUATOR, "Invalid ioctl cmd: %u", cmd);
 		rc = -ENOIOCTLCMD;
@@ -248,6 +254,7 @@ static int cam_actuator_component_bind(struct device *dev,
 	a_ctrl->soc_info.dev = &pdev->dev;
 	a_ctrl->soc_info.dev_name = pdev->name;
 	a_ctrl->io_master_info.master_type = CCI_MASTER;
+	a_ctrl->io_master_info.device_type = CAM_ACTUATOR;
 
 	a_ctrl->io_master_info.cci_client = kzalloc(sizeof(
 		struct cam_sensor_cci_client), GFP_KERNEL);

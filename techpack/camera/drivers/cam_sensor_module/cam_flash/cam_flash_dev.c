@@ -9,6 +9,8 @@
 #include "cam_flash_core.h"
 #include "cam_common_util.h"
 #include "camera_main.h"
+#include "cam_torch_classdev.h"
+#include "cam_torch_thermal_protect_classdev.h"
 
 static int32_t cam_flash_driver_cmd(struct cam_flash_ctrl *fctrl,
 		void *arg, struct cam_flash_private_soc *soc_private)
@@ -87,6 +89,7 @@ static int32_t cam_flash_driver_cmd(struct cam_flash_ctrl *fctrl,
 	}
 	case CAM_RELEASE_DEV: {
 		CAM_DBG(CAM_FLASH, "CAM_RELEASE_DEV");
+		cam_flash_off(fctrl);
 		if ((fctrl->flash_state == CAM_FLASH_STATE_INIT) ||
 			(fctrl->flash_state == CAM_FLASH_STATE_START)) {
 			CAM_WARN(CAM_FLASH,
@@ -491,6 +494,12 @@ static int cam_flash_component_bind(struct device *dev,
 	mutex_init(&(fctrl->flash_mutex));
 
 	fctrl->flash_state = CAM_FLASH_STATE_INIT;
+	if (cam_torch_classdev_register(pdev, fctrl) < 0)
+		CAM_ERR(CAM_FLASH, "register classdev failed");
+
+	if (cam_torch_thermal_protect_classdev_register(pdev, fctrl) < 0)
+		CAM_ERR(CAM_FLASH, "register thermal protect classdev failed");
+
 	CAM_DBG(CAM_FLASH, "Component bound successfully");
 	return rc;
 

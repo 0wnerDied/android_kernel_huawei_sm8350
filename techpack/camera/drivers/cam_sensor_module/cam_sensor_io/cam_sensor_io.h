@@ -16,12 +16,14 @@
 
 /**
  * @master_type: CCI master type
+ * @device_type: device type
  * @client: I2C client information structure
  * @cci_client: CCI client information structure
  * @spi_client: SPI client information structure
  */
 struct camera_io_master {
 	int master_type;
+	int64_t device_type;
 	struct i2c_client *client;
 	struct cam_sensor_cci_client *cci_client;
 	struct cam_sensor_spi_client *spi_client;
@@ -37,6 +39,20 @@ struct camera_io_master {
  * This API abstracts read functionality based on master type
  */
 int32_t camera_io_dev_read(struct camera_io_master *io_master_info,
+	uint32_t addr, uint32_t *data,
+	enum camera_sensor_i2c_type addr_type,
+	enum camera_sensor_i2c_type data_type);
+
+/**
+ * @io_master_info: I2C/SPI master information
+ * @addr: I2C address
+ * @data: I2C data
+ * @addr_type: I2C addr_type
+ * @data_type: I2C data type
+ *
+ * This API abstracts read functionality based on master type, not support dmd error report
+ */
+int32_t camera_io_dev_read_matchid(struct camera_io_master *io_master_info,
 	uint32_t addr, uint32_t *data,
 	enum camera_sensor_i2c_type addr_type,
 	enum camera_sensor_i2c_type data_type);

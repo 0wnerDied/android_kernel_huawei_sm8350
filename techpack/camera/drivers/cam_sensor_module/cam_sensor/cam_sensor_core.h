@@ -7,6 +7,7 @@
 #define _CAM_SENSOR_CORE_H_
 
 #include "cam_sensor_dev.h"
+#include "debug_adapter.h"
 
 /**
  * @s_ctrl: Sensor ctrl structure
@@ -83,6 +84,8 @@ int cam_sensor_establish_link(struct cam_req_mgr_core_dev_link_setup *link);
  */
 int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl, void *arg);
 
+int32_t cam_sensor_apply_settings_array(struct cam_sensor_ctrl_t *s_ctrl,
+		struct i2c_settings_array *i2c_set);
 /**
  * @s_ctrl: Sensor ctrl structure
  *

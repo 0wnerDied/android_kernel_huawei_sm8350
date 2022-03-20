@@ -12,7 +12,6 @@
 #include "cam_common_util.h"
 #include "cam_packet_util.h"
 
-
 static int cam_sensor_update_req_mgr(
 	struct cam_sensor_ctrl_t *s_ctrl,
 	struct cam_packet *csl_packet)
@@ -438,6 +437,10 @@ int32_t cam_sensor_update_slave_info(struct cam_cmd_probe *probe_info,
 		probe_info->expected_data;
 	s_ctrl->sensordata->slave_info.sensor_id_mask =
 		probe_info->data_mask;
+	s_ctrl->sensordata->slave_info.sensor_probe_info =
+		probe_info->sensor_probe_info;
+	s_ctrl->sensordata->slave_info.module_probe_info =
+		probe_info->module_probe_info;
 	/* Userspace passes the pipeline delay in reserved field */
 	s_ctrl->pipeline_delay =
 		probe_info->reserved;
@@ -505,6 +508,24 @@ int32_t cam_handle_cmd_buffers_for_probe(void *cmd_buf,
 	return rc;
 }
 
+static int32_t cam_handle_reg_settings_cmd_buffers(struct cam_sensor_ctrl_t *s_ctrl,
+	struct cam_cmd_buf_desc *cmd_desc)
+{
+	int rc;
+	struct i2c_settings_array *i2c_reg_settings = &s_ctrl->i2c_data.sensor_reg_settings;
+	/* i2c_reg_settings must be deleted before command parser */
+	delete_request(i2c_reg_settings);
+	i2c_reg_settings->request_id = 0;
+	i2c_reg_settings->is_settings_valid = 1;
+	rc = cam_sensor_i2c_command_parser(
+		&s_ctrl->io_master_info,
+		i2c_reg_settings,
+		&cmd_desc[CAM_PROBE_PKT_SENSOR_REG_SETTING_IDX], 1, NULL);
+	if (rc < 0)
+		CAM_ERR(CAM_SENSOR, "pkt parsing failed: %d", rc);
+	return rc;
+}
+
 int32_t cam_handle_mem_ptr(uint64_t handle, struct cam_sensor_ctrl_t *s_ctrl)
 {
 	int rc = 0, i;
@@ -545,7 +566,8 @@ int32_t cam_handle_mem_ptr(uint64_t handle, struct cam_sensor_ctrl_t *s_ctrl)
 		rc = -EINVAL;
 		goto end;
 	}
-	if (pkt->num_cmd_buf != 2) {
+	/* pkt->num_cmd_buf != 2 is for compatible other prd */
+	if ((pkt->num_cmd_buf != CAM_PROBE_PKT_MAX_IDX) && (pkt->num_cmd_buf != 2)) {
 		CAM_ERR(CAM_SENSOR, "Expected More Command Buffers : %d",
 			 pkt->num_cmd_buf);
 		rc = -EINVAL;
@@ -588,6 +610,12 @@ int32_t cam_handle_mem_ptr(uint64_t handle, struct cam_sensor_ctrl_t *s_ctrl)
 		}
 	}
 
+	rc = cam_handle_reg_settings_cmd_buffers(s_ctrl, cmd_desc);
+	if (rc < 0) {
+		CAM_ERR(CAM_SENSOR,
+			"Failed to parse the register settings command Buffer");
+		goto end;
+	}
 end:
 	return rc;
 }
@@ -595,6 +623,7 @@ end:
 void cam_sensor_query_cap(struct cam_sensor_ctrl_t *s_ctrl,
 	struct  cam_sensor_query_cap *query_cap)
 {
+	uint8_t i;
 	query_cap->pos_roll = s_ctrl->sensordata->pos_roll;
 	query_cap->pos_pitch = s_ctrl->sensordata->pos_pitch;
 	query_cap->pos_yaw = s_ctrl->sensordata->pos_yaw;
@@ -611,6 +640,8 @@ void cam_sensor_query_cap(struct cam_sensor_ctrl_t *s_ctrl,
 		s_ctrl->sensordata->subdev_id[SUB_MODULE_OIS];
 	query_cap->slot_info =
 		s_ctrl->soc_info.index;
+	for (i = 0; i < FUSEID_LEN_MAX; i++)
+		query_cap->fuseid_data[i] = s_ctrl->sensordata->fuseid_data[i];
 }
 
 static uint16_t cam_sensor_id_by_mask(struct cam_sensor_ctrl_t *s_ctrl,
@@ -685,11 +716,12 @@ int cam_sensor_match_id(struct cam_sensor_ctrl_t *s_ctrl)
 		return -EINVAL;
 	}
 
-	rc = camera_io_dev_read(
+	rc = camera_io_dev_read_matchid(
 		&(s_ctrl->io_master_info),
 		slave_info->sensor_id_reg_addr,
-		&chipid, CAMERA_SENSOR_I2C_TYPE_WORD,
-		CAMERA_SENSOR_I2C_TYPE_WORD);
+		&chipid,
+		s_ctrl->sensor_probe_addr_type,
+		s_ctrl->sensor_probe_data_type);
 
 	CAM_DBG(CAM_SENSOR, "read id: 0x%x expected id 0x%x:",
 		chipid, slave_info->sensor_id);
@@ -699,6 +731,178 @@ int cam_sensor_match_id(struct cam_sensor_ctrl_t *s_ctrl)
 				chipid, slave_info->sensor_id);
 		return -ENODEV;
 	}
+	return rc;
+}
+
+int cam_module_match_id(struct cam_sensor_ctrl_t *s_ctrl)
+{
+	int rc = 0;
+	uint32_t module_code = 0;
+	uint32_t module_version = 0;
+	uint16_t tmp_sid;
+	struct cam_camera_slave_info *slave_info = NULL;
+	struct custom_module_version_info module_version_info = {0};
+
+	if (!s_ctrl) {
+		CAM_ERR(CAM_SENSOR, "s_ctrl is null");
+		return -EINVAL;
+	}
+
+	slave_info = &(s_ctrl->sensordata->slave_info);
+	if (!(slave_info->module_probe_info.module_code_support)) {
+		CAM_INFO(CAM_SENSOR, "skip check module code");
+		return rc;
+	}
+
+	/* Save the SID value (sensor I2C address), modify the value for I/O read */
+	tmp_sid = s_ctrl->io_master_info.cci_client->sid;
+	s_ctrl->io_master_info.cci_client->sid =
+		slave_info->module_probe_info.eeprom_slave_addr >> 1;
+
+	rc = camera_io_dev_read_matchid(
+		&(s_ctrl->io_master_info),
+		slave_info->module_probe_info.module_code_addr,
+		&module_code,
+		slave_info->module_probe_info.module_code_addr_type,
+		slave_info->module_probe_info.module_code_data_type);
+	if (rc < 0) {
+		if (slave_info->module_probe_info.cloud_module_code_support) {
+			rc = 0; /* Use oem info, not care i2c read error */
+			CAM_INFO(CAM_SENSOR, "read module code from oem");
+			if (slave_info->module_probe_info.cloud_module_code_data !=
+				slave_info->module_probe_info.module_code_data) {
+				CAM_WARN(CAM_SENSOR, "oem module code:0x%x expected module code:0x%x",
+					slave_info->module_probe_info.cloud_module_code_data,
+					slave_info->module_probe_info.module_code_data);
+				s_ctrl->io_master_info.cci_client->sid = tmp_sid;
+				return -ENODEV;
+			}
+		} else {
+			CAM_ERR(CAM_SENSOR, "camera_io_dev_read occur error and this is no oem info");
+			s_ctrl->io_master_info.cci_client->sid = tmp_sid;
+			return -ENODEV;
+		}
+	} else {
+		CAM_INFO(CAM_SENSOR, "read module code from eeprom");
+		if (module_code != slave_info->module_probe_info.module_code_data) {
+			CAM_WARN(CAM_SENSOR, "read module code:0x%x expected module code:0x%x",
+				module_code, slave_info->module_probe_info.module_code_data);
+			s_ctrl->io_master_info.cci_client->sid = tmp_sid;
+			return -ENODEV;
+		}
+	}
+
+	CAM_INFO(CAM_SENSOR, "read module code is the same as expected module code:0x%x",
+		slave_info->module_probe_info.module_code_data);
+	module_version_info = slave_info->module_probe_info.module_version;
+	if (module_version_info.module_version_flag) {
+		rc = camera_io_dev_read(
+			&(s_ctrl->io_master_info),
+			module_version_info.module_version_addr,
+			&module_version,
+			slave_info->module_probe_info.module_code_addr_type,
+			slave_info->module_probe_info.module_code_data_type);
+		if (module_version != module_version_info.module_version_data) {
+			CAM_WARN(CAM_SENSOR, "read module version:0x%x expected module version:0x%x",
+				module_version, module_version_info.module_version_data);
+			s_ctrl->io_master_info.cci_client->sid = tmp_sid;
+			return -ENODEV;
+		}
+		CAM_INFO(CAM_SENSOR, "read module version is the same as expected module version:0x%x",
+			module_version);
+	}
+
+	/* After I/O read, restore the SID value */
+	s_ctrl->io_master_info.cci_client->sid = tmp_sid;
+	return rc;
+}
+
+static int cam_sensor_read_fuseid(struct cam_sensor_ctrl_t *s_ctrl)
+{
+	int rc = 0;
+	int32_t num_bytes;
+	uint8_t *value = NULL;
+	uint8_t i;
+	struct cam_camera_slave_info *slave_info = NULL;
+	struct custom_sensor_fuseid_info *sensor_fuseid_info = NULL;
+	uint32_t poll_delay = 5;
+
+	slave_info = &(s_ctrl->sensordata->slave_info);
+	sensor_fuseid_info = &(slave_info->sensor_probe_info.sensor_fuseid_info);
+	CAM_INFO(CAM_SENSOR, "fuseid support:%d", sensor_fuseid_info->fuseid_flag);
+
+	if (sensor_fuseid_info->fuseid_flag) {
+		CAM_INFO(CAM_SENSOR, "sensorFuseidInfo : 0x%x status_val : %d len : %d",
+			sensor_fuseid_info->fuseid_addr, sensor_fuseid_info->status_val, sensor_fuseid_info->fuseid_len);
+		/* poll status check */
+		rc = camera_io_dev_poll(
+			&(s_ctrl->io_master_info),
+			sensor_fuseid_info->status_addr,
+			sensor_fuseid_info->status_val,
+			sensor_fuseid_info->status_mask,
+			sensor_fuseid_info->fuseid_addr_type,
+			sensor_fuseid_info->fuseid_data_type,
+			poll_delay);
+		if (rc < 0) {
+			CAM_ERR(CAM_SENSOR, "i2c poll apply setting Fail: %d", rc);
+			return rc;
+		}
+
+		/* read fuseid */
+		num_bytes = (int32_t)(sensor_fuseid_info->fuseid_len);
+		value = kzalloc(num_bytes + 1, GFP_KERNEL);
+		if (!value) {
+			CAM_ERR(CAM_SENSOR, "HwReadFuseid, kzalloc fail!");
+			return -EFAULT;
+		}
+		rc = camera_io_dev_read_seq(
+			&(s_ctrl->io_master_info),
+			sensor_fuseid_info->fuseid_addr,
+			value,
+			sensor_fuseid_info->fuseid_addr_type,
+			sensor_fuseid_info->fuseid_data_type,
+			num_bytes);
+		if (rc < 0) {
+			CAM_ERR(CAM_SENSOR, "Failed read I2C settings:%d", rc);
+			return rc;
+		}
+
+		/* copy to fuseid_data */
+		for (i = 0; (i < num_bytes) && (i < FUSEID_LEN_MAX); i++) {
+			s_ctrl->sensordata->fuseid_data[i] = value[i];
+			CAM_INFO(CAM_SENSOR, "sensorFuseidInfo, fuseid: %x", value[i]);
+		}
+	}
+
+	return rc;
+}
+
+static int32_t cam_sensor_apply_reg_settings(struct cam_sensor_ctrl_t *s_ctrl)
+{
+	int32_t rc = 0;
+	struct cam_camera_slave_info *slave_info = NULL;
+	if (!s_ctrl) {
+		CAM_ERR(CAM_SENSOR, "failed: %pK", s_ctrl);
+		return -EINVAL;
+	}
+
+	if (!(s_ctrl->sensordata)) {
+		CAM_ERR(CAM_SENSOR, "failed: %pK", s_ctrl->sensordata);
+		delete_request(&s_ctrl->i2c_data.sensor_reg_settings);
+		return -EINVAL;
+	}
+
+	slave_info = &(s_ctrl->sensordata->slave_info);
+	CAM_INFO(CAM_SENSOR, "sensor register settings type is %d",
+		slave_info->sensor_probe_info.sensor_reg_settings_type);
+	if (slave_info->sensor_probe_info.sensor_reg_settings_type != 0) {
+		rc = cam_sensor_apply_settings_array(s_ctrl,
+			&s_ctrl->i2c_data.sensor_reg_settings);
+		if (rc < 0)
+			CAM_ERR(CAM_SENSOR, "Cannot apply custom register settings");
+	}
+
+	delete_request(&s_ctrl->i2c_data.sensor_reg_settings);
 	return rc;
 }
 
@@ -776,8 +980,21 @@ int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 			goto free_power_settings;
 		}
 
+		/* Apply probe register settings */
+		rc = cam_sensor_apply_reg_settings(s_ctrl);
+		if (rc < 0)
+			CAM_ERR(CAM_SENSOR, "apply probe register settings failed");
+
 		/* Match sensor ID */
 		rc = cam_sensor_match_id(s_ctrl);
+		if (rc < 0) {
+			cam_sensor_power_down(s_ctrl);
+			msleep(20);
+			goto free_power_settings;
+		}
+
+		/* Match module ID */
+		rc = cam_module_match_id(s_ctrl);
 		if (rc < 0) {
 			cam_sensor_power_down(s_ctrl);
 			msleep(20);
@@ -789,6 +1006,14 @@ int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 			s_ctrl->soc_info.index,
 			s_ctrl->sensordata->slave_info.sensor_slave_addr,
 			s_ctrl->sensordata->slave_info.sensor_id);
+
+		/* Read fuseid */
+		rc = cam_sensor_read_fuseid(s_ctrl);
+		if (rc < 0) {
+			cam_sensor_power_down(s_ctrl);
+			msleep(20);
+			goto free_power_settings;
+		}
 
 		rc = cam_sensor_power_down(s_ctrl);
 		if (rc < 0) {
@@ -974,7 +1199,8 @@ int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 	}
 		break;
 	case CAM_STOP_DEV: {
-		if (s_ctrl->sensor_state != CAM_SENSOR_START) {
+		if ((s_ctrl->sensor_state != CAM_SENSOR_START) &&
+			(s_ctrl->sensor_state != CAM_SENSOR_CONFIG)) {
 			rc = -EINVAL;
 			CAM_WARN(CAM_SENSOR,
 			"Not in right state to stop : %d",
@@ -986,10 +1212,9 @@ int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 			(s_ctrl->i2c_data.streamoff_settings.request_id == 0)) {
 			rc = cam_sensor_apply_settings(s_ctrl, 0,
 				CAM_SENSOR_PACKET_OPCODE_SENSOR_STREAMOFF);
-			if (rc < 0) {
+			if (rc < 0)
 				CAM_ERR(CAM_SENSOR,
 				"cannot apply streamoff settings");
-			}
 		}
 
 		cam_sensor_release_per_frame_resource(s_ctrl);
@@ -1380,6 +1605,33 @@ int cam_sensor_apply_settings(struct cam_sensor_ctrl_t *s_ctrl,
 						del_req_id, rc);
 			}
 		}
+	}
+
+	return rc;
+}
+
+int32_t cam_sensor_apply_settings_array(struct cam_sensor_ctrl_t *s_ctrl,
+	struct i2c_settings_array *i2c_set)
+{
+	struct i2c_settings_list *i2c_list = NULL;
+	int32_t rc = 0;
+	if (!s_ctrl || !i2c_set) {
+		CAM_ERR(CAM_SENSOR, "Invalid Args");
+		return -EINVAL;
+	}
+
+	if (i2c_set->is_settings_valid != 1) {
+		CAM_ERR(CAM_SENSOR, " Invalid settings");
+		return -EINVAL;
+	}
+
+	list_for_each_entry(i2c_list,
+		&(i2c_set->list_head), list) {
+		rc = cam_sensor_i2c_modes_util(
+			&(s_ctrl->io_master_info),
+			i2c_list);
+		if (rc < 0)
+			CAM_ERR(CAM_SENSOR, "Failed apply settings: %d", rc);
 	}
 
 	return rc;

@@ -193,6 +193,7 @@ static int32_t cam_sensor_driver_i2c_probe(struct i2c_client *client,
 	INIT_LIST_HEAD(&(s_ctrl->i2c_data.streamon_settings.list_head));
 	INIT_LIST_HEAD(&(s_ctrl->i2c_data.streamoff_settings.list_head));
 	INIT_LIST_HEAD(&(s_ctrl->i2c_data.read_settings.list_head));
+	INIT_LIST_HEAD(&(s_ctrl->i2c_data.sensor_reg_settings.list_head));
 
 	for (i = 0; i < MAX_PER_FRAME_ARRAY; i++) {
 		INIT_LIST_HEAD(&(s_ctrl->i2c_data.per_frame[i].list_head));
@@ -220,6 +221,31 @@ free_s_ctrl:
 	return rc;
 }
 
+static void sensor_debug_adapter(struct debug_msg *recv_data, struct debug_msg *send_data)
+{
+	struct cam_sensor_ctrl_t *ctrl = NULL;
+	debug_dbg("enter, camid %d, cmd %d", recv_data->dev_id, recv_data->command);
+	ctrl = get_sensor_ctrl(recv_data->dev_id, CAM_SENSOR);
+	if (!ctrl) {
+		debug_err("ctrl is null");
+		return;
+	}
+	switch (recv_data->command) {
+		case SENSOR_I2C_READ: {
+			debug_dbg("SENSOR_I2C_READ");
+			send_data->state = i2c_read(recv_data, send_data, &(ctrl->io_master_info));
+			break;
+		}
+		case SENSOR_I2C_WRITE: {
+			debug_dbg("SENSOR_I2C_WRITE");
+			send_data->state = i2c_write(recv_data, &(ctrl->io_master_info));
+			break;
+		}
+		default:
+			debug_err("no_func");
+	}
+}
+
 static int cam_sensor_component_bind(struct device *dev,
 	struct device *master_dev, void *data)
 {
@@ -227,6 +253,8 @@ static int cam_sensor_component_bind(struct device *dev,
 	struct cam_sensor_ctrl_t *s_ctrl = NULL;
 	struct cam_hw_soc_info *soc_info = NULL;
 	struct platform_device *pdev = to_platform_device(dev);
+	struct dev_msg_t debug_dev;
+	struct camera_module_adapter_t sensor_adapter;
 
 	/* Create sensor control structure */
 	s_ctrl = devm_kzalloc(&pdev->dev,
@@ -248,6 +276,7 @@ static int cam_sensor_component_bind(struct device *dev,
 	s_ctrl->pdev = pdev;
 
 	s_ctrl->io_master_info.master_type = CCI_MASTER;
+	s_ctrl->io_master_info.device_type = CAM_SENSOR;
 
 	rc = cam_sensor_parse_dt(s_ctrl);
 	if (rc < 0) {
@@ -283,6 +312,7 @@ static int cam_sensor_component_bind(struct device *dev,
 	INIT_LIST_HEAD(&(s_ctrl->i2c_data.streamon_settings.list_head));
 	INIT_LIST_HEAD(&(s_ctrl->i2c_data.streamoff_settings.list_head));
 	INIT_LIST_HEAD(&(s_ctrl->i2c_data.read_settings.list_head));
+	INIT_LIST_HEAD(&(s_ctrl->i2c_data.sensor_reg_settings.list_head));
 
 	for (i = 0; i < MAX_PER_FRAME_ARRAY; i++) {
 		INIT_LIST_HEAD(&(s_ctrl->i2c_data.per_frame[i].list_head));
@@ -301,8 +331,20 @@ static int cam_sensor_component_bind(struct device *dev,
 	s_ctrl->sensordata->power_info.dev = &pdev->dev;
 	platform_set_drvdata(pdev, s_ctrl);
 	s_ctrl->sensor_state = CAM_SENSOR_INIT;
-	CAM_DBG(CAM_SENSOR, "Component bound successfully");
 
+	debug_dev.dev_id = s_ctrl->soc_info.index;
+	debug_dev.type = SENSOR;
+	debug_dev.handle = sensor_debug_adapter;
+	strcpy(debug_dev.dev_name, "SENSOR");
+	updata_dev_msg(&debug_dev);
+	updata_state_by_position(s_ctrl->soc_info.index, SENSOR, SENSOR_IS_EXIST);
+	sensor_adapter.slot_id = s_ctrl->soc_info.index;
+	sensor_adapter.vcm_id = s_ctrl->sensordata->subdev_id[SUB_MODULE_ACTUATOR];
+	sensor_adapter.ois_id = s_ctrl->sensordata->subdev_id[SUB_MODULE_OIS];
+	sensor_adapter.eeprom_id = s_ctrl->sensordata->subdev_id[SUB_MODULE_EEPROM];
+	sensor_adapter.s_ctrl = s_ctrl;
+	register_sensor_node(&sensor_adapter);
+	CAM_DBG(CAM_SENSOR, "Component bound successfully");
 	return rc;
 
 free_perframe:

@@ -222,6 +222,8 @@ struct cam_hw_soc_info {
 	int32_t                         cam_cx_ipeak_bit;
 
 	void                           *soc_private;
+	uint32_t                        sensor_mixed_pin;
+	bool                            btb_check_enable;
 };
 
 /**

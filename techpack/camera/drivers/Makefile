@@ -10,8 +10,12 @@ ccflags-y += -I$(srctree)/drivers/media/platform/msm/synx
 endif
 
 ccflags-y += -I$(srctree)/techpack/camera/include/uapi/camera
+ccflags-y += -I$(srctree)/techpack/camera/include/uapi/camera/media/
 ccflags-y += -I$(srctree)
-
+ccflags-y += -I$(srctree)/../../vendor/huawei/extra_qcom/kernel/drivers/hwsensor/
+ccflags-y += -I$(srctree)/../../vendor/huawei/extra_qcom/kernel/drivers/hwsensor/apsensor_channel/
+ccflags-y += -DVL53L1_FULL_KERNEL
+ccflags-y += -DVL53L3
 camera-y := \
 	cam_req_mgr/cam_req_mgr_core.o \
 	cam_req_mgr/cam_req_mgr_dev.o \
@@ -44,7 +48,8 @@ camera-y := \
 	cam_cdm/cam_cdm_intf.o \
 	cam_cdm/cam_cdm_core_common.o \
 	cam_cdm/cam_cdm_virtual_core.o \
-	cam_cdm/cam_cdm_hw_core.o
+	cam_cdm/cam_cdm_hw_core.o \
+	hwcam_hiview/hwcam_hiview.o
 
 ifneq (,$(filter $(CONFIG_QCOM_CX_IPEAK),y m))
 camera-y += cam_utils/cam_cx_ipeak.o
@@ -147,6 +152,7 @@ camera-$(CONFIG_SPECTRA_LRME) += \
 	cam_lrme/cam_lrme_context.o
 
 camera-$(CONFIG_SPECTRA_SENSOR) += \
+	cam_sensor_module/cam_actuator/actuator_bu64754.o \
 	cam_sensor_module/cam_actuator/cam_actuator_dev.o \
 	cam_sensor_module/cam_actuator/cam_actuator_core.o \
 	cam_sensor_module/cam_actuator/cam_actuator_soc.o \
@@ -170,18 +176,69 @@ camera-$(CONFIG_SPECTRA_SENSOR) += \
 	cam_sensor_module/cam_sensor_io/cam_sensor_qup_i2c.o \
 	cam_sensor_module/cam_sensor_io/cam_sensor_spi.o \
 	cam_sensor_module/cam_sensor_utils/cam_sensor_util.o \
-	cam_sensor_module/cam_res_mgr/cam_res_mgr.o
+	cam_sensor_module/cam_res_mgr/cam_res_mgr.o \
+	cam_sensor_module/camera_debug_adapter/debug_adapter.o \
+	cam_sensor_module/cam_ois/custom/vendor_ois_core.o \
+	cam_sensor_module/cam_ois/custom/vendor_ois_firmware.o \
+	cam_sensor_module/cam_ois/custom/dw9781/ois_dw9781.o \
+	cam_sensor_module/cam_ois/custom/dw9787/ois_dw9787.o \
+	cam_sensor_module/cam_ois/custom/lc898129/ois_lc898129_fun.o \
+	cam_sensor_module/cam_ois/custom/lc898129/ois_lc898129.o \
+	cam_sensor_module/cam_laser/tmf880x/tmf8801/tof8801_driver.o \
+	cam_sensor_module/cam_laser/tmf880x/tmf8801/tof8801_app0.o \
+	cam_sensor_module/cam_laser/tmf880x/tmf8801/tof8801_bootloader.o \
+	cam_sensor_module/cam_laser/tmf880x/tmf8801/tof_hex_interpreter.o \
+	cam_sensor_module/cam_laser/vl53L1/stmvl53l1_module.o \
+	cam_sensor_module/cam_laser/vl53L1/stmvl53l1_module-i2c.o \
+	cam_sensor_module/cam_laser/vl53L1/vl53l1_platform_ipp.o \
+	cam_sensor_module/cam_laser/vl53L1/protected/src/vl53l1_hist_funcs.o \
+	cam_sensor_module/cam_laser/vl53L1/protected/src/vl53l1_xtalk.o \
+	cam_sensor_module/cam_laser/vl53L1/protected/src/vl53l1_hist_algos_gen3.o \
+	cam_sensor_module/cam_laser/vl53L1/protected/src/vl53l1_hist_core.o \
+	cam_sensor_module/cam_laser/vl53L1/protected/src/vl53l1_sigma_estimate.o \
+	cam_sensor_module/cam_laser/vl53L1/protected/src/vl53l1_dmax.o \
+	cam_sensor_module/cam_laser/vl53L1/protected/src/vl53l1_hist_algos_gen4.o \
+	cam_sensor_module/cam_laser/vl53L1/stmvl53l1_i2c.o \
+	cam_sensor_module/cam_laser/vl53L1/stmvl53l1_log.o \
+	cam_sensor_module/cam_laser/vl53L1/src/vl53l1_api.o \
+	cam_sensor_module/cam_laser/vl53L1/src/vl53l1_api_core.o \
+	cam_sensor_module/cam_laser/vl53L1/src/vl53l1_api_strings.o \
+	cam_sensor_module/cam_laser/vl53L1/src/vl53l1_error_strings.o \
+	cam_sensor_module/cam_laser/vl53L1/src/vl53l1_core.o \
+	cam_sensor_module/cam_laser/vl53L1/src/vl53l1_register_funcs.o \
+	cam_sensor_module/cam_laser/vl53L1/src/vl53l1_api_preset_modes.o \
+	cam_sensor_module/cam_laser/vl53L1/src/vl53l1_api_calibration.o \
+	cam_sensor_module/cam_laser/vl53L1/src/vl53l1_silicon_core.o \
+	cam_sensor_module/cam_laser/vl53L1/src/vl53l1_zone_presets.o \
+	cam_sensor_module/cam_laser/vl53L1/src/vl53l1_nvm.o \
+	cam_sensor_module/cam_laser/vl53L1/src/vl53l1_api_debug.o \
+	cam_sensor_module/cam_laser/vl53L1/src/vl53l1_core_support.o \
+	cam_sensor_module/cam_laser/vl53L1/src/vl53l1_wait.o \
+	cam_sensor_module/cam_laser/vl53L1/src/vl53l1_nvm_debug.o \
+	cam_sensor_module/cam_laser/vi5300/vi5300_api.o \
+	cam_sensor_module/cam_laser/vi5300/vi5300_firmware.o \
+	cam_sensor_module/cam_laser/vi5300/vi5300_module.o \
+	cam_sensor_module/cam_laser/vi5300/vi5300_platform.o \
+	cam_sensor_module/cam_laser/cam_laser_dev.o \
+	cam_sensor_module/cam_laser/cam_laser_soc.o \
+	cam_sensor_module/cam_cfg/cam_cfg_dev.o \
+	cam_sensor_module/cam_cfg/cam_cfg_core.o \
+	cam_sensor_module/cam_ois/custom/aw86006/ois_aw86006.o \
 
 camera-$(CONFIG_LEDS_QPNP_FLASH_V2) += \
 	cam_sensor_module/cam_flash/cam_flash_dev.o \
 	cam_sensor_module/cam_flash/cam_flash_core.o \
-	cam_sensor_module/cam_flash/cam_flash_soc.o
+	cam_sensor_module/cam_flash/cam_flash_soc.o \
+	cam_sensor_module/cam_flash/cam_torch_classdev.o \
+	cam_sensor_module/cam_flash/cam_torch_thermal_protect_classdev.o
 
 ifneq (,$(filter $(CONFIG_LEDS_QTI_FLASH),y m))
 camera-y += \
 	cam_sensor_module/cam_flash/cam_flash_dev.o \
 	cam_sensor_module/cam_flash/cam_flash_core.o \
-	cam_sensor_module/cam_flash/cam_flash_soc.o
+	cam_sensor_module/cam_flash/cam_flash_soc.o \
+	cam_sensor_module/cam_flash/cam_torch_classdev.o \
+	cam_sensor_module/cam_flash/cam_torch_thermal_protect_classdev.o
 endif
 
 camera-$(CONFIG_SPECTRA_CUSTOM) += \
@@ -218,7 +275,6 @@ camera-$(CONFIG_SPECTRA_TFE) += \
 	cam_isp/isp_hw_mgr/isp_hw/tfe_csid_hw/cam_tfe_csid_core.o \
 	cam_isp/isp_hw_mgr/isp_hw/tfe_csid_hw/cam_tfe_csid530.o \
 	cam_isp/isp_hw_mgr/cam_tfe_hw_mgr.o
-
 
 camera-y += camera_main.o
 

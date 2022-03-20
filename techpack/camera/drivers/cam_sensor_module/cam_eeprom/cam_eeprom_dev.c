@@ -434,6 +434,7 @@ static int cam_eeprom_component_bind(struct device *dev,
 	e_ctrl->userspace_probe = false;
 
 	e_ctrl->io_master_info.master_type = CCI_MASTER;
+	e_ctrl->io_master_info.device_type = CAM_EEPROM;
 	e_ctrl->io_master_info.cci_client = kzalloc(
 		sizeof(struct cam_sensor_cci_client), GFP_KERNEL);
 	if (!e_ctrl->io_master_info.cci_client) {

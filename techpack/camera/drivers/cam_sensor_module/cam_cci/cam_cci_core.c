@@ -1121,9 +1121,10 @@ static int32_t cam_cci_burst_read(struct v4l2_subdev *sd,
 			CCI_I2C_M0_READ_BUF_LEVEL_ADDR + master * 0x100);
 		if (read_words <= 0) {
 			CAM_DBG(CAM_CCI, "FIFO Buffer lvl is 0");
-			continue;
+			goto enable_irq;
 		}
 
+read_again:
 		j++;
 		CAM_DBG(CAM_CCI, "Iteration: %u read_words %d", j, read_words);
 
@@ -1152,6 +1153,14 @@ static int32_t cam_cci_burst_read(struct v4l2_subdev *sd,
 		CAM_DBG(CAM_CCI, "Iteraion:%u total_read_words %d",
 			j, total_read_words);
 
+		read_words = cam_io_r_mb(base +
+			CCI_I2C_M0_READ_BUF_LEVEL_ADDR + master * 0x100);
+		if (read_words > 0) {
+			CAM_DBG(CAM_CCI, "FIFO Buffer lvl is %d", read_words);
+			goto read_again;
+		}
+
+enable_irq:
 		spin_lock_irqsave(&cci_dev->lock_status, flags);
 		if (cci_dev->irqs_disabled) {
 			irq_mask_update =

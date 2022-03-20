@@ -2,7 +2,6 @@
 /*
  * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
  */
-
 #include <linux/module.h>
 #include <cam_sensor_cmn_header.h>
 #include "cam_actuator_core.h"
@@ -10,6 +9,8 @@
 #include "cam_trace.h"
 #include "cam_common_util.h"
 #include "cam_packet_util.h"
+#include "debug_adapter.h"
+#include "actuator_bu64754.h"
 
 int32_t cam_actuator_construct_default_power_setting(
 	struct cam_sensor_power_ctrl_t *power_info)
@@ -211,6 +212,57 @@ static int32_t cam_actuator_i2c_modes_util(
 	return rc;
 }
 
+static int32_t cam_actuator_update_slave_address(struct cam_actuator_ctrl_t *a_ctrl, uint32_t slave_addr)
+{
+	int32_t rc = 0;
+
+	if (!a_ctrl) {
+		CAM_ERR(CAM_ACTUATOR, "Invalid Args");
+		return -EINVAL;
+	}
+
+	if (a_ctrl->io_master_info.master_type == CCI_MASTER) {
+		a_ctrl->io_master_info.cci_client->sid =
+			slave_addr >> 1;
+		CAM_DBG(CAM_ACTUATOR, "update Slave addr: 0x%x",
+			slave_addr);
+	} else if (a_ctrl->io_master_info.master_type == I2C_MASTER) {
+		a_ctrl->io_master_info.client->addr = slave_addr;
+		CAM_DBG(CAM_ACTUATOR, "update Slave addr: 0x%x", slave_addr);
+	} else {
+		CAM_ERR(CAM_ACTUATOR, "Invalid Master type: %d",
+			a_ctrl->io_master_info.master_type);
+		rc = -EINVAL;
+	}
+
+	return rc;
+}
+
+static int32_t cam_actuator_get_slave_address(struct cam_actuator_ctrl_t *a_ctrl, uint32_t *slave_addr)
+{
+	int32_t rc = 0;
+
+	if (!a_ctrl || !slave_addr) {
+		CAM_ERR(CAM_ACTUATOR, "Invalid Args");
+		return -EINVAL;
+	}
+
+	if (a_ctrl->io_master_info.master_type == CCI_MASTER) {
+		*slave_addr = a_ctrl->io_master_info.cci_client->sid << 1;
+		CAM_DBG(CAM_ACTUATOR, "get Slave addr: 0x%x",
+			*slave_addr);
+	} else if (a_ctrl->io_master_info.master_type == I2C_MASTER) {
+		*slave_addr = a_ctrl->io_master_info.client->addr;
+		CAM_DBG(CAM_ACTUATOR, "get Slave addr: 0x%x", *slave_addr);
+	} else {
+		CAM_ERR(CAM_ACTUATOR, "Invalid Master type: %d",
+			a_ctrl->io_master_info.master_type);
+		rc = -EINVAL;
+	}
+
+	return rc;
+}
+
 int32_t cam_actuator_slaveInfo_pkt_parser(struct cam_actuator_ctrl_t *a_ctrl,
 	uint32_t *cmd_buf, size_t len)
 {
@@ -240,6 +292,7 @@ int32_t cam_actuator_slaveInfo_pkt_parser(struct cam_actuator_ctrl_t *a_ctrl,
 			a_ctrl->io_master_info.master_type);
 		 rc = -EINVAL;
 	}
+	a_ctrl->dual_slave_addr = i2c_info->dual_slave_addr;
 
 	return rc;
 }
@@ -249,6 +302,7 @@ int32_t cam_actuator_apply_settings(struct cam_actuator_ctrl_t *a_ctrl,
 {
 	struct i2c_settings_list *i2c_list;
 	int32_t rc = 0;
+	uint32_t temp_addr = 0;
 
 	if (a_ctrl == NULL || i2c_set == NULL) {
 		CAM_ERR(CAM_ACTUATOR, "Invalid Args");
@@ -276,6 +330,29 @@ int32_t cam_actuator_apply_settings(struct cam_actuator_ctrl_t *a_ctrl,
 		}
 	}
 
+	cam_actuator_get_slave_address(a_ctrl, &temp_addr);
+
+	if (temp_addr == 0 || a_ctrl->dual_slave_addr == 0)
+		return rc;
+
+	cam_actuator_update_slave_address(a_ctrl, a_ctrl->dual_slave_addr);
+	list_for_each_entry(i2c_list,
+		&(i2c_set->list_head), list) {
+		rc = cam_actuator_i2c_modes_util(
+			&(a_ctrl->io_master_info),
+			i2c_list);
+		if (rc < 0) {
+			CAM_ERR(CAM_ACTUATOR,
+				"Failed to apply settings: %d",
+				rc);
+		} else {
+			CAM_DBG(CAM_ACTUATOR,
+				"Success:request ID: %d",
+				i2c_set->request_id);
+		}
+	}
+
+	cam_actuator_update_slave_address(a_ctrl, temp_addr);
 	return rc;
 }
 
@@ -805,6 +882,29 @@ void cam_actuator_shutdown(struct cam_actuator_ctrl_t *a_ctrl)
 	a_ctrl->cam_act_state = CAM_ACTUATOR_INIT;
 }
 
+static void actuator_debug_adapter(struct debug_msg *recv_data, struct debug_msg *send_data)
+{
+	struct cam_actuator_ctrl_t *ctrl = NULL;
+	ctrl = get_vcm_ctrl(recv_data->dev_id);
+	debug_dbg("enter");
+	if (!ctrl) {
+		debug_err("vcm ctrl is null");
+		return;
+	}
+	switch (recv_data->command) {
+	case VCM_I2C_READ:
+		debug_dbg("VCM_I2C_READ");
+		send_data->state = i2c_read(recv_data, send_data, &(ctrl->io_master_info));
+		break;
+	case VCM_I2C_WRITE:
+		debug_dbg("VCM_I2C_WRITE");
+		send_data->state = i2c_write(recv_data, &(ctrl->io_master_info));
+		break;
+	default:
+		debug_err("no function");
+	}
+}
+
 int32_t cam_actuator_driver_cmd(struct cam_actuator_ctrl_t *a_ctrl,
 	void *arg)
 {
@@ -812,6 +912,7 @@ int32_t cam_actuator_driver_cmd(struct cam_actuator_ctrl_t *a_ctrl,
 	struct cam_control *cmd = (struct cam_control *)arg;
 	struct cam_actuator_soc_private *soc_private = NULL;
 	struct cam_sensor_power_ctrl_t  *power_info = NULL;
+	struct dev_msg_t debug_dev;
 
 	if (!a_ctrl || !cmd) {
 		CAM_ERR(CAM_ACTUATOR, "Invalid Args");
@@ -872,8 +973,8 @@ int32_t cam_actuator_driver_cmd(struct cam_actuator_ctrl_t *a_ctrl,
 			rc = -EFAULT;
 			goto release_mutex;
 		}
-
 		a_ctrl->cam_act_state = CAM_ACTUATOR_ACQUIRE;
+
 	}
 		break;
 	case CAM_RELEASE_DEV: {
@@ -936,6 +1037,15 @@ int32_t cam_actuator_driver_cmd(struct cam_actuator_ctrl_t *a_ctrl,
 			CAM_ERR(CAM_ACTUATOR, "Failed Copy to User");
 			rc = -EFAULT;
 			goto release_mutex;
+		}
+		/* register vcm slotid */
+		debug_dev.dev_id = register_vcm_node(a_ctrl->soc_info.index, a_ctrl);
+		if (debug_dev.dev_id != -1) {
+			debug_dev.handle = actuator_debug_adapter;
+			debug_dev.type = VCM;
+			strcpy(debug_dev.dev_name, "VCM");
+			updata_dev_msg(&debug_dev);
+			updata_state_by_position(debug_dev.dev_id, VCM, SENSOR_IS_EXIST);
 		}
 	}
 		break;
@@ -1017,6 +1127,73 @@ int32_t cam_actuator_driver_cmd(struct cam_actuator_ctrl_t *a_ctrl,
 		break;
 	default:
 		CAM_ERR(CAM_ACTUATOR, "Invalid Opcode %d", cmd->op_code);
+	}
+
+release_mutex:
+	mutex_unlock(&(a_ctrl->actuator_mutex));
+
+	return rc;
+}
+
+int32_t cam_actuator_data_transfer(struct cam_actuator_ctrl_t *a_ctrl,
+	void *arg)
+{
+	int rc = 0;
+	struct cam_data_control *cmd = (struct cam_data_control *)arg;
+
+	if (!a_ctrl || !cmd) {
+		CAM_ERR(CAM_ACTUATOR, "Invalid Args");
+		return -EINVAL;
+	}
+
+	CAM_DBG(CAM_ACTUATOR, "Data_transfer to Actuator: %d", cmd->data_direct);
+
+	mutex_lock(&(a_ctrl->actuator_mutex));
+	switch (cmd->data_direct) {
+	case CAM_WRITE_REG: {
+		struct cam_data_transfer actuator_data_transfer;
+		unsigned char bu64754_nvm_otp_info[BU64754_AF_NVM_SIZE] = {0};
+		unsigned char *raw_otp_data;
+
+		rc = copy_from_user(&actuator_data_transfer,
+			u64_to_user_ptr(cmd->handle),
+			sizeof(actuator_data_transfer));
+		if (rc < 0) {
+			CAM_ERR(CAM_ACTUATOR, "Failed Copying from user\n");
+			goto release_mutex;
+		}
+
+		switch (actuator_data_transfer.data_type) {
+		case CAM_BU64754_OTP_DATA: {
+			if (bu64754_judge_checksum(a_ctrl) != 0) {
+				CAM_INFO(CAM_ACTUATOR, "BU64754 checksum fail, need to rewrite\n");
+
+				raw_otp_data = (unsigned char *)u64_to_user_ptr(actuator_data_transfer.data);
+				rc = copy_from_user(&bu64754_nvm_otp_info[0],
+					raw_otp_data + BU64754_NVM_REG,
+					BU64754_AF_NVM_SIZE);
+				if (rc < 0) {
+					CAM_ERR(CAM_ACTUATOR, "Failed Copying from user\n");
+					goto release_mutex;
+				}
+
+				rc = bu64754_rewrite_data_into_nvm(a_ctrl, bu64754_nvm_otp_info);
+				if (rc < 0) {
+					CAM_ERR(CAM_ACTUATOR, "BU64754 rewrite data failed\n");
+					goto release_mutex;
+				}
+			} else {
+				CAM_INFO(CAM_ACTUATOR, "BU64754 is correct, this is not need to rewrite\n");
+			}
+		}
+			break;
+		default:
+			CAM_ERR(CAM_ACTUATOR, "Invalid data_type %d", actuator_data_transfer.data_type);
+		}
+	}
+		break;
+	default:
+		CAM_ERR(CAM_ACTUATOR, "Invalid Direction %d", cmd->data_direct);
 	}
 
 release_mutex:

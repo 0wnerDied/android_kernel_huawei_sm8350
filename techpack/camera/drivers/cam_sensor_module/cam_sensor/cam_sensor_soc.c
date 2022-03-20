@@ -202,6 +202,11 @@ static int32_t cam_sensor_driver_get_dt_data(struct cam_sensor_ctrl_t *s_ctrl)
 		CAM_DBG(CAM_SENSOR, "Invalid sensor position");
 		sensordata->pos_yaw = 360;
 	}
+	if (of_property_read_u32(of_node, "ic_position",
+		&sensordata->ic_position) < 0) {
+		CAM_DBG(CAM_SENSOR, "Invalid ic position");
+		sensordata->ic_position = -1;
+	}
 
 	return rc;
 

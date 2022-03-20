@@ -22,6 +22,7 @@
 #include "cam_subdev.h"
 #include "cam_tasklet_util.h"
 #include "dt-bindings/msm/msm-camera.h"
+#include <chipset_common/dmd/camera_dmd.h>
 
 /* Timeout value in msec */
 #define IFE_CSID_TIMEOUT                               1000
@@ -55,8 +56,80 @@
 /* Max CSI Rx irq error count threshold value */
 #define CAM_IFE_CSID_MAX_IRQ_ERROR_COUNT               100
 
+/* Minimum number of CSI PHY ERROR reporting times */
+#define MIN_CSIPHY_ERROR_TIMES                         3
+
 static int cam_ife_csid_reset_regs(
 	struct cam_ife_csid_hw *csid_hw, bool reset_hw);
+
+typedef enum {
+	CSIPHY_ERROR_SCENE_INVALID            =     -1,
+
+	/* csi phy error scene */
+	CSIPHY_LANE_0_OVERFLOW,
+	CSIPHY_LANE_1_OVERFLOW,
+	CSIPHY_LANE_2_OVERFLOW,
+	CSIPHY_LANE_3_OVERFLOW,
+	CSIPHY_TG_OVERFLOW,
+	CSIPHY_CPHY_EOT_RECEPTION,
+	CSIPHY_CPHY_SOT_RECEPTION,
+	CSIPHY_CPHY_PH_CRC,
+	CSIPHY_ERROR_CRC,
+	CSIPHY_ERROR_ECC,
+	CSIPHY_MMAPPED_VC_DT,
+	CSIPHY_UNMAPPED_VC_DT,
+	CSIPHY_ERROR_STREAM_UNDERFLOW,
+	CSIPHY_UNBOUNDED_FRAME,
+	CSIPHY_ERROR_SCENE_MAX,
+} csiphy_error_scene;
+
+const char* g_driver_error_scene_info[CSIPHY_ERROR_SCENE_MAX] = {
+	/* csi phy error scene */
+	"(csiphy lane 0 over flow)",
+	"(csiphy lane 1 over flow)",
+	"(csiphy lane 2 over flow)",
+	"(csiphy lane 3 over flow)",
+	"(csiphy tg over flow)",
+	"(csiphy cphy eot reception)",
+	"(csiphy cphy sot reception)",
+	"(csiphy cphy ph crc)",
+	"(csiphy error crc)",
+	"(csiphy error ec)",
+	"(csiphy mmapped vc dt)",
+	"(csiphy unmapped vc dt)",
+	"(csiphy error stream underflow)",
+	"(csiphy unbounded frame)",
+};
+
+static csiphy_error_scene g_error_scene = CSIPHY_ERROR_SCENE_INVALID;
+static int g_error_times = 0;
+
+static inline void cam_ife_hiview_handle()
+{
+	if (g_error_scene > CSIPHY_ERROR_SCENE_INVALID &&
+		g_error_scene <= CSIPHY_LANE_3_OVERFLOW) {
+		struct camera_dmd_info cam_info;
+
+		g_error_times++;
+		if (g_error_times < MIN_CSIPHY_ERROR_TIMES) {
+			g_error_scene = CSIPHY_ERROR_SCENE_INVALID;
+			return;
+		}
+
+		if (!camkit_hiview_init(&cam_info)) {
+			cam_info.error_type = CSI_PHY_ERR;
+			if (strncpy_s(cam_info.extra_info.error_scene, sizeof(cam_info.extra_info.error_scene),
+				g_driver_error_scene_info[g_error_scene], sizeof(cam_info.extra_info.error_scene) - 1)) {
+				CAM_ERR(CAM_ISP, "strncpy_s fail");
+				return;
+			}
+			camkit_hiview_report(&cam_info);
+			g_error_scene = CSIPHY_ERROR_SCENE_INVALID;
+			g_error_times = 0;
+		}
+	}
+}
+
 static int cam_ife_csid_is_ipp_ppp_format_supported(
 	uint32_t in_format)
 {
@@ -688,6 +761,7 @@ static int cam_ife_csid_path_reset(struct cam_ife_csid_hw *csid_hw,
 
 	rem_jiffies = wait_for_completion_timeout(complete,
 		msecs_to_jiffies(CAM_IFE_CSID_RESET_TIMEOUT_MS));
+	cam_ife_hiview_handle();
 	if (!rem_jiffies) {
 		rc = -ETIMEDOUT;
 		CAM_ERR(CAM_ISP, "CSID:%d Res id %d fail rc = %d",
@@ -3842,6 +3916,7 @@ static int cam_ife_csid_reset_regs(
 
 	rem_jiffies = wait_for_completion_timeout(&csid_hw->csid_top_complete,
 		msecs_to_jiffies(CAM_IFE_CSID_RESET_TIMEOUT_MS));
+	cam_ife_hiview_handle();
 	if (rem_jiffies == 0) {
 		val = cam_io_r_mb(soc_info->reg_map[0].mem_base +
 			csid_reg->cmn_reg->csid_top_irq_status_addr);
@@ -5013,6 +5088,7 @@ irqreturn_t cam_ife_csid_irq(int irq_num, void *data)
 				"CSID:%d RX_ERROR_LANE0_FIFO_OVERFLOW: Skew/Less Data on lanes/ Slow csid clock:%luHz",
 				csid_hw->hw_intf->hw_idx,
 				soc_info->applied_src_clk_rate);
+			g_error_scene = CSIPHY_LANE_0_OVERFLOW;
 			fatal_err_detected = true;
 			goto handle_fatal_error;
 		}
@@ -5022,6 +5098,7 @@ irqreturn_t cam_ife_csid_irq(int irq_num, void *data)
 				"CSID:%d RX_ERROR_LANE1_FIFO_OVERFLOW: Skew/Less Data on lanes/ Slow csid clock:%luHz",
 				csid_hw->hw_intf->hw_idx,
 				soc_info->applied_src_clk_rate);
+			g_error_scene = CSIPHY_LANE_1_OVERFLOW;
 			fatal_err_detected = true;
 			goto handle_fatal_error;
 		}
@@ -5031,6 +5108,7 @@ irqreturn_t cam_ife_csid_irq(int irq_num, void *data)
 				"CSID:%d RX_ERROR_LANE2_FIFO_OVERFLOW: Skew/Less Data on lanes/ Slow csid clock:%luHz",
 				csid_hw->hw_intf->hw_idx,
 				soc_info->applied_src_clk_rate);
+			g_error_scene = CSIPHY_LANE_2_OVERFLOW;
 			fatal_err_detected = true;
 			goto handle_fatal_error;
 		}
@@ -5040,6 +5118,7 @@ irqreturn_t cam_ife_csid_irq(int irq_num, void *data)
 				"CSID:%d RX_ERROR_LANE3_FIFO_OVERFLOW: Skew/Less Data on lanes/ Slow csid clock:%luHz",
 				csid_hw->hw_intf->hw_idx,
 				soc_info->applied_src_clk_rate);
+			g_error_scene = CSIPHY_LANE_3_OVERFLOW;
 			fatal_err_detected = true;
 			goto handle_fatal_error;
 		}
@@ -5048,6 +5127,7 @@ irqreturn_t cam_ife_csid_irq(int irq_num, void *data)
 			CAM_ERR_RATE_LIMIT(CAM_ISP,
 				"CSID:%d RX_ERROR_TPG_FIFO_OVERFLOW: Backpressure from IFE",
 				csid_hw->hw_intf->hw_idx);
+			g_error_scene = CSIPHY_TG_OVERFLOW;
 			fatal_err_detected = true;
 			event_type |= CAM_ISP_HW_ERROR_CSID_OVERFLOW;
 			goto handle_fatal_error;
@@ -5058,6 +5138,7 @@ irqreturn_t cam_ife_csid_irq(int irq_num, void *data)
 			CAM_ERR_RATE_LIMIT(CAM_ISP,
 				"CSID:%d CPHY_EOT_RECEPTION: No EOT on lane/s",
 				csid_hw->hw_intf->hw_idx);
+			g_error_scene = CSIPHY_CPHY_EOT_RECEPTION;
 			csid_hw->error_irq_count++;
 			non_fatal_detected = true;
 		}
@@ -5066,6 +5147,7 @@ irqreturn_t cam_ife_csid_irq(int irq_num, void *data)
 			CAM_ERR_RATE_LIMIT(CAM_ISP,
 				"CSID:%d CPHY_SOT_RECEPTION: Less SOTs on lane/s",
 				csid_hw->hw_intf->hw_idx);
+			g_error_scene = CSIPHY_CPHY_SOT_RECEPTION;
 			csid_hw->error_irq_count++;
 			non_fatal_detected = true;
 		}
@@ -5074,6 +5156,7 @@ irqreturn_t cam_ife_csid_irq(int irq_num, void *data)
 			CAM_ERR_RATE_LIMIT(CAM_ISP,
 				"CSID:%d CPHY_PH_CRC CPHY: Pkt Hdr CRC mismatch",
 				csid_hw->hw_intf->hw_idx);
+			g_error_scene = CSIPHY_CPHY_PH_CRC;
 			fatal_err_detected = true;
 			goto handle_fatal_error;
 		}
@@ -5082,6 +5165,7 @@ irqreturn_t cam_ife_csid_irq(int irq_num, void *data)
 			CAM_ERR_RATE_LIMIT(CAM_ISP,
 				"CSID:%d ERROR_CRC CPHY: Long pkt payload CRC mismatch",
 				csid_hw->hw_intf->hw_idx);
+			g_error_scene = CSIPHY_ERROR_CRC;
 			csid_hw->error_irq_count++;
 			non_fatal_detected = true;
 		}
@@ -5090,6 +5174,7 @@ irqreturn_t cam_ife_csid_irq(int irq_num, void *data)
 			CAM_ERR_RATE_LIMIT(CAM_ISP,
 				"CSID:%d ERROR_ECC: Dphy pkt hdr errors unrecoverable",
 				csid_hw->hw_intf->hw_idx);
+			g_error_scene = CSIPHY_ERROR_ECC;
 			fatal_err_detected = true;
 			goto handle_fatal_error;
 		}
@@ -5102,6 +5187,7 @@ irqreturn_t cam_ife_csid_irq(int irq_num, void *data)
 				"CSID:%d MMAPPED_VC_DT: VC:%d DT:%d mapped to more than 1 csid paths",
 				csid_hw->hw_intf->hw_idx, (val >> 22),
 				((val >> 16) & 0x3F), (val & 0xFFFF));
+			g_error_scene = CSIPHY_MMAPPED_VC_DT;
 		}
 		if ((irq_status[CAM_IFE_CSID_IRQ_REG_RX] &
 			CSID_CSI2_RX_ERROR_UNMAPPED_VC_DT) &&
@@ -5115,6 +5201,7 @@ irqreturn_t cam_ife_csid_irq(int irq_num, void *data)
 				"CSID:%d UNMAPPED_VC_DT: VC:%d DT:%d WC:%d not mapped to any csid paths",
 				csid_hw->hw_intf->hw_idx, (val >> 22),
 				((val >> 16) & 0x3F), (val & 0xFFFF));
+			g_error_scene = CSIPHY_UNMAPPED_VC_DT;
 			csid_hw->error_irq_count++;
 			non_fatal_detected = true;
 		}
@@ -5126,6 +5213,7 @@ irqreturn_t cam_ife_csid_irq(int irq_num, void *data)
 			CAM_ERR_RATE_LIMIT(CAM_ISP,
 				"CSID:%d ERROR_STREAM_UNDERFLOW: Fewer bytes rcvd than WC:%d in pkt hdr",
 				csid_hw->hw_intf->hw_idx, (val & 0xFFFF));
+			g_error_scene = CSIPHY_ERROR_STREAM_UNDERFLOW;
 			fatal_err_detected = true;
 			goto handle_fatal_error;
 		}
@@ -5134,6 +5222,7 @@ irqreturn_t cam_ife_csid_irq(int irq_num, void *data)
 			CAM_ERR_RATE_LIMIT(CAM_ISP,
 				"CSID:%d UNBOUNDED_FRAME: Frame started with EOF or No EOF",
 				csid_hw->hw_intf->hw_idx);
+			g_error_scene = CSIPHY_UNBOUNDED_FRAME;
 			csid_hw->error_irq_count++;
 			non_fatal_detected = true;
 		}

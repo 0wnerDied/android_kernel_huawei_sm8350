@@ -14,6 +14,7 @@
 #define CAM_FLASH_MAX_LED_TRIGGERS 2
 #define MAX_OIS_NAME_SIZE 32
 #define CAM_CSIPHY_SECURE_MODE_ENABLED 1
+#define FUSEID_LEN_MAX 30
 /**
  * struct cam_sensor_query_cap - capabilities info for sensor
  *
@@ -40,6 +41,21 @@ struct  cam_sensor_query_cap {
 	__u32        ois_slot_id;
 	__u32        flash_slot_id;
 	__u32        csiphy_slot_id;
+	__u8         fuseid_data[FUSEID_LEN_MAX];
+} __attribute__((packed));
+
+struct  cam_i2c_setting {
+	__u32        reg;
+	__u32        val;
+	__u32        delay;
+	__u32        op;
+} __attribute__((packed));
+
+struct  cam_data_reg {
+	__u32  addr_type;
+	__u32  data_type;
+	__u32  size;
+	struct cam_i2c_setting data[30];
 } __attribute__((packed));
 
 /**
@@ -103,6 +119,7 @@ struct cam_cmd_i2c_info {
 	__u8     i2c_freq_mode;
 	__u8     cmd_type;
 	__u16    reserved;
+	__u32    dual_slave_addr;
 } __attribute__((packed));
 
 /**
@@ -116,6 +133,7 @@ struct cam_cmd_i2c_info {
 struct cam_ois_opcode {
 	__u32 prog;
 	__u32 coeff;
+	char fw_ver_name[MAX_OIS_NAME_SIZE];
 	__u32 pheripheral;
 	__u32 memory;
 } __attribute__((packed));
@@ -139,6 +157,42 @@ struct cam_cmd_ois_info {
 	__u8                  is_ois_calib;
 	char                  ois_name[MAX_OIS_NAME_SIZE];
 	struct cam_ois_opcode opcode;
+} __attribute__((packed));
+
+struct custom_module_version_info {
+	__u8 module_version_flag;
+	__u16 module_version_addr;
+	__u16 module_version_data;
+} __attribute__((packed));
+
+struct custom_sensor_fuseid_info {
+	__u8 fuseid_flag;
+	__u8 fuseid_data_type;
+	__u8 fuseid_addr_type;
+	__u16 status_addr;
+	__u8 status_val;
+	__u8 status_mask;
+	__u16 fuseid_addr;
+	__u8 fuseid_len;
+} __attribute__((packed));
+
+struct custom_sensor_probe_info {
+	/* probe sensor info */
+	__u8 sensor_reg_settings_type;
+	struct custom_sensor_fuseid_info sensor_fuseid_info;
+} __attribute__((packed));
+
+struct custom_module_probe_info {
+	/* probe module info */
+	__u8 module_code_support;
+	__u8 cloud_module_code_support;
+	__u8 module_code_data_type;
+	__u8 module_code_addr_type;
+	__u16 eeprom_slave_addr;
+	__u16 module_code_data;
+	__u16 module_code_addr;
+	__u16 cloud_module_code_data;
+	struct custom_module_version_info module_version;
 } __attribute__((packed));
 
 /**
@@ -165,6 +219,8 @@ struct cam_cmd_probe {
 	__u32    data_mask;
 	__u16    camera_id;
 	__u16    reserved;
+	struct custom_sensor_probe_info sensor_probe_info;
+	struct custom_module_probe_info module_probe_info;
 } __attribute__((packed));
 
 /**
@@ -484,5 +540,12 @@ struct cam_flash_query_cap_info {
 	__u32    max_duration_flash[CAM_FLASH_MAX_LED_TRIGGERS];
 	__u32    max_current_torch[CAM_FLASH_MAX_LED_TRIGGERS];
 } __attribute__ ((packed));
+
+enum cam_probe_packet_idx_t {
+	CAM_PROBE_PKT_SLAVE_INFO_IDX,
+	CAM_PROBE_PKT_NORMAL_POWER_IDX,
+	CAM_PROBE_PKT_SENSOR_REG_SETTING_IDX,
+	CAM_PROBE_PKT_MAX_IDX,
+};
 
 #endif

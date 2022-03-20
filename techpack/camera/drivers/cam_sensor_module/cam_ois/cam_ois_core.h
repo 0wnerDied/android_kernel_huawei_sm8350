@@ -30,5 +30,13 @@ int cam_ois_driver_cmd(struct cam_ois_ctrl_t *e_ctrl, void *arg);
  */
 void cam_ois_shutdown(struct cam_ois_ctrl_t *o_ctrl);
 
+/**
+ * @o_ctrl: OIS ctrl structure
+ * @arg:    Camera control command argument
+ *
+ * This API handles the camera data transfer argument reached to OIS
+ */
+int32_t cam_ois_data_transfer(struct cam_ois_ctrl_t *o_ctrl, void *arg);
+
 #endif
 /* _CAM_OIS_CORE_H_ */

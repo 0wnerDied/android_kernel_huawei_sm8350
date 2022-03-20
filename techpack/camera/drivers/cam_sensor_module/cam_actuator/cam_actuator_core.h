@@ -58,6 +58,14 @@ int32_t cam_actuator_driver_cmd(struct cam_actuator_ctrl_t *a_ctrl, void *arg);
 
 /**
  * @a_ctrl: Actuator ctrl structure
+ * @arg:    Camera control command argument
+ *
+ * This API handles the camera data transfer argument reached to actuator
+ */
+int32_t cam_actuator_data_transfer(struct cam_actuator_ctrl_t *a_ctrl, void *arg);
+
+/**
+ * @a_ctrl: Actuator ctrl structure
  *
  * This API handles the shutdown ioctl/close
  */

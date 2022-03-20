@@ -32,6 +32,11 @@
 
 #define CAM_PKT_NOP_OPCODE 127
 
+#define MIXED_PIN_MAX_NUM  5
+#define MIXED_PIN_NAME_LEN 12
+#define CONFIG_GPIO        0
+#define CONFIG_LDO         1
+
 enum camera_sensor_cmd_type {
 	CAMERA_SENSOR_CMD_TYPE_INVALID,
 	CAMERA_SENSOR_CMD_TYPE_PROBE,
@@ -142,7 +147,14 @@ enum msm_camera_power_seq_type {
 	SENSOR_STANDBY,
 	SENSOR_CUSTOM_GPIO1,
 	SENSOR_CUSTOM_GPIO2,
+	SENSOR_CUSTOM_GPIO3,
+	SENSOR_CUSTOM_MIXED_PIN1,
+	SENSOR_CUSTOM_MIXED_PIN2,
+	SENSOR_CUSTOM_MIXED_PIN3,
+	SENSOR_CUSTOM_MIXED_PIN4,
+	SENSOR_CUSTOM_MIXED_PIN5,
 	SENSOR_VANA1,
+	SENSOR_BTB_DET,
 	SENSOR_SEQ_TYPE_MAX,
 };
 
@@ -174,7 +186,9 @@ enum cam_ois_packet_opcodes {
 	CAM_OIS_PACKET_OPCODE_INIT,
 	CAM_OIS_PACKET_OPCODE_OIS_CONTROL,
 	CAM_OIS_PACKET_OPCODE_READ,
-	CAM_OIS_PACKET_OPCODE_WRITE_TIME
+	CAM_OIS_PACKET_OPCODE_WRITE_TIME,
+	CAM_OIS_PACKET_OPCODE_CUSTOM_CONFIG,
+	CAM_OIS_PACKET_OPCODE_CUSTOM_INIT,
 };
 
 enum msm_bus_perf_setting {
@@ -309,6 +323,7 @@ struct i2c_data_settings {
 	struct i2c_settings_array read_settings;
 	struct i2c_settings_array *per_frame;
 	struct i2c_settings_array *frame_skip;
+	struct i2c_settings_array sensor_reg_settings;
 };
 
 struct cam_sensor_power_ctrl_t {
@@ -327,6 +342,8 @@ struct cam_camera_slave_info {
 	uint16_t sensor_id_reg_addr;
 	uint16_t sensor_id;
 	uint16_t sensor_id_mask;
+	struct custom_sensor_probe_info sensor_probe_info;
+	struct custom_module_probe_info module_probe_info;
 };
 
 struct msm_sensor_init_params {
@@ -378,8 +395,10 @@ struct cam_sensor_board_info {
 	int32_t pos_pitch;
 	int32_t  subdev_id[SUB_MODULE_MAX];
 	int32_t  subdev_intf[SUB_MODULE_MAX];
+	uint8_t fuseid_data[FUSEID_LEN_MAX];
 	const char *misc_regulator;
 	struct cam_sensor_power_ctrl_t power_info;
+	int32_t ic_position;
 };
 
 enum msm_camera_vreg_name_t {

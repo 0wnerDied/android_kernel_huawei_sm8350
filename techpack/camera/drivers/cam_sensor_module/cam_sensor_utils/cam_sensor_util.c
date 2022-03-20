@@ -8,6 +8,7 @@
 #include "cam_sensor_util.h"
 #include "cam_mem_mgr.h"
 #include "cam_res_mgr_api.h"
+#include "hwcam_hiview.h"
 
 #define CAM_SENSOR_PINCTRL_STATE_SLEEP "cam_suspend"
 #define CAM_SENSOR_PINCTRL_STATE_DEFAULT "cam_default"
@@ -55,7 +56,7 @@ int32_t cam_sensor_util_get_current_qtimer_ns(uint64_t *qtime_ns)
 	if (qtime_ns != NULL) {
 		*qtime_ns = mul_u64_u32_div(ticks,
 			QTIMER_MUL_FACTOR, QTIMER_DIV_FACTOR);
-		CAM_DBG(CAM_SENSOR, "Qtimer time: 0x%x", *qtime_ns);
+		CAM_DBG(CAM_SENSOR, "Qtimer time: 0x%llx", *qtime_ns);
 	} else {
 		CAM_ERR(CAM_SENSOR, "NULL pointer passed");
 		return -EINVAL;
@@ -990,6 +991,7 @@ int32_t msm_camera_fill_vreg_params(
 {
 	int32_t rc = 0, j = 0, i = 0;
 	int num_vreg;
+	char mixed_name[MIXED_PIN_NAME_LEN] = {0};
 
 	/* Validate input parameters */
 	if (!soc_info || !power_setting) {
@@ -1169,6 +1171,42 @@ int32_t msm_camera_fill_vreg_params(
 					"cam_v_custom2")) {
 					CAM_DBG(CAM_SENSOR,
 						"i:%d j:%d cam_vcustom2", i, j);
+					power_setting[i].seq_val = j;
+
+					if (VALIDATE_VOLTAGE(
+						soc_info->rgltr_min_volt[j],
+						soc_info->rgltr_max_volt[j],
+						power_setting[i].config_val)) {
+						soc_info->rgltr_min_volt[j] =
+						soc_info->rgltr_max_volt[j] =
+						power_setting[i].config_val;
+					}
+					break;
+				}
+			}
+			if (j == num_vreg)
+				power_setting[i].seq_val = INVALID_VREG;
+			break;
+
+		case SENSOR_CUSTOM_MIXED_PIN1:
+		case SENSOR_CUSTOM_MIXED_PIN2:
+		case SENSOR_CUSTOM_MIXED_PIN3:
+		case SENSOR_CUSTOM_MIXED_PIN4:
+		case SENSOR_CUSTOM_MIXED_PIN5:
+			rc = sprintf(mixed_name, "cam_mixed%d",
+				power_setting[i].seq_type - SENSOR_CUSTOM_MIXED_PIN1 + 1);
+			if (rc < 0) {
+				CAM_ERR(CAM_SENSOR, "sprintf fail with rc=%d", rc);
+				rc = 0;
+				break;
+			}
+			rc = 0;
+			for (j = 0; j < num_vreg; j++) {
+
+				if (!strcmp(soc_info->rgltr_name[j],
+					mixed_name)) {
+					CAM_DBG(CAM_SENSOR,
+						"i:%d j:%d cam_mixed:%s", i, j, mixed_name);
 					power_setting[i].seq_val = j;
 
 					if (VALIDATE_VOLTAGE(
@@ -1652,6 +1690,9 @@ int cam_sensor_util_init_gpio_pin_tbl(
 	struct cam_hw_soc_info *soc_info,
 	struct msm_camera_gpio_num_info **pgpio_num_info)
 {
+	int i = 0;
+	int type = SENSOR_CUSTOM_MIXED_PIN1;
+	char mixed_name[MIXED_PIN_NAME_LEN] = {0};
 	int rc = 0, val = 0;
 	uint32_t gpio_array_size;
 	struct device_node *of_node = NULL;
@@ -1796,6 +1837,24 @@ int cam_sensor_util_init_gpio_pin_tbl(
 			gpio_num_info->gpio_num[SENSOR_RESET]);
 	}
 
+	rc = of_property_read_u32(of_node, "gpio-btb-det", &val);
+	if (rc != -EINVAL) {
+		if (rc < 0) {
+			CAM_ERR(CAM_SENSOR, "read gpio-btb-det failed rc %d", rc);
+			goto free_gpio_info;
+		} else if (val >= gpio_array_size) {
+			CAM_ERR(CAM_SENSOR, "gpio-btb-det invalid %d", val);
+			rc = -EINVAL;
+			goto free_gpio_info;
+		}
+		gpio_num_info->gpio_num[SENSOR_BTB_DET] =
+			gconf->cam_gpio_common_tbl[val].gpio;
+		gpio_num_info->valid[SENSOR_BTB_DET] = 1;
+
+		CAM_DBG(CAM_SENSOR, "gpio-btb-det %d",
+			gpio_num_info->gpio_num[SENSOR_BTB_DET]);
+	}
+
 	rc = of_property_read_u32(of_node, "gpio-standby", &val);
 	if (rc != -EINVAL) {
 		if (rc < 0) {
@@ -1872,6 +1931,57 @@ int cam_sensor_util_init_gpio_pin_tbl(
 			gpio_num_info->gpio_num[SENSOR_CUSTOM_GPIO2]);
 	} else {
 		rc = 0;
+	}
+
+	rc = of_property_read_u32(of_node, "gpio-custom3", &val);
+	if (rc != -EINVAL) {
+		if (rc < 0) {
+			CAM_ERR(CAM_SENSOR,
+				"read gpio-custom3 failed rc %d", rc);
+			goto free_gpio_info;
+		} else if (val >= gpio_array_size) {
+			CAM_ERR(CAM_SENSOR, "gpio-custom3 invalid %d", val);
+			rc = -EINVAL;
+			goto free_gpio_info;
+		}
+		gpio_num_info->gpio_num[SENSOR_CUSTOM_GPIO3] =
+			gconf->cam_gpio_common_tbl[val].gpio;
+		gpio_num_info->valid[SENSOR_CUSTOM_GPIO3] = 1;
+
+		CAM_INFO(CAM_SENSOR, "gpio-custom3 %d",
+			gpio_num_info->gpio_num[SENSOR_CUSTOM_GPIO3]);
+	} else {
+		rc = 0;
+	}
+
+	for (; i < MIXED_PIN_MAX_NUM; i++) {
+		type = SENSOR_CUSTOM_MIXED_PIN1 + i;
+		rc = sprintf(mixed_name, "gpio-mixed%d", i + 1);
+		if (rc < 0) {
+			CAM_ERR(CAM_SENSOR, "sprintf fail with rc=%d", rc);
+			rc = 0;
+			break;
+		}
+		rc = of_property_read_u32(of_node, mixed_name, &val);
+		if (rc != -EINVAL) {
+			if (rc < 0) {
+				CAM_ERR(CAM_SENSOR,
+					"read gpio-mixed failed rc %d", rc);
+				goto free_gpio_info;
+			} else if (val >= gpio_array_size) {
+				CAM_ERR(CAM_SENSOR, "gpio-mixed invalid %d", val);
+				rc = -EINVAL;
+				goto free_gpio_info;
+			}
+			gpio_num_info->gpio_num[type] =
+				gconf->cam_gpio_common_tbl[val].gpio;
+			gpio_num_info->valid[type] = 1;
+
+			CAM_INFO(CAM_SENSOR, "gpio-mixed type:%d, num:%d",
+				type, gpio_num_info->gpio_num[type]);
+		} else {
+			rc = 0;
+		}
 	}
 
 	return rc;
@@ -2009,13 +2119,17 @@ int cam_sensor_core_power_up(struct cam_sensor_power_ctrl_t *ctrl,
 	int32_t vreg_idx = -1;
 	struct cam_sensor_power_setting *power_setting = NULL;
 	struct msm_camera_gpio_num_info *gpio_num_info = NULL;
+	struct cam_sensor_ctrl_t *s_ctrl = NULL;
+	int mixed_pin;
+	int state;
 
 	CAM_DBG(CAM_SENSOR, "Enter");
-	if (!ctrl) {
+	if (!ctrl || !soc_info) {
 		CAM_ERR(CAM_SENSOR, "Invalid ctrl handle");
 		return -EINVAL;
 	}
 
+	s_ctrl = container_of(soc_info, struct cam_sensor_ctrl_t, soc_info);
 	gpio_num_info = ctrl->gpio_num_info;
 	num_vreg = soc_info->num_rgltr;
 
@@ -2122,12 +2236,64 @@ int cam_sensor_core_power_up(struct cam_sensor_power_ctrl_t *ctrl,
 			}
 			break;
 		case SENSOR_RESET:
+			if (no_gpio) {
+				CAM_ERR(CAM_SENSOR, "request gpio failed");
+				/* goto power_up_failed; */
+				break;
+			}
+			if (!gpio_num_info) {
+				CAM_ERR(CAM_SENSOR, "Invalid gpio_num_info");
+				goto power_up_failed;
+			}
+			if (soc_info->btb_check_enable) {
+				state = gpio_get_value(gpio_num_info->gpio_num[SENSOR_RESET]) ? 1 : 0;
+				CAM_INFO(CAM_SENSOR, "%s camera gpio:SENSOR_RESET read val is %d",
+					soc_info->dev_name, state);
+				if (state) {
+					CAM_ERR(CAM_SENSOR, "%s camera btb check fail, ic_position is %d",
+						soc_info->dev_name, s_ctrl->sensordata->ic_position);
+					cam_hiview_handle(BTB_CHECK_ERR, s_ctrl,
+						"(gpio:SENSOR_RESET is HIGH_STATE)");
+				}
+
+				if (gpio_num_info->valid[SENSOR_BTB_DET]) {
+					state = gpio_get_value(gpio_num_info->gpio_num[SENSOR_BTB_DET]) ? 1 : 0;
+					CAM_INFO(CAM_SENSOR, "%s camera gpio:SENSOR_BTB_DET read val is %d",
+						soc_info->dev_name, state);
+					if (state) {
+						CAM_ERR(CAM_SENSOR, "%s camera btb check fail, ic_position is %d",
+							soc_info->dev_name, s_ctrl->sensordata->ic_position);
+						cam_hiview_handle(BTB_CHECK_ERR, s_ctrl,
+							"(gpio:SENSOR_BTB_DET is HIGH_STATE)");
+					}
+				}
+
+				rc = gpio_direction_output(gpio_num_info->gpio_num[SENSOR_RESET], 0);
+				if (rc < 0) {
+					CAM_ERR(CAM_SENSOR, "%s camera gpio:SENSOR_RESET set direction output fail",
+						soc_info->dev_name);
+					goto power_up_failed;
+				}
+			}
+			rc = msm_cam_sensor_handle_reg_gpio(
+				SENSOR_RESET,
+				gpio_num_info,
+				(int)power_setting->config_val);
+			if (rc < 0) {
+				CAM_ERR(CAM_SENSOR,
+					"Error in handling VREG GPIO");
+				goto power_up_failed;
+			}
+			break;
 		case SENSOR_STANDBY:
 		case SENSOR_CUSTOM_GPIO1:
 		case SENSOR_CUSTOM_GPIO2:
+		case SENSOR_CUSTOM_GPIO3:
+handle_gpio:
 			if (no_gpio) {
 				CAM_ERR(CAM_SENSOR, "request gpio failed");
-				goto power_up_failed;
+				/* goto power_up_failed; */
+				break;
 			}
 			if (!gpio_num_info) {
 				CAM_ERR(CAM_SENSOR, "Invalid gpio_num_info");
@@ -2155,6 +2321,7 @@ int cam_sensor_core_power_up(struct cam_sensor_power_ctrl_t *ctrl,
 		case SENSOR_VAF_PWDM:
 		case SENSOR_CUSTOM_REG1:
 		case SENSOR_CUSTOM_REG2:
+handle_ldo:
 			if (power_setting->seq_val == INVALID_VREG)
 				break;
 
@@ -2210,6 +2377,21 @@ int cam_sensor_core_power_up(struct cam_sensor_power_ctrl_t *ctrl,
 				goto power_up_failed;
 			}
 			break;
+		case SENSOR_CUSTOM_MIXED_PIN1:
+		case SENSOR_CUSTOM_MIXED_PIN2:
+		case SENSOR_CUSTOM_MIXED_PIN3:
+		case SENSOR_CUSTOM_MIXED_PIN4:
+		case SENSOR_CUSTOM_MIXED_PIN5:
+			mixed_pin = soc_info->sensor_mixed_pin &
+				(1 << (power_setting->seq_type - SENSOR_CUSTOM_MIXED_PIN1));
+			CAM_INFO(CAM_SENSOR, "sensor_mixed_pin config:%s",
+				mixed_pin == CONFIG_GPIO ? "gpio" : "ldo");
+			if (mixed_pin == CONFIG_GPIO) {
+				goto handle_gpio;
+			} else {
+				goto handle_ldo;
+			}
+			break;
 		default:
 			CAM_ERR(CAM_SENSOR, "error power seq type %d",
 				power_setting->seq_type);
@@ -2247,6 +2429,8 @@ power_up_failed:
 		case SENSOR_STANDBY:
 		case SENSOR_CUSTOM_GPIO1:
 		case SENSOR_CUSTOM_GPIO2:
+		case SENSOR_CUSTOM_GPIO3:
+handle_gpio_fail:
 			if (!gpio_num_info)
 				continue;
 			if (!gpio_num_info->valid
@@ -2264,6 +2448,7 @@ power_up_failed:
 		case SENSOR_VAF_PWDM:
 		case SENSOR_CUSTOM_REG1:
 		case SENSOR_CUSTOM_REG2:
+handle_ldo_fail:
 			if (power_setting->seq_val < num_vreg) {
 				CAM_DBG(CAM_SENSOR, "Disable Regulator");
 				vreg_idx = power_setting->seq_val;
@@ -2298,6 +2483,20 @@ power_up_failed:
 			msm_cam_sensor_handle_reg_gpio(power_setting->seq_type,
 				gpio_num_info, GPIOF_OUT_INIT_LOW);
 
+			break;
+		case SENSOR_CUSTOM_MIXED_PIN1:
+		case SENSOR_CUSTOM_MIXED_PIN2:
+		case SENSOR_CUSTOM_MIXED_PIN3:
+		case SENSOR_CUSTOM_MIXED_PIN4:
+		case SENSOR_CUSTOM_MIXED_PIN5:
+			mixed_pin = soc_info->sensor_mixed_pin &
+				(1 << (power_setting->seq_type - SENSOR_CUSTOM_MIXED_PIN1));
+			CAM_INFO(CAM_SENSOR, "sensor_mixed_pin config:%s",
+				mixed_pin == CONFIG_GPIO ? "gpio" : "ldo");
+			if (mixed_pin == CONFIG_GPIO)
+				goto handle_gpio_fail;
+			else
+				goto handle_ldo_fail;
 			break;
 		default:
 			CAM_ERR(CAM_SENSOR, "error power seq type %d",
@@ -2355,6 +2554,7 @@ int cam_sensor_util_power_down(struct cam_sensor_power_ctrl_t *ctrl,
 	struct cam_sensor_power_setting *pd = NULL;
 	struct cam_sensor_power_setting *ps = NULL;
 	struct msm_camera_gpio_num_info *gpio_num_info = NULL;
+	int mixed_pin;
 
 	CAM_DBG(CAM_SENSOR, "Enter");
 	if (!ctrl || !soc_info) {
@@ -2406,7 +2606,8 @@ int cam_sensor_util_power_down(struct cam_sensor_power_ctrl_t *ctrl,
 		case SENSOR_STANDBY:
 		case SENSOR_CUSTOM_GPIO1:
 		case SENSOR_CUSTOM_GPIO2:
-
+		case SENSOR_CUSTOM_GPIO3:
+pw_handle_gpio:
 			if (!gpio_num_info->valid[pd->seq_type])
 				continue;
 
@@ -2424,6 +2625,7 @@ int cam_sensor_util_power_down(struct cam_sensor_power_ctrl_t *ctrl,
 		case SENSOR_VAF_PWDM:
 		case SENSOR_CUSTOM_REG1:
 		case SENSOR_CUSTOM_REG2:
+pw_handle_ldo:
 			if (pd->seq_val == INVALID_VREG)
 				break;
 
@@ -2473,6 +2675,20 @@ int cam_sensor_util_power_down(struct cam_sensor_power_ctrl_t *ctrl,
 				CAM_ERR(CAM_SENSOR,
 					"Error disabling VREG GPIO");
 			break;
+		case SENSOR_CUSTOM_MIXED_PIN1:
+		case SENSOR_CUSTOM_MIXED_PIN2:
+		case SENSOR_CUSTOM_MIXED_PIN3:
+		case SENSOR_CUSTOM_MIXED_PIN4:
+		case SENSOR_CUSTOM_MIXED_PIN5:
+			mixed_pin = soc_info->sensor_mixed_pin &
+				(1 << (pd->seq_type - SENSOR_CUSTOM_MIXED_PIN1));
+			CAM_INFO(CAM_SENSOR, "sensor_mixed_pin config:%s",
+				mixed_pin == CONFIG_GPIO ? "gpio" : "ldo");
+			if (mixed_pin == CONFIG_GPIO)
+				goto pw_handle_gpio;
+			else
+				goto pw_handle_ldo;
+			break;
 		default:
 			CAM_ERR(CAM_SENSOR, "error power seq type %d",
 				pd->seq_type);
@@ -2499,4 +2715,60 @@ int cam_sensor_util_power_down(struct cam_sensor_power_ctrl_t *ctrl,
 	ctrl->cam_pinctrl_status = 0;
 
 	return 0;
+}
+
+int cam_read_reg(struct camera_io_master *io_master_info,
+	struct cam_data_reg *cam_read_reg_data)
+{
+	uint8_t i;
+	int rc = 0;
+
+	for (i = 0; i < cam_read_reg_data->size; i++) {
+		rc = camera_io_dev_read(io_master_info,
+			cam_read_reg_data->data[i].reg,
+			&(cam_read_reg_data->data[i].val),
+			cam_read_reg_data->addr_type,
+			cam_read_reg_data->data_type);
+		if (rc) {
+			CAM_ERR(CAM_SENSOR, "read reg failed, rc = %d", rc);
+			break;
+		} else {
+			CAM_DBG(CAM_SENSOR, "read reg: slave_addr = 0x%x, addr = 0x%x, data = 0x%x",
+				io_master_info->cci_client->sid << 1,
+				cam_read_reg_data->data[i].reg,
+				cam_read_reg_data->data[i].val);
+		}
+	}
+
+	return rc;
+}
+
+int cam_write_reg(struct camera_io_master *io_master_info,
+	struct cam_data_reg *cam_write_reg_data)
+{
+	uint8_t i;
+	int rc = 0;
+	struct cam_sensor_i2c_reg_setting  i2c_reg_settings = {0};
+	struct cam_sensor_i2c_reg_array    i2c_reg_array = {0};
+	i2c_reg_settings.addr_type = cam_write_reg_data->addr_type;
+	i2c_reg_settings.data_type = cam_write_reg_data->data_type;
+	i2c_reg_settings.size = cam_write_reg_data->size;
+
+	for (i = 0; i < cam_write_reg_data->size; i++) {
+		i2c_reg_array.reg_addr = cam_write_reg_data->data[i].reg;
+		i2c_reg_array.reg_data = cam_write_reg_data->data[i].val;
+		i2c_reg_array.delay = cam_write_reg_data->data[i].delay;
+		i2c_reg_settings.reg_setting = &i2c_reg_array;
+		CAM_DBG(CAM_SENSOR, "write reg: slave_addr = 0x%x, addr = 0x%x, data = 0x%x",
+			io_master_info->cci_client->sid << 1,
+			cam_write_reg_data->data[i].reg,
+			cam_write_reg_data->data[i].val);
+		rc = camera_io_dev_write(io_master_info, &i2c_reg_settings);
+		if (rc) {
+			CAM_ERR(CAM_OIS, "write reg failed, rc = %d", rc);
+			break;
+		}
+	}
+
+	return rc;
 }

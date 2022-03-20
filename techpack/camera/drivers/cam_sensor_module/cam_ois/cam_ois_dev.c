@@ -23,6 +23,12 @@ static long cam_ois_subdev_ioctl(struct v4l2_subdev *sd,
 			CAM_ERR(CAM_OIS,
 				"Failed with driver cmd: %d", rc);
 		break;
+	case CAM_DATA_CONCTROL:
+		rc = cam_ois_data_transfer(o_ctrl, arg);
+		if (rc)
+			CAM_ERR(CAM_OIS,
+				"Failed for data_transfer: %d", rc);
+		break;
 	default:
 		CAM_ERR(CAM_OIS, "Wrong IOCTL cmd: %u", cmd);
 		rc = -ENOIOCTLCMD;
@@ -270,6 +276,7 @@ static int cam_ois_component_bind(struct device *dev,
 	o_ctrl->ois_device_type = MSM_CAMERA_PLATFORM_DEVICE;
 
 	o_ctrl->io_master_info.master_type = CCI_MASTER;
+	o_ctrl->io_master_info.device_type = CAM_OIS;
 	o_ctrl->io_master_info.cci_client = kzalloc(
 		sizeof(struct cam_sensor_cci_client), GFP_KERNEL);
 	if (!o_ctrl->io_master_info.cci_client)
@@ -287,6 +294,8 @@ static int cam_ois_component_bind(struct device *dev,
 	INIT_LIST_HEAD(&(o_ctrl->i2c_init_data.list_head));
 	INIT_LIST_HEAD(&(o_ctrl->i2c_calib_data.list_head));
 	INIT_LIST_HEAD(&(o_ctrl->i2c_mode_data.list_head));
+	INIT_LIST_HEAD(&(o_ctrl->i2c_time_data.list_head));
+	INIT_LIST_HEAD(&(o_ctrl->i2c_shutdown_data.list_head));
 	mutex_init(&(o_ctrl->ois_mutex));
 	rc = cam_ois_driver_soc_init(o_ctrl);
 	if (rc) {

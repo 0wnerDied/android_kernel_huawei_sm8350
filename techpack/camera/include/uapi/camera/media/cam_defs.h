@@ -32,6 +32,11 @@
 #define CAM_EXT_OPCODE_BASE                     0x200
 #define CAM_CONFIG_DEV_EXTERNAL                 (CAM_EXT_OPCODE_BASE + 0x1)
 
+/* camera data transfer codes */
+#define CAM_DATA_TRANSFER_BASE                  0x250
+#define CAM_READ_REG                            (CAM_DATA_TRANSFER_BASE + 0x1)
+#define CAM_WRITE_REG                           (CAM_DATA_TRANSFER_BASE + 0x2)
+
 /* camera handle type */
 #define CAM_HANDLE_USER_POINTER                 1
 #define CAM_HANDLE_MEM_HANDLE                   2
@@ -61,6 +66,16 @@
 #define CAM_MAX_ACQ_RES    5
 #define CAM_MAX_HW_SPLIT   3
 
+/**
+ * enum data_transfer_type_t - Identifies the various data usage
+ *
+ * @CAM_BU64754_OTP_DATA:    Rewrite BU64754 OTP data
+ *
+ */
+enum data_transfer_type_t {
+	CAM_BU64754_OTP_DATA,
+	CAM_REG_DATA
+};
 
 /**
  * enum flush_type_t - Identifies the various flush types
@@ -96,6 +111,36 @@ struct cam_control {
 /* camera IOCTL */
 #define VIDIOC_CAM_CONTROL \
 	_IOWR('V', BASE_VIDIOC_PRIVATE, struct cam_control)
+
+/**
+ * struct cam_data_transfer - Structure used to store data
+ *
+ * @data_type:          This indicates the type of data
+ * @reserved:           Reserved field for 64 bit alignment
+ * @data:               The pointer to data
+ */
+struct cam_data_transfer {
+	__u32        data_type;
+	__u32        reserved;
+	__u64        data;
+};
+
+/**
+ * struct cam_data_control - Structure used by data transfer from HAL to kernel for camera
+ *
+ * @data_direct:        This indicates the direction of data transfer
+ * @size:               Control command size
+ * @handle:             The pointer to data
+ */
+struct cam_data_control {
+	__u32        data_direct;
+	__u32        size;
+	__u64        handle;
+};
+
+/* camera Transfer Data */
+#define  CAM_DATA_CONCTROL \
+	_IOWR('V', BASE_VIDIOC_PRIVATE + 0x30, struct cam_data_transfer)
 
 /**
  * struct cam_hw_version - Structure for HW version of camera devices

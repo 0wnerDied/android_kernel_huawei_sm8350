@@ -19,10 +19,13 @@
 #include "cam_res_mgr_api.h"
 #include "cam_cci_dev.h"
 #include "cam_sensor_dev.h"
+#include "debug_adapter.h"
 #include "cam_actuator_dev.h"
 #include "cam_csiphy_dev.h"
 #include "cam_eeprom_dev.h"
 #include "cam_ois_dev.h"
+#include "cam_laser_dev.h"
+#include "cam_cfg_dev.h"
 
 #if IS_REACHABLE(CONFIG_LEDS_QPNP_FLASH_V2) || \
 	IS_REACHABLE(CONFIG_LEDS_QTI_FLASH)
@@ -101,6 +104,7 @@ static const struct camera_submodule_component camera_isp[] = {
 
 static const struct camera_submodule_component camera_sensor[] = {
 #ifdef CONFIG_SPECTRA_SENSOR
+	{&debug_adapter_init, &debug_adapter_exit},
 	{&cam_res_mgr_init, &cam_res_mgr_exit},
 	{&cam_cci_init_module, &cam_cci_exit_module},
 	{&cam_csiphy_init_module, &cam_csiphy_exit_module},
@@ -108,6 +112,8 @@ static const struct camera_submodule_component camera_sensor[] = {
 	{&cam_sensor_driver_init, &cam_sensor_driver_exit},
 	{&cam_eeprom_driver_init, &cam_eeprom_driver_exit},
 	{&cam_ois_driver_init, &cam_ois_driver_exit},
+	{&cam_laser_driver_init, &cam_laser_driver_exit},
+	{&cam_cfgdev_driver_init, &cam_cfgdev_driver_exit},
 #if IS_REACHABLE(CONFIG_LEDS_QPNP_FLASH_V2) || \
 	IS_REACHABLE(CONFIG_LEDS_QTI_FLASH)
 	{&cam_flash_init_module, &cam_flash_exit_module},
