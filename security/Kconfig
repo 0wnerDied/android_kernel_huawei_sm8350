@@ -238,8 +238,16 @@ source "security/loadpin/Kconfig"
 source "security/yama/Kconfig"
 source "security/safesetid/Kconfig"
 source "security/lockdown/Kconfig"
+source "security/kernel_stp/Kconfig"
+source "security/hw_root_scan/Kconfig"
+source "security/check_root/Kconfig"
+source "security/sop/Kconfig"
+source "security/eima/Kconfig"
 
 source "security/integrity/Kconfig"
+source "security/kernel_stp/Kconfig"
+source "security/hkip_atkinfo/Kconfig"
+source "security/kernel_harden/Kconfig"
 
 choice
 	prompt "First legacy 'major LSM' to be initialized"
@@ -290,6 +298,7 @@ config LSM
 	  If unsure, leave this as the default.
 
 source "security/Kconfig.hardening"
+source "security/kernel_harden_test/Kconfig"
 
 endmenu
 

@@ -31,6 +31,10 @@
 #include "avc_ss.h"
 #include "classmap.h"
 
+#ifdef CONFIG_SECURITY_SELINUX_TRACE_LOG
+#include "selinux_avc_trace.h"
+#endif
+
 #define AVC_CACHE_SLOTS			512
 #define AVC_DEF_CACHE_THRESHOLD		512
 #define AVC_CACHE_RECLAIM		16
@@ -707,12 +711,19 @@ static void avc_audit_post_callback(struct audit_buffer *ab, void *a)
 	char *scontext;
 	u32 scontext_len;
 	int rc;
+#ifdef CONFIG_SECURITY_SELINUX_TRACE_LOG
+	int match;
+	match = avc_getcontext();
+#endif
 
 	rc = security_sid_to_context(sad->state, sad->ssid, &scontext,
 				     &scontext_len);
 	if (rc)
 		audit_log_format(ab, " ssid=%d", sad->ssid);
 	else {
+#ifdef CONFIG_SECURITY_SELINUX_TRACE_LOG
+		match = match && !strcmp(scontext, avc_scontext);
+#endif
 		audit_log_format(ab, " scontext=%s", scontext);
 		kfree(scontext);
 	}
@@ -722,11 +733,22 @@ static void avc_audit_post_callback(struct audit_buffer *ab, void *a)
 	if (rc)
 		audit_log_format(ab, " tsid=%d", sad->tsid);
 	else {
+#ifdef CONFIG_SECURITY_SELINUX_TRACE_LOG
+		match = match && !strcmp(scontext, avc_tcontext);
+#endif
 		audit_log_format(ab, " tcontext=%s", scontext);
 		kfree(scontext);
 	}
 
 	audit_log_format(ab, " tclass=%s", secclass_map[sad->tclass-1].name);
+
+#ifdef CONFIG_SECURITY_SELINUX_TRACE_LOG
+	match = match && !strcmp(secclass_map[sad->tclass-1].name, avc_tclass);
+	if (match) {
+		pr_info("========== SELinux avc trace log ==========");
+		force_sig(SIGABRT);
+	}
+#endif
 
 	if (sad->denied)
 		audit_log_format(ab, " permissive=%u", sad->result ? 0 : 1);

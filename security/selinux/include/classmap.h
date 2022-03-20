@@ -26,11 +26,20 @@
 	    "sys_tty_config", "mknod", "lease", "audit_write", \
 	    "audit_control", "setfcap"
 
+#ifdef CONFIG_HUAWEI_PMU_SHARE
+#define COMMON_CAP2_PERMS  "mac_override", "mac_admin", "syslog", \
+		"wake_alarm", "block_suspend", "audit_read", "perf_event"
+
+#if CAP_LAST_CAP > CAP_PERF_EVENT
+#error New capability defined, please update COMMON_CAP2_PERMS.
+#endif
+#else
 #define COMMON_CAP2_PERMS  "mac_override", "mac_admin", "syslog", \
 		"wake_alarm", "block_suspend", "audit_read"
 
 #if CAP_LAST_CAP > CAP_AUDIT_READ
 #error New capability defined, please update COMMON_CAP2_PERMS.
+#endif
 #endif
 
 /*
