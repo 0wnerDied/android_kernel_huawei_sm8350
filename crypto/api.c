@@ -595,6 +595,20 @@ int crypto_has_alg(const char *name, u32 type, u32 mask)
 }
 EXPORT_SYMBOL_GPL(crypto_has_alg);
 
+#ifdef CONFIG_CRYPTO_DELTA
+int crypto_alg_prop_check(const char *name, u32 type, u32 mask, u32 flag)
+{
+	int ret = 0;
+	struct crypto_alg *alg = crypto_alg_mod_lookup(name, type, mask);
+
+	if (!IS_ERR(alg) && (alg->cra_flags & flag))
+		ret = 1;
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(crypto_alg_prop_check);
+#endif
+
 void crypto_req_done(struct crypto_async_request *req, int err)
 {
 	struct crypto_wait *wait = req->data;

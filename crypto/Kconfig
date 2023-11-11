@@ -1717,7 +1717,6 @@ config CRYPTO_LZ4
 config CRYPTO_LZ4KD
 	tristate "LZ4KD compression algorithm"
 	select CRYPTO_ALGAPI
-	select CRYPTO_ACOMP2
 	select LZ4KD_COMPRESS
 	select LZ4KD_DECOMPRESS
 	help
@@ -1740,6 +1739,15 @@ config CRYPTO_ZSTD
 	select ZSTD_DECOMPRESS
 	help
 	  This is the zstd algorithm.
+
+comment "Delta compression"
+
+config CRYPTO_DELTA
+	tristate "Delta compression support"
+	select CRYPTO_ALGAPI
+	select CRYPTO_ACOMP2
+	help
+	  This option enabled delta compression support.
 
 comment "Random Number Generation"
 
